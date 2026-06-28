@@ -20,6 +20,7 @@ const (
 	exitDaemonUnreachable = 3
 	exitGuardrail         = 4 // a guardrail refused the change (M2+)
 	exitRolledBack        = 5 // apply failed but was rolled back (M2+)
+	exitDoctor            = 6 // doctor found a failing check
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -45,6 +46,8 @@ func exitCode(err error) int {
 		return exitGuardrail // message already printed by the command
 	case errors.Is(err, errRolledBack):
 		return exitRolledBack
+	case errors.Is(err, errDoctorIssues):
+		return exitDoctor // report already printed
 	default:
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return exitError
@@ -52,7 +55,8 @@ func exitCode(err error) int {
 }
 
 var (
-	errUsage      = errors.New("usage error")
-	errGuardrail  = errors.New("refused by guardrail")
-	errRolledBack = errors.New("change rolled back")
+	errUsage        = errors.New("usage error")
+	errGuardrail    = errors.New("refused by guardrail")
+	errRolledBack   = errors.New("change rolled back")
+	errDoctorIssues = errors.New("doctor found failing checks")
 )

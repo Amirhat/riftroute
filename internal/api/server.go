@@ -73,6 +73,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /route/explain", s.handleExplain)
 	s.mux.HandleFunc("GET /diff", s.handleDiff)
 	s.mux.HandleFunc("GET /conflicts", s.handleConflicts)
+	s.mux.HandleFunc("GET /doctor", s.handleDoctor)
+	s.mux.HandleFunc("GET /leaks", s.handleLeaks)
 	s.mux.HandleFunc("GET /profiles", s.handleProfiles)
 	s.mux.HandleFunc("GET /lists", s.handleLists)
 	s.mux.HandleFunc("GET /audit", s.handleAudit)
@@ -252,6 +254,18 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		profs = []domain.Profile{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": profs})
+}
+
+func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.Doctor(r.Context()))
+}
+
+func (s *Server) handleLeaks(w http.ResponseWriter, r *http.Request) {
+	lk := s.svc.Leaks(r.Context())
+	if lk == nil {
+		lk = []domain.Leak{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"leaks": lk})
 }
 
 func (s *Server) handleLists(w http.ResponseWriter, r *http.Request) {

@@ -327,6 +327,22 @@ func (c *Client) ApplyConfig(ctx context.Context, data []byte, format string, dr
 	return out, nil
 }
 
+// Doctor runs the diagnostics battery.
+func (c *Client) Doctor(ctx context.Context) (domain.DoctorReport, error) {
+	var r domain.DoctorReport
+	err := c.do(ctx, http.MethodGet, "/doctor", nil, &r)
+	return r, err
+}
+
+// Leaks returns detected IPv6/DNS leaks.
+func (c *Client) Leaks(ctx context.Context) ([]domain.Leak, error) {
+	var body struct {
+		Leaks []domain.Leak `json:"leaks"`
+	}
+	err := c.do(ctx, http.MethodGet, "/leaks", nil, &body)
+	return body.Leaks, err
+}
+
 // Lists returns configured lists with cache metadata.
 func (c *Client) Lists(ctx context.Context) ([]domain.List, error) {
 	var body struct {
