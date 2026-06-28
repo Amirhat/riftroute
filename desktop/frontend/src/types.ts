@@ -117,6 +117,12 @@ export interface RouteExplain {
   note?: string
 }
 
+export interface Rule {
+  type: string
+  value: string
+  comment?: string
+}
+
 export interface Profile {
   id: string
   name: string
@@ -124,4 +130,64 @@ export interface Profile {
   mode: string
   gateway: string
   priority: number
+  rules?: Rule[]
+  lists?: string[]
+}
+
+export interface PlanOp {
+  kind: string
+  route?: Route
+  command: string[]
+  human: string
+}
+
+export interface Plan {
+  ops: PlanOp[]
+  inverse: PlanOp[]
+}
+
+export interface DiffEntry {
+  action: string
+  route: Route
+}
+
+export interface Diff {
+  entries?: DiffEntry[]
+  adds: number
+  dels: number
+  changes: number
+  in_sync: boolean
+}
+
+export interface Violation {
+  rule: string
+  detail: string
+}
+
+export interface ApplyResult {
+  tx_id?: string
+  plan: Plan
+  diff: Diff
+  violations?: Violation[]
+  status: string // pending | committed | rolled_back | failed
+  needs_confirm: boolean
+  error?: string
+}
+
+export interface AuditEvent {
+  id: number
+  ts: string
+  actor: string
+  action: string
+  profile?: string
+  result: string
+  rollback?: boolean
+  reason?: string
+  plan?: Plan
+}
+
+export interface Snapshot {
+  id: string
+  created_at: string
+  reason: string
 }

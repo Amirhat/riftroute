@@ -273,6 +273,103 @@ export namespace domain {
 	        this.via_vpn = source["via_vpn"];
 	    }
 	}
+	export class Route {
+	    dst_cidr: string;
+	    gateway?: string;
+	    iface: string;
+	    metric: number;
+	    family: string;
+	    owner: string;
+	    proto?: string;
+	    profile?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Route(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dst_cidr = source["dst_cidr"];
+	        this.gateway = source["gateway"];
+	        this.iface = source["iface"];
+	        this.metric = source["metric"];
+	        this.family = source["family"];
+	        this.owner = source["owner"];
+	        this.proto = source["proto"];
+	        this.profile = source["profile"];
+	    }
+	}
+	export class DiffEntry {
+	    action: string;
+	    route: Route;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiffEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.action = source["action"];
+	        this.route = this.convertValues(source["route"], Route);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Diff {
+	    entries: DiffEntry[];
+	    adds: number;
+	    dels: number;
+	    changes: number;
+	    in_sync: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Diff(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.entries = this.convertValues(source["entries"], DiffEntry);
+	        this.adds = source["adds"];
+	        this.dels = source["dels"];
+	        this.changes = source["changes"];
+	        this.in_sync = source["in_sync"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
 	export class DriftStatus {
 	    pending: boolean;
 	    adds: number;
@@ -339,6 +436,26 @@ export namespace domain {
 	
 	
 	
+	export class PolicyRule {
+	    priority: number;
+	    selector: string;
+	    table: string;
+	    family: string;
+	    proto?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PolicyRule(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.priority = source["priority"];
+	        this.selector = source["selector"];
+	        this.table = source["table"];
+	        this.family = source["family"];
+	        this.proto = source["proto"];
+	    }
+	}
 	export class Rule {
 	    type: string;
 	    value: string;
@@ -423,32 +540,7 @@ export namespace domain {
 	        this.applied = source["applied"];
 	    }
 	}
-	export class Route {
-	    dst_cidr: string;
-	    gateway?: string;
-	    iface: string;
-	    metric: number;
-	    family: string;
-	    owner: string;
-	    proto?: string;
-	    profile?: string;
 	
-	    static createFrom(source: any = {}) {
-	        return new Route(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.dst_cidr = source["dst_cidr"];
-	        this.gateway = source["gateway"];
-	        this.iface = source["iface"];
-	        this.metric = source["metric"];
-	        this.family = source["family"];
-	        this.owner = source["owner"];
-	        this.proto = source["proto"];
-	        this.profile = source["profile"];
-	    }
-	}
 	export class RouteDecision {
 	    target: string;
 	    source: string;
@@ -520,6 +612,51 @@ export namespace domain {
 		}
 	}
 	
+	export class Snapshot {
+	    id: string;
+	    // Go type: time
+	    created_at: any;
+	    reason: string;
+	    routes_v4: Route[];
+	    routes_v6: Route[];
+	    rules?: PolicyRule[];
+	    defaults: DefaultRoute[];
+	    dns: DNSState;
+	
+	    static createFrom(source: any = {}) {
+	        return new Snapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.created_at = this.convertValues(source["created_at"], null);
+	        this.reason = source["reason"];
+	        this.routes_v4 = this.convertValues(source["routes_v4"], Route);
+	        this.routes_v6 = this.convertValues(source["routes_v6"], Route);
+	        this.rules = this.convertValues(source["rules"], PolicyRule);
+	        this.defaults = this.convertValues(source["defaults"], DefaultRoute);
+	        this.dns = this.convertValues(source["dns"], DNSState);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class VPNStatus {
 	    active: boolean;
 	    interfaces: string[];
@@ -563,6 +700,67 @@ export namespace domain {
 	        this.drift = this.convertValues(source["drift"], DriftStatus);
 	        this.managed_route_count = source["managed_route_count"];
 	        this.generated_at = this.convertValues(source["generated_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace safety {
+	
+	export class Violation {
+	    rule: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Violation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.rule = source["rule"];
+	        this.detail = source["detail"];
+	    }
+	}
+	export class Result {
+	    tx_id?: string;
+	    plan: domain.Plan;
+	    diff: domain.Diff;
+	    violations?: Violation[];
+	    status: string;
+	    needs_confirm: boolean;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Result(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tx_id = source["tx_id"];
+	        this.plan = this.convertValues(source["plan"], domain.Plan);
+	        this.diff = this.convertValues(source["diff"], domain.Diff);
+	        this.violations = this.convertValues(source["violations"], Violation);
+	        this.status = source["status"];
+	        this.needs_confirm = source["needs_confirm"];
+	        this.error = source["error"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

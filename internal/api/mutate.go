@@ -153,6 +153,14 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		// apply=false just stages the desired flag (GUI then previews + applies
+		// with commit-confirm). Default true reconciles immediately (CLI quick
+		// toggle, non-interactive with the guard kept).
+		if r.URL.Query().Get("apply") == "false" {
+			s.BroadcastState(r.Context())
+			writeJSON(w, http.StatusOK, safety.Result{Status: "staged"})
+			return
+		}
 		// Reconcile to the new enabled set (non-interactive; guard kept).
 		desired, physGW, err := s.svc.DesiredManaged(r.Context())
 		if err != nil {

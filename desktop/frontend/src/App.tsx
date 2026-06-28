@@ -5,6 +5,8 @@ import type { View } from './components/Sidebar'
 import { Dashboard } from './views/Dashboard'
 import { RoutesView } from './views/RoutesView'
 import { ExplainView } from './views/ExplainView'
+import { Profiles } from './views/Profiles'
+import { History } from './views/History'
 import { Placeholder } from './views/Placeholder'
 import { Badge, Dot } from './components/ui'
 import { onConnection, onMenu, onState } from './lib/events'
@@ -45,7 +47,10 @@ export default function App() {
   useEffect(() => {
     const offState = onState((s) => {
       qc.setQueryData(stateKey, s)
+      // Keep secondary views in sync whether the change came from this GUI, the
+      // CLI, or the daemon's auto-apply.
       qc.invalidateQueries({ queryKey: ['routes'] })
+      qc.invalidateQueries({ queryKey: ['profiles'] })
       setReachable(true)
     })
     const offConn = onConnection((r) => {
@@ -76,6 +81,20 @@ export default function App() {
               {reachable ? 'daemon connected' : 'daemon offline'}
             </Badge>
             <button
+              onClick={async () => {
+                if (!confirm('Flush ALL RiftRoute-managed routes and restore baseline?')) return
+                try {
+                  await api.panic()
+                } finally {
+                  qc.invalidateQueries()
+                }
+              }}
+              title="Remove all managed routes, restore baseline"
+              className="rounded-lg border border-danger/50 px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10"
+            >
+              Panic
+            </button>
+            <button
               onClick={toggleTheme}
               title="Toggle theme (⇧⌘T)"
               className="rounded-lg border border-line px-2.5 py-1.5 text-sm text-muted hover:text-default"
@@ -101,9 +120,9 @@ function ViewRouter({ view }: { view: View }) {
     case 'explain':
       return <ExplainView />
     case 'profiles':
-      return <Placeholder title="Profiles" milestone="M2" />
+      return <Profiles />
     case 'history':
-      return <Placeholder title="History & snapshots" milestone="M2" />
+      return <History />
     case 'settings':
       return <Placeholder title="Settings" milestone="M7" />
   }

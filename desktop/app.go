@@ -11,6 +11,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/apiclient"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/platform"
+	"github.com/Amirhat/riftroute/internal/safety"
 )
 
 // App is the Wails-bound backend. Its exported methods become typed TypeScript
@@ -156,6 +157,69 @@ func (a *App) GetAudit() ([]domain.AuditEvent, error) {
 		evs = []domain.AuditEvent{}
 	}
 	return evs, nil
+}
+
+// --- bound mutation methods (typed bindings for React) ---
+
+// PlanPreview returns the dry-run plan for the current enabled profiles.
+func (a *App) PlanPreview() (domain.Plan, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	plan, _, err := a.client.Plan(ctx)
+	return plan, err
+}
+
+// Apply reconciles to the enabled profiles. yes = non-interactive (skip manual
+// confirm; the guard still runs). confirmTimeoutSec is the daemon's auto-revert
+// backstop for interactive applies.
+func (a *App) Apply(yes bool, confirmTimeoutSec int) (safety.Result, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Apply(ctx, apiclient.ApplyOptions{Yes: yes, ConfirmTimeoutSec: confirmTimeoutSec})
+}
+
+// Confirm keeps a pending interactive change.
+func (a *App) Confirm(txID string) (domain.TxResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Confirm(ctx, txID)
+}
+
+// Rollback reverts a pending change immediately.
+func (a *App) Rollback(txID string) (domain.TxResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Rollback(ctx, txID)
+}
+
+// PanicFlush removes all managed routes and restores baseline (idempotent).
+func (a *App) PanicFlush() error {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Panic(ctx)
+}
+
+// SetProfileEnabled stages a profile's desired enabled flag WITHOUT applying, so
+// the UI can preview and apply with commit-confirm (spec §8.2). Reconcile is
+// driven separately by Apply.
+func (a *App) SetProfileEnabled(name string, enable bool) (safety.Result, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SetProfileEnabled(ctx, name, enable, false)
+}
+
+// GetSnapshots lists snapshot metadata.
+func (a *App) GetSnapshots() ([]domain.Snapshot, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	snaps, err := a.client.Snapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if snaps == nil {
+		snaps = []domain.Snapshot{}
+	}
+	return snaps, nil
 }
 
 // Reachable reports whether the daemon is currently answering.

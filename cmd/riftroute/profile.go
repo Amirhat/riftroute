@@ -81,7 +81,7 @@ func profileToggleCmd(enable bool) *cobra.Command {
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			res, err := client().SetProfileEnabled(cmd.Context(), args[0], enable)
+			res, err := client().SetProfileEnabled(cmd.Context(), args[0], enable, true)
 			if err != nil {
 				return err
 			}

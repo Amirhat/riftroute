@@ -271,14 +271,20 @@ func (c *Client) Panic(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/panic", struct{}{}, nil)
 }
 
-// SetProfileEnabled enables or disables a profile by name and reconciles.
-func (c *Client) SetProfileEnabled(ctx context.Context, name string, enable bool) (safety.Result, error) {
+// SetProfileEnabled enables or disables a profile by name. When apply is true it
+// reconciles immediately (CLI quick toggle); when false it only stages the
+// desired flag so the caller can preview + apply with commit-confirm (GUI).
+func (c *Client) SetProfileEnabled(ctx context.Context, name string, enable, apply bool) (safety.Result, error) {
 	action := "disable"
 	if enable {
 		action = "enable"
 	}
+	path := "/profiles/" + name + "/" + action
+	if !apply {
+		path += "?apply=false"
+	}
 	var res safety.Result
-	err := c.do(ctx, http.MethodPost, "/profiles/"+name+"/"+action, struct{}{}, &res)
+	err := c.do(ctx, http.MethodPost, path, struct{}{}, &res)
 	return res, err
 }
 

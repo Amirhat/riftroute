@@ -22,8 +22,8 @@ const items: Item[] = [
   { view: 'dashboard', label: 'Dashboard', icon: DashboardIcon },
   { view: 'routes', label: 'Routing Table', icon: TableIcon },
   { view: 'explain', label: 'Explain', icon: ExplainIcon },
-  { view: 'profiles', label: 'Profiles', icon: ProfilesIcon, soon: 'M2' },
-  { view: 'history', label: 'History', icon: HistoryIcon, soon: 'M2' },
+  { view: 'profiles', label: 'Profiles', icon: ProfilesIcon },
+  { view: 'history', label: 'History', icon: HistoryIcon },
   { view: 'settings', label: 'Settings', icon: SettingsIcon, soon: 'M7' },
 ]
 
