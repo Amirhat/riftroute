@@ -131,21 +131,19 @@ func NewProtocol(prov provider.RouteProvider, st Store, clock Clock, newProber f
 
 // Plan builds the reconcile plan + diff for desired state without applying — the
 // dry-run preview (spec §2.2 step 4).
-func (p *Protocol) Plan(ctx context.Context, desired []domain.ManagedRoute) (domain.Plan, domain.Diff) {
-	actual := p.actualManaged(ctx)
-	plan := routing.Reconcile(desired, actual, p.platform)
+func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute, desiredRules []domain.ManagedRule) (domain.Plan, domain.Diff) {
+	plan := routing.Reconcile(desiredRoutes, p.actualManaged(ctx), desiredRules, p.actualManagedRules(ctx), p.platform)
 	return plan, diffFromPlan(plan)
 }
 
 // Apply runs the full Apply Protocol. For DryRun it returns the preview. On
 // success it executes atomically, arms the watchdog + commit-confirm, and
 // returns a pending transaction (resolved later via Confirm/timeout/watchdog).
-func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, opts Options) (Result, error) {
+func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
 
-	actual := p.actualManaged(ctx)
-	plan := routing.Reconcile(desired, actual, p.platform)
+	plan := routing.Reconcile(desired, p.actualManaged(ctx), desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
 
 	if opts.DryRun {
@@ -344,6 +342,25 @@ func (p *Protocol) actualManaged(ctx context.Context) []domain.ManagedRoute {
 	return providerManaged(ctx, p.prov)
 }
 
+// actualManagedRules returns the policy rules RiftRoute owns. Rules are
+// proto-tagged on Linux (and tracked by the fake), so unlike macOS routes they
+// are self-identifying and need no DB ownership map.
+func (p *Protocol) actualManagedRules(ctx context.Context) []domain.ManagedRule {
+	var out []domain.ManagedRule
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, err := p.prov.ListRules(ctx, fam)
+		if err != nil {
+			continue
+		}
+		for _, r := range rs {
+			if r.Proto == "riftroute" {
+				out = append(out, domain.ManagedRule{PolicyRule: r})
+			}
+		}
+	}
+	return out
+}
+
 func providerManaged(ctx context.Context, prov provider.RouteProvider) []domain.ManagedRoute {
 	var out []domain.ManagedRoute
 	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
@@ -435,9 +452,6 @@ func keySet(rs []domain.ManagedRoute) map[string]bool {
 func diffFromPlan(plan domain.Plan) domain.Diff {
 	d := domain.Diff{}
 	for _, op := range plan.Ops {
-		if op.Route == nil {
-			continue
-		}
 		switch op.Kind {
 		case domain.OpAddRoute:
 			d.Entries = append(d.Entries, domain.DiffEntry{Action: domain.DiffAdd, Route: op.Route.Route})
@@ -445,10 +459,24 @@ func diffFromPlan(plan domain.Plan) domain.Diff {
 		case domain.OpDelRoute:
 			d.Entries = append(d.Entries, domain.DiffEntry{Action: domain.DiffDel, Route: op.Route.Route})
 			d.Dels++
+		case domain.OpAddRule:
+			d.Entries = append(d.Entries, domain.DiffEntry{Action: domain.DiffAdd, Route: ruleAsRoute(op.Rule)})
+			d.Adds++
+		case domain.OpDelRule:
+			d.Entries = append(d.Entries, domain.DiffEntry{Action: domain.DiffDel, Route: ruleAsRoute(op.Rule)})
+			d.Dels++
 		}
 	}
 	d.InSync = len(d.Entries) == 0
 	return d
+}
+
+// ruleAsRoute renders a policy rule as a route-shaped diff entry for display.
+func ruleAsRoute(r *domain.ManagedRule) domain.Route {
+	if r == nil {
+		return domain.Route{}
+	}
+	return domain.Route{DstCIDR: r.Selector, Iface: "→ table " + r.Table, Family: r.Family, Owner: domain.OwnerRiftRoute}
 }
 
 func violationSummary(vs []Violation) string {

@@ -202,12 +202,12 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 	// With the engine available, diff = desired (from enabled profiles) vs actual
 	// managed. Without it (read-only mode) fall back to the empty-desired diff.
 	if s.proto != nil {
-		desired, _, err := s.svc.DesiredManaged(r.Context())
+		desired, rules, _, err := s.svc.DesiredManaged(r.Context())
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		_, diff := s.proto.Plan(r.Context(), desired)
+		_, diff := s.proto.Plan(r.Context(), desired, rules)
 		writeJSON(w, http.StatusOK, diff)
 		return
 	}

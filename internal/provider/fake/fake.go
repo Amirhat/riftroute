@@ -343,7 +343,7 @@ func (p *Provider) indexOf(rt domain.Route) int {
 		routes = p.routesV6
 	}
 	for i, r := range routes {
-		if r.DstCIDR == rt.DstCIDR && r.Gateway == rt.Gateway && r.Iface == rt.Iface {
+		if r.DstCIDR == rt.DstCIDR && r.Gateway == rt.Gateway && r.Iface == rt.Iface && r.Table == rt.Table {
 			return i
 		}
 	}
@@ -380,7 +380,7 @@ func filterOwned(in []domain.Route) []domain.Route {
 }
 
 func routeKey(r domain.Route) string {
-	return string(r.Family) + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
+	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
 }
 
 func ifaceIsVPN(ifaces []domain.Iface, name string) bool {

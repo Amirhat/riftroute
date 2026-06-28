@@ -53,10 +53,10 @@ func (s *Service) Platform() string { return s.prov.Capabilities().Platform }
 // Store exposes the persistence layer (used by the daemon for wiring).
 func (s *Service) Store() *store.Store { return s.store }
 
-// DesiredManaged builds the managed routes implied by the enabled profiles,
-// resolving the physical gateway from the provider (spec §2.2 step 1 / §4.4). It
-// also returns the v4 physical gateway for guardrail checks.
-func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, netip.Addr, error) {
+// DesiredManaged builds the managed routes + rules implied by the enabled
+// profiles, resolving the physical gateway from the provider (spec §2.2 step 1 /
+// §4.4). It also returns the v4 physical gateway for guardrail checks.
+func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
 	var profiles []domain.Profile
 	if s.store != nil {
 		profiles, _ = s.store.ListProfiles()
@@ -64,22 +64,69 @@ func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, ne
 	return s.DesiredFromProfiles(ctx, profiles)
 }
 
-// DesiredFromProfiles builds desired managed routes from an explicit profile set
-// (used by config dry-run before anything is persisted).
-func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, netip.Addr, error) {
+// DesiredFromProfiles builds desired managed routes + rules from an explicit
+// profile set (used by config dry-run before anything is persisted).
+func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
 	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
 	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	vg4, vi4 := s.resolveVPN(ctx, domain.FamilyV4)
+	vg6, vi6 := s.resolveVPN(ctx, domain.FamilyV6)
 	in := routing.DesiredInput{
-		Profiles: profiles,
-		Platform: s.Platform(),
-		Now:      s.now(),
+		Profiles:      profiles,
+		Platform:      s.Platform(),
+		PolicyRouting: s.prov.Capabilities().PolicyRouting,
+		VPNGatewayV4:  vg4, VPNIfaceV4: vi4,
+		VPNGatewayV6: vg6, VPNIfaceV6: vi6,
+		Now: s.now(),
 	}
 	if err4 == nil {
 		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
 	}
 	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
-	desired, err := routing.BuildDesired(in)
-	return desired, gw4, err
+	routes, rules, err := routing.BuildDesired(in)
+	return routes, rules, gw4, err
+}
+
+// actualManagedRules returns the policy rules RiftRoute owns (proto-tagged).
+func (s *Service) actualManagedRules(ctx context.Context) []domain.ManagedRule {
+	var out []domain.ManagedRule
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, err := s.prov.ListRules(ctx, fam)
+		if err != nil {
+			continue
+		}
+		for _, r := range rs {
+			if r.Proto == "riftroute" {
+				out = append(out, domain.ManagedRule{PolicyRule: r})
+			}
+		}
+	}
+	return out
+}
+
+// resolveVPN finds the active tunnel next-hop+iface for a family — the current
+// default route that egresses a VPN interface (spec §5.4 include mode). Returns
+// a zero gateway for an on-link (point-to-point) tunnel default.
+func (s *Service) resolveVPN(ctx context.Context, fam domain.Family) (netip.Addr, string) {
+	ifaces, _ := s.prov.Interfaces(ctx)
+	vpn := map[string]bool{}
+	for _, ifc := range ifaces {
+		if ifc.IsVPN && ifc.Up {
+			vpn[ifc.Name] = true
+		}
+	}
+	def := "0.0.0.0/0"
+	if fam == domain.FamilyV6 {
+		def = "::/0"
+	}
+	routes, _ := s.prov.ListRoutes(ctx, fam)
+	for _, r := range routes {
+		if r.Table == "" && r.DstCIDR == def && vpn[r.Iface] {
+			gw, _ := netip.ParseAddr(r.Gateway) // zero if on-link
+			return gw, r.Iface
+		}
+	}
+	return netip.Addr{}, ""
 }
 
 // State assembles the full aggregate state for the dashboard/status (spec §11).
@@ -118,13 +165,13 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 	drift := domain.DriftStatus{}
 	if s.store != nil {
 		if profs, _ := s.store.ListProfiles(); len(profs) > 0 {
-			if desired, _, derr := s.DesiredFromProfiles(ctx, profs); derr == nil {
-				plan := routing.Reconcile(desired, actualManaged, s.Platform())
+			if dRoutes, dRules, _, derr := s.DesiredFromProfiles(ctx, profs); derr == nil {
+				plan := routing.Reconcile(dRoutes, actualManaged, dRules, s.actualManagedRules(ctx), s.Platform())
 				for _, op := range plan.Ops {
 					switch op.Kind {
-					case domain.OpAddRoute:
+					case domain.OpAddRoute, domain.OpAddRule:
 						drift.Adds++
-					case domain.OpDelRoute:
+					case domain.OpDelRoute, domain.OpDelRule:
 						drift.Dels++
 					}
 				}
@@ -237,9 +284,9 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 			overlay = append(overlay, r)
 		}
 	}
-	if desired, _, derr := s.DesiredManaged(ctx); derr == nil {
+	if desired, _, _, derr := s.DesiredManaged(ctx); derr == nil {
 		for _, mr := range desired {
-			if mr.Route.Family == fam {
+			if mr.Route.Family == fam && mr.Route.Table == "" {
 				overlay = append(overlay, mr.Route)
 			}
 		}
@@ -265,7 +312,7 @@ func (s *Service) vpnByIface(ctx context.Context) map[string]bool {
 
 // Conflicts reports overlapping desired routes with different next hops (§7.8).
 func (s *Service) Conflicts(ctx context.Context) ([]domain.Conflict, error) {
-	desired, _, err := s.DesiredManaged(ctx)
+	desired, _, _, err := s.DesiredManaged(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +359,7 @@ func (s *Service) degraded(err error) domain.State {
 
 func defaultFor(routes []domain.Route, fam domain.Family, defCIDR string, vpnByIface map[string]bool) domain.DefaultRoute {
 	for _, r := range routes {
-		if r.DstCIDR == defCIDR {
+		if r.Table == "" && r.DstCIDR == defCIDR {
 			return domain.DefaultRoute{
 				Family: fam, Present: true, Gateway: r.Gateway, Iface: r.Iface,
 				Owner: r.Owner, ViaVPN: vpnByIface[r.Iface],

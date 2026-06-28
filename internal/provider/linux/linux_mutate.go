@@ -11,17 +11,26 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // AddRoute installs a managed route tagged `proto riftroute` so it can be
-// enumerated and flushed cleanly (spec §2.3). Idempotent; arg-array exec only.
+// enumerated and flushed cleanly (spec §2.3). Supports a dedicated table (Model
+// B) and an on-link tunnel default (no gateway). Idempotent; arg-array only.
 func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	if err := validateManaged(mr); err != nil {
 		return err
 	}
-	args := []string{"route", "add", mr.Route.DstCIDR, "via", mr.Route.Gateway, "dev", mr.Route.Iface, "proto", "riftroute"}
+	args := []string{"route", "add", mr.Route.DstCIDR}
+	if mr.Route.Gateway != "" {
+		args = append(args, "via", mr.Route.Gateway)
+	}
+	args = append(args, "dev", mr.Route.Iface, "proto", "riftroute")
 	if mr.Route.Metric > 0 {
 		args = append(args, "metric", fmt.Sprint(mr.Route.Metric))
+	}
+	if mr.Route.Table != "" {
+		args = append(args, "table", mr.Route.Table)
 	}
 	out, err := runCombined(ctx, "ip", args...)
 	if err != nil {
@@ -33,12 +42,16 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	return nil
 }
 
-// DelRoute removes a managed route (matched by its proto tag).
+// DelRoute removes a managed route (matched by its proto tag + table).
 func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	if _, err := netip.ParsePrefix(mr.Route.DstCIDR); err != nil {
 		return fmt.Errorf("linux: invalid destination CIDR %q", mr.Route.DstCIDR)
 	}
-	out, err := runCombined(ctx, "ip", "route", "del", mr.Route.DstCIDR, "proto", "riftroute")
+	args := []string{"route", "del", mr.Route.DstCIDR, "proto", "riftroute"}
+	if mr.Route.Table != "" {
+		args = append(args, "table", mr.Route.Table)
+	}
+	out, err := runCombined(ctx, "ip", args...)
 	if err != nil {
 		if strings.Contains(out, "No such process") || strings.Contains(out, "Cannot find") {
 			return nil
@@ -48,24 +61,93 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	return nil
 }
 
-// FlushOwned removes every RiftRoute-owned route in one shot via the proto tag,
-// for both families (spec §2.3 owned-enumeration / teardown).
+// AddRule installs a policy rule (Model B), proto-tagged for ownership. Falls
+// back to no proto tag on older iproute2 that lacks rule `protocol` support.
+func (p *Provider) AddRule(ctx context.Context, mr domain.ManagedRule) error {
+	base := []string{"rule", "add"}
+	base = append(base, strings.Fields(mr.Selector)...)
+	base = append(base, "lookup", mr.Table, "priority", fmt.Sprint(mr.Priority))
+
+	out, err := runCombined(ctx, "ip", append(append([]string{}, base...), "protocol", "riftroute")...)
+	if err != nil {
+		if strings.Contains(out, "File exists") {
+			return nil
+		}
+		if strings.Contains(out, "protocol") { // old iproute2: retry without the tag
+			if out2, err2 := runCombined(ctx, "ip", base...); err2 != nil {
+				if strings.Contains(out2, "File exists") {
+					return nil
+				}
+				return fmt.Errorf("ip rule add: %w: %s", err2, strings.TrimSpace(out2))
+			}
+			return nil
+		}
+		return fmt.Errorf("ip rule add: %w: %s", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// DelRule removes a policy rule (matched by selector + table + priority).
+func (p *Provider) DelRule(ctx context.Context, mr domain.ManagedRule) error {
+	args := []string{"rule", "del"}
+	args = append(args, strings.Fields(mr.Selector)...)
+	args = append(args, "lookup", mr.Table, "priority", fmt.Sprint(mr.Priority))
+	out, err := runCombined(ctx, "ip", args...)
+	if err != nil {
+		if strings.Contains(out, "No such") || strings.Contains(out, "Cannot find") {
+			return nil
+		}
+		return fmt.Errorf("ip rule del: %w: %s", err, strings.TrimSpace(out))
+	}
+	return nil
+}
+
+// FlushOwned removes every RiftRoute-owned route and rule in one shot (spec §2.3
+// teardown): proto-tagged routes in the main and Model B tables (both families),
+// the Model B table itself, and proto-tagged rules.
 func (p *Provider) FlushOwned(ctx context.Context) error {
 	var firstErr error
-	for _, fam := range []string{"-4", "-6"} {
-		if _, err := runCombined(ctx, "ip", fam, "route", "flush", "proto", "riftroute"); err != nil && firstErr == nil {
+	note := func(err error) {
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
+	for _, fam := range []string{"-4", "-6"} {
+		_, err := runCombined(ctx, "ip", fam, "route", "flush", "proto", "riftroute")
+		note(err)
+		_, err = runCombined(ctx, "ip", fam, "route", "flush", "proto", "riftroute", "table", routing.ModelBTable)
+		note(err)
+		// Delete proto-tagged rules enumerated from `ip -j rule show`.
+		if out, e := runCombined(ctx, "ip", "-j", fam, "rule", "show"); e == nil {
+			if rules, perr := parseRulesJSON([]byte(out), famOf(fam)); perr == nil {
+				for _, r := range rules {
+					if r.Proto != "riftroute" {
+						continue
+					}
+					mr := domain.ManagedRule{PolicyRule: r}
+					note(p.DelRule(ctx, mr))
+				}
+			}
+		}
+	}
 	return firstErr
+}
+
+func famOf(flag string) domain.Family {
+	if flag == "-6" {
+		return domain.FamilyV6
+	}
+	return domain.FamilyV4
 }
 
 func validateManaged(mr domain.ManagedRoute) error {
 	if _, err := netip.ParsePrefix(mr.Route.DstCIDR); err != nil {
 		return fmt.Errorf("linux: invalid destination CIDR %q", mr.Route.DstCIDR)
 	}
-	if _, err := netip.ParseAddr(mr.Route.Gateway); err != nil {
-		return fmt.Errorf("linux: invalid gateway %q", mr.Route.Gateway)
+	if mr.Route.Gateway != "" {
+		if _, err := netip.ParseAddr(mr.Route.Gateway); err != nil {
+			return fmt.Errorf("linux: invalid gateway %q", mr.Route.Gateway)
+		}
 	}
 	if strings.TrimSpace(mr.Route.Iface) == "" {
 		return fmt.Errorf("linux: empty interface")

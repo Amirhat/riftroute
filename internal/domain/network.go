@@ -36,6 +36,9 @@ type Route struct {
 	// Proto is the Linux route protocol tag (e.g. "riftroute", "kernel",
 	// "dhcp"). Empty on macOS, which has no proto field.
 	Proto string `json:"proto,omitempty"`
+	// Table is the Linux routing table this route lives in (Model B). Empty =
+	// the main table. Ignored on macOS.
+	Table string `json:"table,omitempty"`
 	// Profile is the owning profile id for managed routes; empty otherwise.
 	Profile string `json:"profile,omitempty"`
 }

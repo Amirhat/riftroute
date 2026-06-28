@@ -44,7 +44,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 	if r.enabled != nil && !r.enabled() {
 		return safety.Result{}, nil
 	}
-	desired, physGW, err := r.svc.DesiredManaged(ctx)
+	desired, rules, physGW, err := r.svc.DesiredManaged(ctx)
 	if err != nil {
 		// Fail-safe: cannot resolve gateway/desired → keep existing routes.
 		r.log.Warn("auto-apply skipped: cannot derive desired state", "err", err)
@@ -56,7 +56,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 	}
 	anchors = append(anchors, "1.1.1.1")
 
-	res, aerr := r.proto.Apply(ctx, desired, safety.Options{
+	res, aerr := r.proto.Apply(ctx, desired, rules, safety.Options{
 		Interactive:   false, // auto-apply: skip manual confirm, keep the guard
 		Anchors:       anchors,
 		K:             3,

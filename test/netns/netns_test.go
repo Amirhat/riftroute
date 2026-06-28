@@ -19,11 +19,13 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider/linux"
+	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
@@ -142,7 +144,7 @@ func TestNetnsProviderAddListFlush(t *testing.T) {
 // Apply Protocol over the REAL provider: apply + confirm installs a real route.
 func TestNetnsApplyConfirm(t *testing.T) {
 	p, prov, _, _ := newProtocol(t)
-	res, err := p.Apply(context.Background(), bypass("9.9.9.0/24"), opts(true))
+	res, err := p.Apply(context.Background(), bypass("9.9.9.0/24"), nil, opts(true))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -159,7 +161,7 @@ func TestNetnsApplyConfirm(t *testing.T) {
 func TestNetnsWatchdogRollback(t *testing.T) {
 	p, prov, clk, prober := newProtocol(t)
 	prober.SetReachable(gw, false)
-	res, err := p.Apply(context.Background(), bypass("9.9.9.0/24"), opts(false))
+	res, err := p.Apply(context.Background(), bypass("9.9.9.0/24"), nil, opts(false))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -175,10 +177,71 @@ func TestNetnsWatchdogRollback(t *testing.T) {
 	}
 }
 
+// Model B (include mode) on real kernel state: an `ip rule` selects a
+// destination into a dedicated table whose default egresses the tunnel; panic
+// flushes both the rule and the table.
+func TestNetnsModelBInclude(t *testing.T) {
+	// A stand-in tunnel: a dummy named wg0 is classified as a VPN interface.
+	mustIP("link", "add", "wg0", "type", "dummy")
+	mustIP("addr", "add", "10.9.0.1/24", "dev", "wg0")
+	mustIP("link", "set", "wg0", "up")
+	defer func() { _ = exec.Command("ip", "link", "del", "wg0").Run() }()
+
+	p, prov, _, _ := newProtocol(t)
+	ctx := context.Background()
+
+	routes := []domain.ManagedRoute{{
+		Route:     domain.Route{DstCIDR: "0.0.0.0/0", Iface: "wg0", Table: routing.ModelBTable, Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute},
+		ProfileID: "inc",
+	}}
+	rules := []domain.ManagedRule{{
+		PolicyRule: domain.PolicyRule{Selector: "to 1.1.1.0/24", Table: routing.ModelBTable, Priority: routing.ModelBRulePrio, Family: domain.FamilyV4, Proto: "riftroute"},
+		ProfileID:  "inc",
+	}}
+
+	res, err := p.Apply(ctx, routes, rules, opts(true))
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if _, err := p.Confirm(res.TxID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The proto-tagged rule is present.
+	prules, _ := prov.ListRules(ctx, domain.FamilyV4)
+	sawRule := false
+	for _, r := range prules {
+		if r.Proto == "riftroute" && strings.Contains(r.Selector, "1.1.1.0/24") && r.Table == routing.ModelBTable {
+			sawRule = true
+		}
+	}
+	if !sawRule {
+		t.Fatalf("include rule missing: %+v", prules)
+	}
+	// The dedicated table has the default route.
+	if out, _ := exec.Command("ip", "route", "show", "table", routing.ModelBTable).CombinedOutput(); !strings.Contains(string(out), "default") {
+		t.Fatalf("table %s missing default: %s", routing.ModelBTable, out)
+	}
+
+	// Panic clears both the rule and the dedicated table.
+	if err := p.Panic(ctx, domain.ActorCLI); err != nil {
+		t.Fatal(err)
+	}
+	prules, _ = prov.ListRules(ctx, domain.FamilyV4)
+	for _, r := range prules {
+		if r.Proto == "riftroute" {
+			t.Fatalf("panic left a managed rule: %+v", r)
+		}
+	}
+	if out, _ := exec.Command("ip", "route", "show", "table", routing.ModelBTable).CombinedOutput(); strings.TrimSpace(string(out)) != "" {
+		t.Fatalf("panic left routes in table %s: %s", routing.ModelBTable, out)
+	}
+}
+
 // Panic removes real managed routes and is idempotent.
 func TestNetnsPanicIdempotent(t *testing.T) {
 	p, prov, _, _ := newProtocol(t)
-	res, _ := p.Apply(context.Background(), bypass("9.9.9.0/24"), opts(true))
+	res, _ := p.Apply(context.Background(), bypass("9.9.9.0/24"), nil, opts(true))
 	_, _ = p.Confirm(res.TxID)
 	ctx := context.Background()
 	if err := p.Panic(ctx, domain.ActorCLI); err != nil {

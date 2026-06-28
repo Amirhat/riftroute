@@ -68,7 +68,7 @@ func opts(interactive bool) safety.Options {
 func TestMatrix_OpFailureRollsBackPartial(t *testing.T) {
 	h := newHarness(t)
 	h.prov.FailAddRoute("9.9.9.0/24", true) // the second add fails
-	res, err := h.p.Apply(context.Background(), desired("1.1.1.0/24", "9.9.9.0/24"), opts(false))
+	res, err := h.p.Apply(context.Background(), desired("1.1.1.0/24", "9.9.9.0/24"), nil, opts(false))
 	if err != nil {
 		t.Fatalf("apply returned hard error: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestMatrix_OpFailureRollsBackPartial(t *testing.T) {
 func TestMatrix_WatchdogRollsBackOnAnchorLoss(t *testing.T) {
 	h := newHarness(t)
 	h.prober.SetReachable("192.168.1.1", false) // anchor down
-	res, err := h.p.Apply(context.Background(), desired("9.9.9.0/24"), opts(false))
+	res, err := h.p.Apply(context.Background(), desired("9.9.9.0/24"), nil, opts(false))
 	if err != nil || res.Status != domain.TxPending {
 		t.Fatalf("apply: status=%s err=%v", res.Status, err)
 	}
@@ -108,7 +108,7 @@ func TestMatrix_WatchdogRollsBackOnAnchorLoss(t *testing.T) {
 // Row 3: interactive apply never confirmed → auto-revert at confirm_timeout.
 func TestMatrix_MissedConfirmAutoReverts(t *testing.T) {
 	h := newHarness(t)
-	res, err := h.p.Apply(context.Background(), desired("9.9.9.0/24"), opts(true))
+	res, err := h.p.Apply(context.Background(), desired("9.9.9.0/24"), nil, opts(true))
 	if err != nil || !res.NeedsConfirm {
 		t.Fatalf("interactive apply should need confirm: %+v err=%v", res, err)
 	}
@@ -128,7 +128,7 @@ func TestMatrix_MissedConfirmAutoReverts(t *testing.T) {
 // Happy path: confirm within the window keeps the change.
 func TestMatrix_ConfirmKeepsChange(t *testing.T) {
 	h := newHarness(t)
-	res, _ := h.p.Apply(context.Background(), desired("9.9.9.0/24"), opts(true))
+	res, _ := h.p.Apply(context.Background(), desired("9.9.9.0/24"), nil, opts(true))
 	result, err := h.p.Confirm(res.TxID)
 	if err != nil || result != domain.TxCommitted {
 		t.Fatalf("confirm: result=%s err=%v", result, err)
@@ -146,7 +146,7 @@ func TestMatrix_ConfirmKeepsChange(t *testing.T) {
 // Non-interactive: guard window elapses cleanly → auto-commit.
 func TestMatrix_GuardWindowAutoCommits(t *testing.T) {
 	h := newHarness(t)
-	res, _ := h.p.Apply(context.Background(), desired("9.9.9.0/24"), opts(false))
+	res, _ := h.p.Apply(context.Background(), desired("9.9.9.0/24"), nil, opts(false))
 	h.clock.Advance(30 * time.Second)
 	result, _ := h.p.Wait(res.TxID)
 	if result != domain.TxCommitted {
@@ -161,7 +161,7 @@ func TestMatrix_GuardWindowAutoCommits(t *testing.T) {
 func TestMatrix_CrashRecoveryReconciles(t *testing.T) {
 	h := newHarness(t)
 	// Commit two managed routes cleanly.
-	res, _ := h.p.Apply(context.Background(), desired("1.1.1.0/24", "2.2.2.0/24"), opts(true))
+	res, _ := h.p.Apply(context.Background(), desired("1.1.1.0/24", "2.2.2.0/24"), nil, opts(true))
 	if _, err := h.p.Confirm(res.TxID); err != nil {
 		t.Fatal(err)
 	}
@@ -194,8 +194,8 @@ func TestMatrix_CrashRecoveryReconciles(t *testing.T) {
 // Row 5: a second apply while one is pending is rejected (serialized).
 func TestMatrix_AppliesSerialized(t *testing.T) {
 	h := newHarness(t)
-	res1, _ := h.p.Apply(context.Background(), desired("9.9.9.0/24"), opts(true))
-	_, err := h.p.Apply(context.Background(), desired("1.1.1.0/24"), opts(true))
+	res1, _ := h.p.Apply(context.Background(), desired("9.9.9.0/24"), nil, opts(true))
+	_, err := h.p.Apply(context.Background(), desired("1.1.1.0/24"), nil, opts(true))
 	if err != safety.ErrApplyInProgress {
 		t.Fatalf("want ErrApplyInProgress, got %v", err)
 	}
@@ -209,7 +209,7 @@ func TestMatrix_GuardrailRefusesBadGateway(t *testing.T) {
 	bad := []domain.ManagedRoute{{
 		Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "10.99.99.99", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute},
 	}}
-	res, err := h.p.Apply(context.Background(), bad, opts(false))
+	res, err := h.p.Apply(context.Background(), bad, nil, opts(false))
 	if err != safety.ErrGuardrail {
 		t.Fatalf("want ErrGuardrail, got %v", err)
 	}
@@ -224,7 +224,7 @@ func TestMatrix_GuardrailRefusesBadGateway(t *testing.T) {
 // Row 7: panic removes all managed routes from any state and is idempotent.
 func TestMatrix_PanicIdempotent(t *testing.T) {
 	h := newHarness(t)
-	res, _ := h.p.Apply(context.Background(), desired("1.1.1.0/24", "2.2.2.0/24"), opts(true))
+	res, _ := h.p.Apply(context.Background(), desired("1.1.1.0/24", "2.2.2.0/24"), nil, opts(true))
 	_, _ = h.p.Confirm(res.TxID)
 	if h.prov.CountManaged() != 2 {
 		t.Fatalf("setup: want 2 managed, got %d", h.prov.CountManaged())

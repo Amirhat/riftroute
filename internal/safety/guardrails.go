@@ -27,6 +27,9 @@ func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired [
 	//    on-link path to the gateway and strand everything.
 	if physGW.IsValid() {
 		for _, d := range desired {
+			if d.Table != "" {
+				continue // Model B table routes are isolated; not a main-table capture
+			}
 			pfx, err := netip.ParsePrefix(d.DstCIDR)
 			if err != nil {
 				continue
@@ -44,6 +47,9 @@ func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired [
 	//    bypass silently fails or blackholes.
 	checked := map[string]bool{}
 	for _, d := range desired {
+		if d.Table != "" {
+			continue // a Model B table default intentionally egresses the VPN
+		}
 		if d.Gateway == "" || checked[d.Gateway] {
 			continue
 		}
@@ -69,6 +75,9 @@ func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired [
 	//    route to the peer of an active inbound SSH session (spec §2.4).
 	if peer := sshPeer(); peer.IsValid() {
 		for _, d := range desired {
+			if d.Table != "" {
+				continue
+			}
 			pfx, err := netip.ParsePrefix(d.DstCIDR)
 			if err != nil {
 				continue

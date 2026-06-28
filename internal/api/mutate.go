@@ -59,12 +59,12 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 	if !s.mutationEnabled(w) {
 		return
 	}
-	desired, _, err := s.svc.DesiredManaged(r.Context())
+	desired, rules, _, err := s.svc.DesiredManaged(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	plan, diff := s.proto.Plan(r.Context(), desired)
+	plan, diff := s.proto.Plan(r.Context(), desired, rules)
 	writeJSON(w, http.StatusOK, map[string]any{"plan": plan, "diff": diff})
 }
 
@@ -75,14 +75,14 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	var req applyReq
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
 
-	desired, physGW, err := s.svc.DesiredManaged(r.Context())
+	desired, rules, physGW, err := s.svc.DesiredManaged(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// The outcome (committed / failed / refused-with-violations / pending) is
 	// encoded in res; the request itself succeeded, so always 200.
-	res, _ := s.proto.Apply(r.Context(), desired, s.buildOptions(req, physGW))
+	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(req, physGW))
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, res)
 }
@@ -162,12 +162,12 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			return
 		}
 		// Reconcile to the new enabled set (non-interactive; guard kept).
-		desired, physGW, err := s.svc.DesiredManaged(r.Context())
+		desired, rules, physGW, err := s.svc.DesiredManaged(r.Context())
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		res, _ := s.proto.Apply(r.Context(), desired, s.buildOptions(applyReq{Yes: true}, physGW))
+		res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: true}, physGW))
 		s.BroadcastState(r.Context())
 		writeJSON(w, http.StatusOK, res)
 	}
@@ -203,12 +203,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	profiles, lists, _ := cfg.ToDomain()
 
 	if isTrue(r.URL.Query().Get("dry_run")) {
-		desired, _, derr := s.svc.DesiredFromProfiles(r.Context(), profiles)
+		desired, rules, _, derr := s.svc.DesiredFromProfiles(r.Context(), profiles)
 		if derr != nil {
 			writeErr(w, http.StatusBadRequest, derr)
 			return
 		}
-		plan, diff := s.proto.Plan(r.Context(), desired)
+		plan, diff := s.proto.Plan(r.Context(), desired, rules)
 		resp.Plan, resp.Diff = &plan, &diff
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -222,12 +222,12 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			_ = s.store.UpsertList(l)
 		}
 	}
-	desired, physGW, derr := s.svc.DesiredManaged(r.Context())
+	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
 		writeErr(w, http.StatusBadRequest, derr)
 		return
 	}
-	res, _ := s.proto.Apply(r.Context(), desired, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
+	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
 	resp.Result = &res
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, resp)
