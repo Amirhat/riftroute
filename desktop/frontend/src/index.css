@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Semantic theme tokens (AGENTS §6 / spec §8.3). Dark is the default; light is
+ * a pure variable swap via [data-theme="light"]. Never hardcode a hex in a
+ * component — add or reuse a token here.
+ *
+ * z-index scale is defined as tokens too (mapped into Tailwind as z-dropdown …
+ * z-toast) so runtime overlays never open behind static ones.
+ */
+:root,
+[data-theme='dark'] {
+  --bg: #0f1217;
+  --surface: #161b22;
+  --surface-2: #1c232d;
+  --border: #2a3340;
+  --text: #e6edf3;
+  --muted: #8b98a9;
+  --accent: #4f9cf9;
+  --accent-contrast: #0b1220;
+  --success: #3fb950;
+  --warning: #d29922;
+  --danger: #f85149;
+  --vpn: #a371f7;
+  --direct: #3fb950;
+  --owner-system: #8b98a9;
+  --owner-riftroute: #4f9cf9;
+  --owner-vpn: #a371f7;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surface-2: #eef1f4;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #0969da;
+  --accent-contrast: #ffffff;
+  --success: #1a7f37;
+  --warning: #9a6700;
+  --danger: #cf222e;
+  --vpn: #8250df;
+  --direct: #1a7f37;
+  --owner-system: #59636e;
+  --owner-riftroute: #0969da;
+  --owner-vpn: #8250df;
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/*
+ * Force LTR on every IP/CIDR/route/diff/log container even in an RTL UI
+ * (AGENTS §7 / spec §7.1). Addresses must never mirror. Use logical alignment
+ * so the text still starts at the reading edge.
+ */
+.ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Subtle, theme-aware scrollbars (WebKit / WKWebView + WebKitGTK). */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Don't let the webview show a native text-selection flash on chrome. */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+}

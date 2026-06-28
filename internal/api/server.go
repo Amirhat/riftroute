@@ -1,0 +1,213 @@
+// Package api is the daemon's local control plane: HTTP/JSON over a Unix domain
+// socket plus an SSE event stream, guarded by OS peer-credential authz (spec
+// §11/§12). There is no TCP and no network binding. The desktop app's Go side
+// and the CLI both reach the daemon through this surface via the shared
+// apiclient; the React layer never speaks HTTP/SSE directly.
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/Amirhat/riftroute/internal/core"
+	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/store"
+)
+
+// Server exposes the daemon's core over a UDS.
+type Server struct {
+	svc      *core.Service
+	store    *store.Store
+	hub      *Hub
+	allowUID uint32
+	version  string
+	log      *slog.Logger
+	mux      *http.ServeMux
+}
+
+// NewServer builds the API server. allowUID is the uid permitted to call
+// mutating endpoints (root is always permitted); reads are open to any local
+// peer that can reach the 0600 socket.
+func NewServer(svc *core.Service, st *store.Store, allowUID uint32, version string, logger *slog.Logger) *Server {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	s := &Server{
+		svc: svc, store: st, hub: NewHub(), allowUID: allowUID, version: version, log: logger,
+	}
+	s.routes()
+	return s
+}
+
+// Hub returns the SSE broadcast hub so the daemon can push events.
+func (s *Server) Hub() *Hub { return s.hub }
+
+// Handler returns the bare HTTP handler (for tests via httptest).
+func (s *Server) Handler() http.Handler { return s.mux }
+
+func (s *Server) routes() {
+	s.mux = http.NewServeMux()
+	// Read-only endpoints (M0/M1). Open to any authenticated local peer.
+	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /state", s.handleState)
+	s.mux.HandleFunc("GET /routes", s.handleRoutes)
+	s.mux.HandleFunc("GET /rules", s.handleRules)
+	s.mux.HandleFunc("GET /interfaces", s.handleInterfaces)
+	s.mux.HandleFunc("GET /dns", s.handleDNS)
+	s.mux.HandleFunc("POST /route/explain", s.handleExplain)
+	s.mux.HandleFunc("GET /profiles", s.handleProfiles)
+	s.mux.HandleFunc("GET /audit", s.handleAudit)
+	s.mux.HandleFunc("GET /events", s.handleEvents)
+	// Mutating endpoints land in M2 behind requireWrite.
+}
+
+// Serve runs the HTTP server over ln (a UDS listener) until ctx is canceled. It
+// wraps ln so every accepted connection carries its peer's credentials.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{
+		Handler:           s.mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if cc, ok := c.(*credConn); ok {
+				return context.WithValue(ctx, peerKey{}, peerInfo{uid: cc.uid, gid: cc.gid, err: cc.credErr})
+			}
+			return ctx
+		},
+	}
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+	err := srv.Serve(credListener{Listener: ln})
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+// --- handlers ---
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
+}
+
+func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
+	st, err := s.svc.State(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleRoutes(w http.ResponseWriter, r *http.Request) {
+	family := domain.Family(r.URL.Query().Get("family"))
+	owner := domain.Owner(r.URL.Query().Get("owner"))
+	routes, err := s.svc.Routes(r.Context(), family, owner)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"routes": routes, "count": len(routes)})
+}
+
+func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	family := domain.Family(r.URL.Query().Get("family"))
+	rules, err := s.svc.Rules(r.Context(), family)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"rules": rules, "count": len(rules)})
+}
+
+func (s *Server) handleInterfaces(w http.ResponseWriter, r *http.Request) {
+	ifaces, err := s.svc.Interfaces(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"interfaces": ifaces})
+}
+
+func (s *Server) handleDNS(w http.ResponseWriter, r *http.Request) {
+	dns, err := s.svc.DNS(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dns)
+}
+
+func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Target string `json:"target"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.svc.Explain(r.Context(), body.Target)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"profiles": []domain.Profile{}})
+		return
+	}
+	profs, err := s.store.ListProfiles()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if profs == nil {
+		profs = []domain.Profile{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profiles": profs})
+}
+
+func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
+	var since time.Time
+	if v := r.URL.Query().Get("since"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			since = t
+		}
+	}
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []domain.AuditEvent{}})
+		return
+	}
+	evs, err := s.store.ListAudit(since, 200)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if evs == nil {
+		evs = []domain.AuditEvent{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
+}
+
+// --- json helpers ---
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]string{"error": err.Error()})
+}

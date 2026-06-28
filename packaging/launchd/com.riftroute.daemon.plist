@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd unit for riftrouted (macOS). Installed by `riftroute daemon install`
+  (M1). Runs as root, persistent, restarts on crash. The socket + DB live under
+  system paths (spec §13). Paths are templated at install time.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.riftroute.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/riftrouted</string>
+    <string>-socket</string>
+    <string>/var/run/riftroute.sock</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/riftroute/riftrouted.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/riftroute/riftrouted.err.log</string>
+</dict>
+</plist>

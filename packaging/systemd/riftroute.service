@@ -1,0 +1,19 @@
+# systemd unit for riftrouted (Linux). Installed by `riftroute daemon install`
+# (M1). Runs as root, persistent, restarts on failure. Managed routes persist
+# across a clean restart; they are reconciled/repaired on start (spec §13).
+[Unit]
+Description=RiftRoute split-tunneling routing daemon
+Documentation=https://github.com/Amirhat/riftroute
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/riftrouted -socket /var/run/riftroute.sock
+Restart=on-failure
+RestartSec=2
+# Capabilities: routing mutation needs NET_ADMIN; full root for nft/ip rule.
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

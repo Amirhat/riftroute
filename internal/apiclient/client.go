@@ -1,0 +1,248 @@
+// Package apiclient is the shared Go client for the riftrouted UDS API. Both the
+// CLI and the desktop app's Go side use it (spec §3.5/§11). The React frontend
+// never imports this — it receives data via Wails bindings/events that the
+// desktop Go side feeds from here.
+package apiclient
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/Amirhat/riftroute/internal/domain"
+)
+
+// ErrDaemonUnreachable indicates the daemon could not be contacted (socket
+// missing, connection refused, timeout). Callers map this to a distinct exit
+// code (spec §9).
+var ErrDaemonUnreachable = errors.New("riftrouted is unreachable")
+
+// APIError is a non-2xx response from the daemon.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("api error %d: %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("api error %d", e.StatusCode)
+}
+
+// Client talks to riftrouted over its Unix domain socket.
+type Client struct {
+	socketPath string
+	http       *http.Client
+}
+
+// New builds a client for the daemon socket at socketPath.
+func New(socketPath string) *Client {
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socketPath)
+		},
+		DisableKeepAlives: false,
+	}
+	return &Client{
+		socketPath: socketPath,
+		http:       &http.Client{Transport: tr, Timeout: 15 * time.Second},
+	}
+}
+
+// SocketPath returns the configured socket path.
+func (c *Client) SocketPath() string { return c.socketPath }
+
+func (c *Client) url(path string) string { return "http://unix" + path }
+
+// do performs a request and decodes a JSON body into out (if non-nil).
+func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.url(path), body)
+	if err != nil {
+		return err
+	}
+	if in != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// Transport-level failure: the daemon couldn't be reached.
+		return fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return parseAPIError(resp)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+func parseAPIError(resp *http.Response) error {
+	var e struct {
+		Error string `json:"error"`
+	}
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	_ = json.Unmarshal(b, &e)
+	return &APIError{StatusCode: resp.StatusCode, Message: e.Error}
+}
+
+// --- typed read methods ---
+
+// Ping checks daemon reachability, returning its reported version.
+func (c *Client) Ping(ctx context.Context) (string, error) {
+	var body struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &body); err != nil {
+		return "", err
+	}
+	return body.Version, nil
+}
+
+// State fetches the aggregate daemon state.
+func (c *Client) State(ctx context.Context) (domain.State, error) {
+	var st domain.State
+	err := c.do(ctx, http.MethodGet, "/state", nil, &st)
+	return st, err
+}
+
+// Routes fetches the routing table, optionally filtered.
+func (c *Client) Routes(ctx context.Context, family domain.Family, owner domain.Owner) ([]domain.Route, error) {
+	path := "/routes"
+	q := ""
+	if family != "" {
+		q = "family=" + string(family)
+	}
+	if owner != "" {
+		if q != "" {
+			q += "&"
+		}
+		q += "owner=" + string(owner)
+	}
+	if q != "" {
+		path += "?" + q
+	}
+	var body struct {
+		Routes []domain.Route `json:"routes"`
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &body)
+	return body.Routes, err
+}
+
+// Rules fetches Linux policy rules for a family.
+func (c *Client) Rules(ctx context.Context, family domain.Family) ([]domain.PolicyRule, error) {
+	path := "/rules"
+	if family != "" {
+		path += "?family=" + string(family)
+	}
+	var body struct {
+		Rules []domain.PolicyRule `json:"rules"`
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &body)
+	return body.Rules, err
+}
+
+// Interfaces fetches the interface list.
+func (c *Client) Interfaces(ctx context.Context) ([]domain.Iface, error) {
+	var body struct {
+		Interfaces []domain.Iface `json:"interfaces"`
+	}
+	err := c.do(ctx, http.MethodGet, "/interfaces", nil, &body)
+	return body.Interfaces, err
+}
+
+// DNS fetches resolver configuration.
+func (c *Client) DNS(ctx context.Context) (domain.DNSState, error) {
+	var dns domain.DNSState
+	err := c.do(ctx, http.MethodGet, "/dns", nil, &dns)
+	return dns, err
+}
+
+// Explain asks where traffic to target goes.
+func (c *Client) Explain(ctx context.Context, target string) (domain.RouteExplain, error) {
+	var ex domain.RouteExplain
+	err := c.do(ctx, http.MethodPost, "/route/explain", map[string]string{"target": target}, &ex)
+	return ex, err
+}
+
+// Profiles fetches stored profiles.
+func (c *Client) Profiles(ctx context.Context) ([]domain.Profile, error) {
+	var body struct {
+		Profiles []domain.Profile `json:"profiles"`
+	}
+	err := c.do(ctx, http.MethodGet, "/profiles", nil, &body)
+	return body.Profiles, err
+}
+
+// Audit fetches audit events at or after since.
+func (c *Client) Audit(ctx context.Context, since time.Time) ([]domain.AuditEvent, error) {
+	path := "/audit"
+	if !since.IsZero() {
+		path += "?since=" + since.UTC().Format(time.RFC3339)
+	}
+	var body struct {
+		Events []domain.AuditEvent `json:"events"`
+	}
+	err := c.do(ctx, http.MethodGet, path, nil, &body)
+	return body.Events, err
+}
+
+// Events streams server-sent events, invoking handle for each, until ctx is
+// canceled or the stream errors. The desktop Go side uses this to re-emit Wails
+// runtime events to React.
+func (c *Client) Events(ctx context.Context, handle func(domain.Event)) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url("/events"), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	// No client timeout for the long-lived stream.
+	streamClient := &http.Client{Transport: c.http.Transport}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return parseAPIError(resp)
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !bytes.HasPrefix([]byte(line), []byte("data: ")) {
+			continue // skip blank separators / comments
+		}
+		payload := line[len("data: "):]
+		var ev domain.Event
+		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
+			continue
+		}
+		handle(ev)
+	}
+	if err := sc.Err(); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return ctx.Err()
+}

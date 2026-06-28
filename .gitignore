@@ -1,0 +1,29 @@
+# Binaries
+/bin/
+desktop/build/bin/
+# Stray binaries from `go build ./cmd/<x>` without -o
+/riftroute
+/riftrouted
+*.exe
+
+# Frontend build output & deps (keep the dir for go:embed via dist/gitkeep)
+desktop/frontend/dist/*
+!desktop/frontend/dist/gitkeep
+desktop/frontend/node_modules/
+
+# Local runtime/state artifacts
+*.sock
+*.db
+*.db-wal
+*.db-shm
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Go
+*.test
+*.out
+coverage.*

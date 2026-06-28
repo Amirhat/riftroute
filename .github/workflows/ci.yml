@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  # Pure-logic + engine tests (fake provider, store, config, api, apiclient).
+  # Excludes the GUI package so this job needs no cgo/WebKit.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go vet ./internal/... ./cmd/...
+      - run: go test -race ./internal/... ./cmd/...
+
+  # Linux netns integration tests (real `ip` inside an isolated namespace).
+  # M2+ populates internal/provider/linux; runs under sudo, fully offline.
+  netns:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Run netns tests (if present)
+        run: |
+          if ls ./test/netns/*_test.go >/dev/null 2>&1; then
+            sudo -E env "PATH=$PATH" go test -tags netns ./test/netns/...
+          else
+            echo "no netns tests yet (added in M2); skipping"
+          fi
+
+  # Always-compiles: daemon + CLI build for every target, incl. the Windows
+  # fallback stub (AGENTS §8). cgo off — pure-Go SQLite keeps the core portable.
+  build-core:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Build core (host + cross targets)
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/...
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/...
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o /dev/null ./cmd/...
+
+  # Native GUI build (cgo + WebKit), split per OS (AGENTS §8/§14). macOS is
+  # self-signed ad-hoc here; Developer ID signing is gated on secrets (M7).
+  build-gui:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Linux WebKit deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: Build GUI
+        working-directory: desktop
+        run: |
+          TAGS=""
+          if [ "${{ runner.os }}" = "Linux" ]; then TAGS="-tags webkit2_41"; fi
+          "$(go env GOPATH)/bin/wails" build $TAGS -trimpath -ldflags "-X main.version=ci-${{ github.sha }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: riftroute-gui-${{ matrix.os }}
+          path: desktop/build/bin/
+          if-no-files-found: warn

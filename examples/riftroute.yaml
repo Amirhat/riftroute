@@ -1,0 +1,43 @@
+# RiftRoute declarative config (spec §10). Git-committable; `riftroute apply`
+# reconciles live state to this file via the Apply Protocol (M2+). Validation is
+# read-only and reports line-referenced errors.
+version: 1
+
+settings:
+  ip_version: [v4, v6]
+  default_mode: exclude # exclude | include
+  auto_apply_on_change: true # react to VPN up/down, link, sleep/wake
+  kill_switch: false
+  connectivity_guard:
+    enabled: true
+    anchors: [gateway, "1.1.1.1"]
+    confirm_timeout: 15s # interactive auto-revert
+    guard_window: 30s # non-interactive guard after auto-apply
+
+profiles:
+  - name: work-direct # corp intranet stays direct (bypasses VPN)
+    enabled: true
+    mode: exclude
+    gateway: auto # or "192.168.88.1"
+    priority: 100
+    rules:
+      - { type: cidr, value: "10.0.0.0/8", comment: "corp LAN" }
+      - { type: domain, value: "jira.internal.example.com" }
+    lists: [rfc1918]
+
+  - name: only-tunnel-banking
+    enabled: false
+    mode: include # ONLY these go through the tunnel (Linux Model B)
+    rules:
+      - { type: domain, value: "mybank.example.com" }
+      - { type: asn, value: "AS13335", comment: "Cloudflare" }
+
+lists:
+  - name: rfc1918
+    static:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+  - name: cloudflare-ranges
+    source: "https://www.cloudflare.com/ips-v4"
+    refresh: 24h
