@@ -67,6 +67,12 @@ func (l List) Entries() []string {
 	return out
 }
 
+// SplitDNSRoute selects a resolver for a specific domain suffix (spec §6/§7.6).
+type SplitDNSRoute struct {
+	Domain   string `json:"domain"`
+	Resolver string `json:"resolver"`
+}
+
 // ManagedRoute is a route RiftRoute intends to own (spec §5.1).
 type ManagedRoute struct {
 	Route

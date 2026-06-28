@@ -26,6 +26,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/provider/fake"
 	"github.com/Amirhat/riftroute/internal/reconcile"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -108,11 +109,14 @@ func run() error {
 	// Fake-only debug hook so auto-apply can be demonstrated against a running
 	// daemon by toggling the simulated VPN (never wired for real providers).
 	var ks killswitch.Manager = killswitch.New()
+	var sdns splitdns.Manager = splitdns.New()
 	if fp, ok := prov.(*fake.Provider); ok {
 		srv.SetDebugVPN(fp.SetVPN)
-		ks = &killswitch.Fake{} // never touch a real firewall under -provider fake
+		ks = &killswitch.Fake{}        // never touch a real firewall under -provider fake
+		sdns = &splitdns.FakeManager{} // never touch real system DNS under -provider fake
 	}
 	srv.SetKillSwitch(ks)
+	srv.SetSplitDNS(sdns)
 	svc.SetKillSwitchStatus(func() bool {
 		on, _ := ks.Enabled(context.Background())
 		return on

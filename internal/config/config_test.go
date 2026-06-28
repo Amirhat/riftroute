@@ -124,6 +124,29 @@ settings:
 	}
 }
 
+func TestSplitDNSValidation(t *testing.T) {
+	const src = `version: 1
+settings:
+  split_dns:
+    - domain: corp.example.com
+      resolver: 10.0.0.53
+    - domain: "not a domain"
+      resolver: "not-an-ip"
+`
+	cfg, res := ParseBytes([]byte(src), FormatYAML, "linux")
+	msgs := res.String()
+	if !strings.Contains(msgs, "invalid domain") {
+		t.Errorf("expected domain error, got:\n%s", msgs)
+	}
+	if !strings.Contains(msgs, "resolver must be an IP") {
+		t.Errorf("expected resolver error, got:\n%s", msgs)
+	}
+	routes := cfg.SplitDNSRoutes()
+	if len(routes) != 2 || routes[0].Domain != "corp.example.com" || routes[0].Resolver != "10.0.0.53" {
+		t.Fatalf("split-dns routes = %+v", routes)
+	}
+}
+
 func TestTOMLAccepted(t *testing.T) {
 	const tomlSrc = `version = 1
 [settings]

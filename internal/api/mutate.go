@@ -231,6 +231,19 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
 	resp.Result = &res
+	// Apply per-domain resolver selection (split-DNS) alongside the routes.
+	if s.splitDNS != nil {
+		routes := cfg.SplitDNSRoutes()
+		var serr error
+		if len(routes) == 0 {
+			serr = s.splitDNS.Clear(r.Context())
+		} else {
+			serr = s.splitDNS.Apply(r.Context(), routes)
+		}
+		if serr != nil {
+			s.log.Warn("split-dns apply failed", "err", serr)
+		}
+	}
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, resp)
 }

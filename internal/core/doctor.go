@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"strings"
 
@@ -46,6 +47,19 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 		add("drift", domain.CheckWarn, "reconciliation pending (desired != actual)", "run `riftroute apply` to converge")
 	} else {
 		add("drift", domain.CheckPass, "desired routing matches actual", "")
+	}
+
+	// MTU / blackhole: a tunnel with a notably low MTU can silently drop large
+	// packets; suggest an MSS clamp (spec §7.10).
+	if ifaces, err := s.prov.Interfaces(ctx); err == nil {
+		for _, ifc := range ifaces {
+			if ifc.IsVPN && ifc.Up && ifc.MTU > 0 && ifc.MTU < 1400 {
+				mss := ifc.MTU - 40
+				add("mtu:"+ifc.Name, domain.CheckWarn,
+					fmt.Sprintf("tunnel %s MTU is %d — large packets may blackhole", ifc.Name, ifc.MTU),
+					fmt.Sprintf("clamp TCP MSS to %d (nft/pf MSS clamp) on the tunnel path", mss))
+			}
+		}
 	}
 
 	// Managed next-hops reachable + conflicts.

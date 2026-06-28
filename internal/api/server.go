@@ -18,6 +18,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -38,6 +39,8 @@ type Server struct {
 
 	// killSwitch fences egress to the tunnel when enabled (nil disables the API).
 	killSwitch killswitch.Manager
+	// splitDNS applies per-domain resolver selection (nil = no-op).
+	splitDNS splitdns.Manager
 }
 
 // SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
@@ -46,6 +49,9 @@ func (s *Server) SetDebugVPN(fn func(up bool)) { s.debugVPN = fn }
 
 // SetKillSwitch installs the kill-switch manager (daemon wiring).
 func (s *Server) SetKillSwitch(m killswitch.Manager) { s.killSwitch = m }
+
+// SetSplitDNS installs the split-DNS manager (daemon wiring).
+func (s *Server) SetSplitDNS(m splitdns.Manager) { s.splitDNS = m }
 
 // NewServer builds the API server. allowUID is the uid permitted to call
 // mutating endpoints (root is always permitted); reads are open to any local

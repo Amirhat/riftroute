@@ -120,6 +120,15 @@ func validate(c *Config, lines lineIndex, platform string) Result {
 			add(SevError, fmt.Sprintf("settings.connectivity_guard.anchors[%d]", i), "anchors", fmt.Sprintf("invalid anchor %q (expected \"gateway\" or an IP)", a))
 		}
 	}
+	for i, sd := range c.Settings.SplitDNS {
+		base := fmt.Sprintf("settings.split_dns[%d]", i)
+		if !isValidDomain(sd.Domain) {
+			add(SevError, base+".domain", "split_dns.domain", fmt.Sprintf("invalid domain %q", sd.Domain))
+		}
+		if _, err := netip.ParseAddr(sd.Resolver); err != nil {
+			add(SevError, base+".resolver", "split_dns.resolver", fmt.Sprintf("resolver must be an IP, got %q", sd.Resolver))
+		}
+	}
 
 	// known list names (for profile.lists references)
 	known := map[string]bool{}

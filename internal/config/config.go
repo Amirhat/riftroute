@@ -40,6 +40,13 @@ type Settings struct {
 	AutoApplyOnChange bool              `yaml:"auto_apply_on_change" toml:"auto_apply_on_change"`
 	KillSwitch        bool              `yaml:"kill_switch" toml:"kill_switch"`
 	ConnectivityGuard ConnectivityGuard `yaml:"connectivity_guard" toml:"connectivity_guard"`
+	SplitDNS          []SplitDNSConfig  `yaml:"split_dns" toml:"split_dns"`
+}
+
+// SplitDNSConfig is a per-domain resolver selection (spec §6/§7.6).
+type SplitDNSConfig struct {
+	Domain   string `yaml:"domain" toml:"domain"`
+	Resolver string `yaml:"resolver" toml:"resolver"`
 }
 
 // ConnectivityGuard configures the watchdog/commit-confirm behavior (spec §2).
@@ -152,6 +159,15 @@ func (c *Config) ToDomain() ([]domain.Profile, []domain.List, error) {
 		lists = append(lists, domain.List{Name: lc.Name, Static: lc.Static, Source: lc.Source, Refresh: lc.Refresh})
 	}
 	return profiles, lists, nil
+}
+
+// SplitDNSRoutes returns the configured split-DNS routes as domain entities.
+func (c *Config) SplitDNSRoutes() []domain.SplitDNSRoute {
+	var out []domain.SplitDNSRoute
+	for _, s := range c.Settings.SplitDNS {
+		out = append(out, domain.SplitDNSRoute{Domain: s.Domain, Resolver: s.Resolver})
+	}
+	return out
 }
 
 func orDefault(v, def string) string {
