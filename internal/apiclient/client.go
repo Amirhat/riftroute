@@ -327,6 +327,31 @@ func (c *Client) ApplyConfig(ctx context.Context, data []byte, format string, dr
 	return out, nil
 }
 
+// Lists returns configured lists with cache metadata.
+func (c *Client) Lists(ctx context.Context) ([]domain.List, error) {
+	var body struct {
+		Lists []domain.List `json:"lists"`
+	}
+	err := c.do(ctx, http.MethodGet, "/lists", nil, &body)
+	return body.Lists, err
+}
+
+// RefreshList fetches a single remote list and updates its cache.
+func (c *Client) RefreshList(ctx context.Context, name string) (domain.List, error) {
+	var l domain.List
+	err := c.do(ctx, http.MethodPost, "/lists/"+name+"/refresh", struct{}{}, &l)
+	return l, err
+}
+
+// RefreshAllLists refreshes every remote list, returning the count refreshed.
+func (c *Client) RefreshAllLists(ctx context.Context) (int, error) {
+	var body struct {
+		Refreshed int `json:"refreshed"`
+	}
+	err := c.do(ctx, http.MethodPost, "/lists/refresh", struct{}{}, &body)
+	return body.Refreshed, err
+}
+
 // Snapshots lists snapshot metadata (route payloads omitted).
 func (c *Client) Snapshots(ctx context.Context) ([]domain.Snapshot, error) {
 	var body struct {

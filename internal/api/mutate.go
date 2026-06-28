@@ -235,6 +235,36 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 func isTrue(v string) bool { return v == "1" || v == "true" }
 
+func (s *Server) handleListRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	l, err := s.svc.RefreshList(r.Context(), r.PathValue("name"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, l)
+}
+
+func (s *Server) handleListRefreshAll(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	n, err := s.svc.RefreshAllLists(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, map[string]int{"refreshed": n})
+}
+
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"snapshots": []domain.Snapshot{}})

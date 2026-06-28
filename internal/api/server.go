@@ -74,6 +74,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /diff", s.handleDiff)
 	s.mux.HandleFunc("GET /conflicts", s.handleConflicts)
 	s.mux.HandleFunc("GET /profiles", s.handleProfiles)
+	s.mux.HandleFunc("GET /lists", s.handleLists)
 	s.mux.HandleFunc("GET /audit", s.handleAudit)
 	s.mux.HandleFunc("GET /snapshots", s.handleSnapshots)
 	s.mux.HandleFunc("GET /events", s.handleEvents)
@@ -86,6 +87,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /rollback", s.requireWrite(s.handleRollback))
 	s.mux.HandleFunc("POST /panic", s.requireWrite(s.handlePanic))
 	s.mux.HandleFunc("POST /config", s.requireWrite(s.handleConfig))
+	s.mux.HandleFunc("POST /lists/refresh", s.requireWrite(s.handleListRefreshAll))
+	s.mux.HandleFunc("POST /lists/{name}/refresh", s.requireWrite(s.handleListRefresh))
 	s.mux.HandleFunc("POST /profiles/{name}/enable", s.requireWrite(s.handleProfileToggle(true)))
 	s.mux.HandleFunc("POST /profiles/{name}/disable", s.requireWrite(s.handleProfileToggle(false)))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
@@ -249,6 +252,18 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		profs = []domain.Profile{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"profiles": profs})
+}
+
+func (s *Server) handleLists(w http.ResponseWriter, r *http.Request) {
+	ls, err := s.svc.Lists()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if ls == nil {
+		ls = []domain.List{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lists": ls})
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {

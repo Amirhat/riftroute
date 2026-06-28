@@ -7,11 +7,14 @@ package core
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/dns"
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/lists"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/store"
@@ -27,7 +30,11 @@ type Service struct {
 	started   time.Time
 	now       func() time.Time
 	autoApply bool
+	domains   *dns.Cache
 }
+
+// SetResolver overrides the domain resolver cache (tests).
+func (s *Service) SetResolver(c *dns.Cache) { s.domains = c }
 
 // SetAutoApply records whether the daemon's auto-apply loop is active (surfaced
 // in State for the UI/CLI).
@@ -41,6 +48,7 @@ func New(prov provider.RouteProvider, st *store.Store, version string) *Service 
 		version: version,
 		started: time.Now(),
 		now:     time.Now,
+		domains: dns.NewCache(&dns.SystemResolver{}, 60*time.Second),
 	}
 }
 
@@ -75,6 +83,8 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 		Profiles:      profiles,
 		Platform:      s.Platform(),
 		PolicyRouting: s.prov.Capabilities().PolicyRouting,
+		Lists:         s.listsMap(),
+		Domains:       s.resolveDomains(ctx, profiles),
 		VPNGatewayV4:  vg4, VPNIfaceV4: vi4,
 		VPNGatewayV6: vg6, VPNIfaceV6: vi6,
 		Now: s.now(),
@@ -85,6 +95,129 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
 	routes, rules, err := routing.BuildDesired(in)
 	return routes, rules, gw4, err
+}
+
+// resolveDomains resolves the enabled profiles' domain rules via the TTL cache,
+// returning domain → resolved IP strings for the engine to expand.
+func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile) map[string][]string {
+	m := map[string][]string{}
+	if s.domains == nil {
+		return m
+	}
+	for _, p := range profiles {
+		if !p.Enabled {
+			continue
+		}
+		for _, r := range p.Rules {
+			if r.Type != domain.RuleDomain {
+				continue
+			}
+			var ss []string
+			for _, a := range s.domains.Lookup(ctx, r.Value) {
+				ss = append(ss, a.String())
+			}
+			m[r.Value] = ss
+		}
+	}
+	return m
+}
+
+// DomainHosts returns the distinct domains referenced by enabled profiles (for
+// the background re-resolver).
+func (s *Service) DomainHosts() []string {
+	seen := map[string]bool{}
+	var out []string
+	if s.store == nil {
+		return out
+	}
+	profs, _ := s.store.ListProfiles()
+	for _, p := range profs {
+		if !p.Enabled {
+			continue
+		}
+		for _, r := range p.Rules {
+			if r.Type == domain.RuleDomain && !seen[r.Value] {
+				seen[r.Value] = true
+				out = append(out, r.Value)
+			}
+		}
+	}
+	return out
+}
+
+// RefreshDomains re-resolves all referenced domains and reports whether any
+// answer changed (the daemon reconciles on change — spec §6 re-resolver).
+func (s *Service) RefreshDomains(ctx context.Context) bool {
+	if s.domains == nil {
+		return false
+	}
+	return s.domains.Refresh(ctx, s.DomainHosts())
+}
+
+// listsMap returns each list's effective entries (static + fetched) for the
+// engine to expand profile list references.
+func (s *Service) listsMap() map[string][]string {
+	m := map[string][]string{}
+	if s.store == nil {
+		return m
+	}
+	ls, _ := s.store.ListLists()
+	for _, l := range ls {
+		m[l.Name] = l.Entries()
+	}
+	return m
+}
+
+// Lists returns all configured lists (with cache metadata).
+func (s *Service) Lists() ([]domain.List, error) {
+	if s.store == nil {
+		return nil, nil
+	}
+	return s.store.ListLists()
+}
+
+// RefreshList fetches a remote list and updates its cache + checksum (spec §5.1).
+func (s *Service) RefreshList(ctx context.Context, name string) (domain.List, error) {
+	if s.store == nil {
+		return domain.List{}, fmt.Errorf("no store")
+	}
+	l, err := s.store.GetList(name)
+	if err != nil {
+		return domain.List{}, err
+	}
+	if l.Source == "" {
+		return l, fmt.Errorf("list %q is static (no remote source to refresh)", name)
+	}
+	entries, checksum, err := lists.Fetch(ctx, l.Source)
+	if err != nil {
+		return l, err
+	}
+	now := s.now()
+	l.Resolved = entries
+	l.Checksum = checksum
+	l.LastFetched = &now
+	if err := s.store.UpsertList(l); err != nil {
+		return l, err
+	}
+	return l, nil
+}
+
+// RefreshAllLists refreshes every remote list, returning the count refreshed.
+func (s *Service) RefreshAllLists(ctx context.Context) (int, error) {
+	ls, err := s.Lists()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, l := range ls {
+		if l.Source == "" {
+			continue
+		}
+		if _, err := s.RefreshList(ctx, l.Name); err == nil {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // actualManagedRules returns the policy rules RiftRoute owns (proto-tagged).
@@ -261,8 +394,23 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 	out := domain.RouteExplain{Target: target}
 	addr, err := netip.ParseAddr(target)
 	if err != nil {
-		out.Note = "domain resolution not yet supported (M5); enter an IP address"
-		return out, nil
+		// Treat as a domain: resolve and explain the first address (spec §7.2).
+		if s.domains == nil {
+			out.Note = "no resolver available"
+			return out, nil
+		}
+		addrs := s.domains.Lookup(ctx, target)
+		for _, a := range addrs {
+			out.Resolved = append(out.Resolved, a.String())
+		}
+		if len(addrs) == 0 {
+			out.Note = "could not resolve " + target
+			return out, nil
+		}
+		addr = addrs[0]
+		if len(addrs) > 1 {
+			out.Note = "showing the decision for the first of " + fmt.Sprint(len(addrs)) + " resolved addresses"
+		}
 	}
 
 	dec, err := s.prov.LookupRoute(ctx, addr)

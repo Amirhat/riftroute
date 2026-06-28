@@ -129,6 +129,7 @@ func run() error {
 		rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, func() bool { return autoApply })
 		go poller.Run(ctx)
 		go rec.Run(ctx, poller.Events())
+		go domainReresolveLoop(ctx, svc, rec, logger)
 		logger.Info("auto-apply enabled", "poll", pollInterval)
 	}
 
@@ -195,6 +196,24 @@ func broadcastLoop(ctx context.Context, srv *api.Server, interval time.Duration)
 			return
 		case <-t.C:
 			srv.BroadcastState(ctx)
+		}
+	}
+}
+
+// domainReresolveLoop periodically re-resolves domain rules; when a CDN's
+// addresses change it reconciles so the managed routes follow (spec §6).
+func domainReresolveLoop(ctx context.Context, svc *core.Service, rec *reconcile.Reconciler, logger *slog.Logger) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if svc.RefreshDomains(ctx) {
+				logger.Info("domain addresses changed; reconciling")
+				_, _ = rec.Reconcile(ctx)
+			}
 		}
 	}
 }

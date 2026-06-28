@@ -50,10 +50,21 @@ type Profile struct {
 type List struct {
 	Name        string     `json:"name"`
 	Static      []string   `json:"static,omitempty"`
-	Source      string     `json:"source,omitempty"`  // remote URL
+	Source      string     `json:"source,omitempty"`  // remote URL (https only)
 	Refresh     string     `json:"refresh,omitempty"` // duration string, e.g. "24h"
 	LastFetched *time.Time `json:"last_fetched,omitempty"`
 	Checksum    string     `json:"checksum,omitempty"`
+	// Resolved is the cached set of CIDR/IP entries fetched from a remote source.
+	Resolved []string `json:"resolved,omitempty"`
+}
+
+// Entries returns the list's effective CIDR/IP entries: inline static plus the
+// last-fetched remote cache.
+func (l List) Entries() []string {
+	out := make([]string, 0, len(l.Static)+len(l.Resolved))
+	out = append(out, l.Static...)
+	out = append(out, l.Resolved...)
+	return out
 }
 
 // ManagedRoute is a route RiftRoute intends to own (spec §5.1).

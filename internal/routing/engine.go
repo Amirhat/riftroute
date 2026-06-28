@@ -38,6 +38,13 @@ type DesiredInput struct {
 	VPNIfaceV4   string
 	VPNIfaceV6   string
 
+	// Lists maps a list name to its effective CIDR/IP entries (static + the
+	// last-fetched remote cache); profiles reference lists by name (spec §5.1).
+	Lists map[string][]string
+	// Domains maps a domain rule's value to its resolved A/AAAA addresses (spec
+	// §5.1 domain rules); the daemon re-resolves these in the background.
+	Domains map[string][]string
+
 	Platform      string // "darwin" | "linux" | "fake"
 	PolicyRouting bool   // whether Model B (include mode) is available
 	Now           time.Time
@@ -66,6 +73,24 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 		for _, r := range p.Rules {
 			if pfx, fam, ok := ruleToPrefix(r); ok {
 				byFamily[fam] = append(byFamily[fam], pfx)
+				continue
+			}
+			// domain rules expand to their resolved A/AAAA addresses (asn/country
+			// need a GeoIP DB — deferred).
+			if r.Type == domain.RuleDomain {
+				for _, ip := range in.Domains[r.Value] {
+					if pfx, fam, ok := entryToPrefix(ip); ok {
+						byFamily[fam] = append(byFamily[fam], pfx)
+					}
+				}
+			}
+		}
+		// Expand referenced lists (static + fetched remote entries).
+		for _, listName := range p.Lists {
+			for _, e := range in.Lists[listName] {
+				if pfx, fam, ok := entryToPrefix(e); ok {
+					byFamily[fam] = append(byFamily[fam], pfx)
+				}
 			}
 		}
 
@@ -322,6 +347,16 @@ func ruleToPrefix(r domain.Rule) (netip.Prefix, domain.Family, bool) {
 	default:
 		return netip.Prefix{}, "", false
 	}
+}
+
+func entryToPrefix(s string) (netip.Prefix, domain.Family, bool) {
+	if pfx, err := netip.ParsePrefix(s); err == nil {
+		return pfx, famOf(pfx.Addr()), true
+	}
+	if a, err := netip.ParseAddr(s); err == nil {
+		return netip.PrefixFrom(a, a.BitLen()), famOf(a), true
+	}
+	return netip.Prefix{}, "", false
 }
 
 func resolveGateway(profileGW string, fam domain.Family, in DesiredInput) (netip.Addr, string, error) {

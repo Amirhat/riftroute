@@ -229,6 +229,20 @@ func (s *Store) ListLists() ([]domain.List, error) {
 	return out, rows.Err()
 }
 
+// GetList returns a list by name.
+func (s *Store) GetList(name string) (domain.List, error) {
+	var doc string
+	err := s.db.QueryRow(`SELECT doc FROM lists WHERE name=?`, name).Scan(&doc)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.List{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.List{}, err
+	}
+	var l domain.List
+	return l, json.Unmarshal([]byte(doc), &l)
+}
+
 // UpsertList inserts or replaces a list (keyed by name).
 func (s *Store) UpsertList(l domain.List) error {
 	doc, err := json.Marshal(l)

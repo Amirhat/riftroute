@@ -51,6 +51,49 @@ func TestBuildDesiredExcludeModelA(t *testing.T) {
 	}
 }
 
+func TestBuildDesiredExpandsLists(t *testing.T) {
+	p := domain.Profile{
+		ID: "p1", Name: "work", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}},
+		Lists: []string{"rfc1918"},
+	}
+	in := testInput(p)
+	in.Lists = map[string][]string{"rfc1918": {"172.16.0.0/12", "192.168.0.0/16"}}
+	routes, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range routes {
+		got[r.DstCIDR] = true
+	}
+	for _, want := range []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"} {
+		if !got[want] {
+			t.Fatalf("expected route %s from rule+list expansion, got %+v", want, routes)
+		}
+	}
+}
+
+func TestBuildDesiredExpandsDomains(t *testing.T) {
+	p := domain.Profile{
+		ID: "p1", Name: "cdn", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "cdn.example.com"}},
+	}
+	in := testInput(p)
+	in.Domains = map[string][]string{"cdn.example.com": {"1.2.3.4", "5.6.7.8"}}
+	routes, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range routes {
+		got[r.DstCIDR] = true
+	}
+	if !got["1.2.3.4/32"] || !got["5.6.7.8/32"] {
+		t.Fatalf("domain rule should expand to its resolved /32s, got %+v", routes)
+	}
+}
+
 func TestBuildDesiredSkipsDisabled(t *testing.T) {
 	disabled := excludeProfile()
 	disabled.Enabled = false
