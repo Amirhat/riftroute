@@ -21,6 +21,7 @@ import (
 const (
 	ModelBTable      = "5252"
 	ModelBRulePrio   = 5252
+	ModelBMark       = "0x5252" // fwmark for per-app traffic steered into the table
 	modelBProfileTag = "model-b"
 )
 
@@ -99,22 +100,27 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			if !in.PolicyRouting {
 				return nil, nil, fmt.Errorf("profile %q: include mode requires policy routing (Linux Model B); unavailable on this platform", p.Name)
 			}
+			addRule := func(pr domain.PolicyRule, fam domain.Family) {
+				k := RuleKey(pr)
+				if seenRule[k] {
+					return
+				}
+				seenRule[k] = true
+				rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: p.ID, CreatedAt: in.Now})
+				includeFamilies[fam] = true
+			}
 			for fam, prefixes := range byFamily {
 				for _, pfx := range Aggregate(prefixes) {
-					pr := domain.PolicyRule{
-						Priority: ModelBRulePrio,
-						Selector: "to " + pfx.String(),
-						Table:    ModelBTable,
-						Family:   fam,
-						Proto:    protoFor(in.Platform),
-					}
-					k := RuleKey(pr)
-					if seenRule[k] {
-						continue
-					}
-					seenRule[k] = true
-					rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: p.ID, CreatedAt: in.Now})
-					includeFamilies[fam] = true
+					addRule(domain.PolicyRule{Priority: ModelBRulePrio, Selector: "to " + pfx.String(), Table: ModelBTable, Family: fam, Proto: protoFor(in.Platform)}, fam)
+				}
+			}
+			// Per-app routing: an `app` rule steers the app's fwmark-tagged traffic
+			// into the tunnel table (spec §6). The cgroup→mark classification is set
+			// up separately by the nft marker (internal/perapp).
+			for _, r := range p.Rules {
+				if r.Type == domain.RuleApp {
+					addRule(domain.PolicyRule{Priority: ModelBRulePrio, Selector: "fwmark " + ModelBMark, Table: ModelBTable, Family: domain.FamilyV4, Proto: protoFor(in.Platform)}, domain.FamilyV4)
+					break
 				}
 			}
 		default: // exclude / Model A

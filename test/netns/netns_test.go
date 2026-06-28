@@ -259,6 +259,32 @@ func TestNetnsKillSwitch(t *testing.T) {
 	}
 }
 
+// Per-app routing (routing half): a real fwmark `ip rule` into the tunnel table.
+func TestNetnsFwmarkRule(t *testing.T) {
+	prov := linux.New()
+	ctx := context.Background()
+	mr := domain.ManagedRule{PolicyRule: domain.PolicyRule{
+		Selector: "fwmark " + routing.ModelBMark, Table: routing.ModelBTable,
+		Priority: routing.ModelBRulePrio, Family: domain.FamilyV4, Proto: "riftroute",
+	}}
+	if err := prov.AddRule(ctx, mr); err != nil {
+		t.Fatalf("AddRule fwmark: %v", err)
+	}
+	rules, _ := prov.ListRules(ctx, domain.FamilyV4)
+	found := false
+	for _, r := range rules {
+		if strings.Contains(r.Selector, "fwmark") && r.Table == routing.ModelBTable {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("fwmark rule not present: %+v", rules)
+	}
+	if err := prov.DelRule(ctx, mr); err != nil {
+		t.Fatalf("DelRule: %v", err)
+	}
+}
+
 // Panic removes real managed routes and is idempotent.
 func TestNetnsPanicIdempotent(t *testing.T) {
 	p, prov, _, _ := newProtocol(t)

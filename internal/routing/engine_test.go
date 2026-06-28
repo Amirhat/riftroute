@@ -2,6 +2,7 @@ package routing
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,38 @@ func TestBuildDesiredIncludeModelB(t *testing.T) {
 	def := routes[0].Route
 	if def.DstCIDR != "0.0.0.0/0" || def.Table != ModelBTable || def.Iface != "utun3" || def.Gateway != "10.8.0.1" {
 		t.Fatalf("table default wrong: %+v", def)
+	}
+}
+
+func TestBuildDesiredAppRuleEmitsFwmark(t *testing.T) {
+	in := testInput(domain.Profile{
+		ID: "p2", Name: "apps-tunnel", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{
+			{Type: domain.RuleApp, Value: "firefox"},
+			{Type: domain.RuleCIDR, Value: "1.1.1.0/24"},
+		},
+	})
+	in.PolicyRouting = true
+	in.VPNGatewayV4 = netip.MustParseAddr("10.8.0.1")
+	in.VPNIfaceV4 = "utun3"
+	_, rules, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawFwmark, sawCIDR bool
+	for _, r := range rules {
+		if strings.Contains(r.Selector, "fwmark") && r.Table == ModelBTable {
+			sawFwmark = true
+		}
+		if r.Selector == "to 1.1.1.0/24" {
+			sawCIDR = true
+		}
+	}
+	if !sawFwmark {
+		t.Fatalf("app rule should emit a fwmark rule, got %+v", rules)
+	}
+	if !sawCIDR {
+		t.Fatalf("cidr rule should still emit a to-rule, got %+v", rules)
 	}
 }
 
