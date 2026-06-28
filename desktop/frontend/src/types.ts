@@ -81,6 +81,7 @@ export interface State {
   profiles: ProfileStatus[]
   drift: DriftStatus
   managed_route_count: number
+  auto_apply: boolean
   generated_at: string
 }
 

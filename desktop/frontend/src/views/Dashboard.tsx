@@ -49,7 +49,18 @@ function DashboardContent({ state }: { state: State }) {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {/* Daemon */}
         <Card>
-          <CardHeader title="Daemon" hint={<Badge tone={degraded ? 'danger' : 'success'}><Dot tone={degraded ? 'danger' : 'success'} />{state.health.daemon}</Badge>} />
+          <CardHeader
+            title="Daemon"
+            hint={
+              <div className="flex items-center gap-2">
+                <Badge tone={state.auto_apply ? 'accent' : 'muted'}>auto-apply {state.auto_apply ? 'on' : 'off'}</Badge>
+                <Badge tone={degraded ? 'danger' : 'success'}>
+                  <Dot tone={degraded ? 'danger' : 'success'} />
+                  {state.health.daemon}
+                </Badge>
+              </div>
+            }
+          />
           <div className="grid grid-cols-2 gap-4 p-4 sm:grid-cols-4">
             <Field label="Provider" value={state.health.provider} />
             <Field label="Version" value={state.health.version} />

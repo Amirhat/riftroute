@@ -19,9 +19,11 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/api"
 	"github.com/Amirhat/riftroute/internal/core"
+	"github.com/Amirhat/riftroute/internal/netmon"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/provider/fake"
+	"github.com/Amirhat/riftroute/internal/reconcile"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
@@ -43,6 +45,8 @@ func run() error {
 		providerName string
 		logLevel     string
 		pushInterval time.Duration
+		autoApply    bool
+		pollInterval time.Duration
 		showVersion  bool
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
@@ -50,6 +54,8 @@ func run() error {
 	flag.StringVar(&providerName, "provider", "fake", "route provider: fake|auto (M0 default: fake)")
 	flag.StringVar(&logLevel, "log", "info", "log level: debug|info|warn|error")
 	flag.DurationVar(&pushInterval, "push-interval", 3*time.Second, "state broadcast interval for live UI (0 disables)")
+	flag.BoolVar(&autoApply, "auto-apply", true, "reconcile automatically on network changes (VPN up/down, etc.)")
+	flag.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "network-change poll interval")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -94,8 +100,15 @@ func run() error {
 		logger.Info("reconciled ownership on startup", "re-added", added, "removed", removed)
 	}
 
+	svc.SetAutoApply(autoApply)
 	allowUID := uint32(os.Getuid())
 	srv := api.NewServer(svc, st, proto, allowUID, version, logger)
+
+	// Fake-only debug hook so auto-apply can be demonstrated against a running
+	// daemon by toggling the simulated VPN (never wired for real providers).
+	if fp, ok := prov.(*fake.Provider); ok {
+		srv.SetDebugVPN(fp.SetVPN)
+	}
 
 	ln, err := listen(socketPath, logger)
 	if err != nil {
@@ -107,6 +120,16 @@ func run() error {
 
 	if pushInterval > 0 {
 		go broadcastLoop(ctx, srv, pushInterval)
+	}
+
+	// Auto-apply: watch for network changes and reconcile safely (guard kept,
+	// manual confirm skipped). Routing keeps working with no UI open (spec §3.1).
+	if autoApply {
+		poller := netmon.NewPoller(prov, pollInterval)
+		rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, func() bool { return autoApply })
+		go poller.Run(ctx)
+		go rec.Run(ctx, poller.Events())
+		logger.Info("auto-apply enabled", "poll", pollInterval)
 	}
 
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version, "uid", allowUID)

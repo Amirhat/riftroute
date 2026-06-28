@@ -59,5 +59,8 @@ type State struct {
 	Profiles          []ProfileStatus `json:"profiles"`
 	Drift             DriftStatus     `json:"drift"`
 	ManagedRouteCount int             `json:"managed_route_count"`
-	GeneratedAt       time.Time       `json:"generated_at"`
+	// AutoApply reports whether the daemon reconciles automatically on network
+	// changes (spec §6 v1 / §10 settings.auto_apply_on_change).
+	AutoApply   bool      `json:"auto_apply"`
+	GeneratedAt time.Time `json:"generated_at"`
 }

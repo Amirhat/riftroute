@@ -30,7 +30,15 @@ type Server struct {
 	version  string
 	log      *slog.Logger
 	mux      *http.ServeMux
+
+	// debugVPN, if set (fake provider only), toggles the simulated VPN so the
+	// auto-apply path can be demonstrated against a running daemon. nil in prod.
+	debugVPN func(up bool)
 }
+
+// SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
+// fake). It enables live auto-apply demos without touching real networking.
+func (s *Server) SetDebugVPN(fn func(up bool)) { s.debugVPN = fn }
 
 // NewServer builds the API server. allowUID is the uid permitted to call
 // mutating endpoints (root is always permitted); reads are open to any local
@@ -79,6 +87,18 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /config", s.requireWrite(s.handleConfig))
 	s.mux.HandleFunc("POST /profiles/{name}/enable", s.requireWrite(s.handleProfileToggle(true)))
 	s.mux.HandleFunc("POST /profiles/{name}/disable", s.requireWrite(s.handleProfileToggle(false)))
+	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
+	s.mux.HandleFunc("POST /debug/vpn", s.requireWrite(s.handleDebugVPN))
+}
+
+func (s *Server) handleDebugVPN(w http.ResponseWriter, r *http.Request) {
+	if s.debugVPN == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("debug endpoint not enabled (fake provider only)"))
+		return
+	}
+	up := r.URL.Query().Get("up") != "false"
+	s.debugVPN(up)
+	writeJSON(w, http.StatusOK, map[string]any{"vpn_up": up})
 }
 
 // Serve runs the HTTP server over ln (a UDS listener) until ctx is canceled. It

@@ -21,12 +21,17 @@ func pid() int { return os.Getpid() }
 
 // Service is the headless application core.
 type Service struct {
-	prov    provider.RouteProvider
-	store   *store.Store
-	version string
-	started time.Time
-	now     func() time.Time
+	prov      provider.RouteProvider
+	store     *store.Store
+	version   string
+	started   time.Time
+	now       func() time.Time
+	autoApply bool
 }
+
+// SetAutoApply records whether the daemon's auto-apply loop is active (surfaced
+// in State for the UI/CLI).
+func (s *Service) SetAutoApply(on bool) { s.autoApply = on }
 
 // New builds a Service over a provider and store.
 func New(prov provider.RouteProvider, st *store.Store, version string) *Service {
@@ -155,6 +160,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Profiles:          profs,
 		Drift:             drift,
 		ManagedRouteCount: managed,
+		AutoApply:         s.autoApply,
 		GeneratedAt:       s.now(),
 	}, nil
 }
@@ -200,9 +206,10 @@ func (s *Service) DNS(ctx context.Context) (domain.DNSState, error) {
 	return s.prov.DNSConfig(ctx)
 }
 
-// Explain answers "where does traffic to target go?". In M0 it returns the
-// kernel's decision; the simulated decision + drift detection arrive with the
-// routing engine (M1+). Domain targets are not yet resolved (M5).
+// Explain answers "where does traffic to target go, and why?" — the killer
+// debugging tool (spec §7.2): the kernel's real decision beside RiftRoute's
+// simulated decision over desired state, with drift highlighted. Domain targets
+// are not yet resolved (M5).
 func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExplain, error) {
 	out := domain.RouteExplain{Target: target}
 	addr, err := netip.ParseAddr(target)
@@ -210,12 +217,50 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 		out.Note = "domain resolution not yet supported (M5); enter an IP address"
 		return out, nil
 	}
+
 	dec, err := s.prov.LookupRoute(ctx, addr)
 	if err != nil {
 		return out, err
 	}
 	out.Kernel = dec
+
+	// Simulated decision: LPM over (current foreign routes + desired managed
+	// routes) — i.e. what the table would be once reconciled to desired.
+	fam := domain.FamilyV4
+	if addr.Is6() {
+		fam = domain.FamilyV6
+	}
+	cur, _ := s.prov.ListRoutes(ctx, fam)
+	overlay := make([]domain.Route, 0, len(cur))
+	for _, r := range cur {
+		if r.Owner != domain.OwnerRiftRoute {
+			overlay = append(overlay, r)
+		}
+	}
+	if desired, _, derr := s.DesiredManaged(ctx); derr == nil {
+		for _, mr := range desired {
+			if mr.Route.Family == fam {
+				overlay = append(overlay, mr.Route)
+			}
+		}
+	}
+	vpnByIface := s.vpnByIface(ctx)
+	sim := routing.Simulate(overlay, addr, vpnByIface)
+	out.Simulated = &sim
+	out.Drift = routing.Drift(dec, sim)
 	return out, nil
+}
+
+func (s *Service) vpnByIface(ctx context.Context) map[string]bool {
+	m := map[string]bool{}
+	ifaces, err := s.prov.Interfaces(ctx)
+	if err != nil {
+		return m
+	}
+	for _, ifc := range ifaces {
+		m[ifc.Name] = ifc.IsVPN
+	}
+	return m
 }
 
 // Diff computes the desired-vs-actual difference over MANAGED routes (spec §7.3).
