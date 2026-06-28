@@ -225,6 +225,52 @@ func (s *Service) RefreshAllLists(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// computeDrift returns the desired-vs-actual delta over managed routes+rules —
+// the single source of truth for the drift shown in State, the doctor, and the
+// dashboard. Skipped (empty) when no profiles exist.
+func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.ManagedRoute) domain.DriftStatus {
+	d := domain.DriftStatus{}
+	if s.store == nil {
+		return d
+	}
+	profs, _ := s.store.ListProfiles()
+	if len(profs) == 0 {
+		return d
+	}
+	dRoutes, dRules, _, err := s.DesiredFromProfiles(ctx, profs)
+	if err != nil {
+		return d
+	}
+	plan := routing.Reconcile(dRoutes, actualRoutes, dRules, s.actualManagedRules(ctx), s.Platform())
+	for _, op := range plan.Ops {
+		switch op.Kind {
+		case domain.OpAddRoute, domain.OpAddRule:
+			d.Adds++
+		case domain.OpDelRoute, domain.OpDelRule:
+			d.Dels++
+		}
+	}
+	d.Pending = len(plan.Ops) > 0
+	return d
+}
+
+// actualManagedRoutes returns the kernel routes RiftRoute owns.
+func (s *Service) actualManagedRoutes(ctx context.Context) []domain.ManagedRoute {
+	var out []domain.ManagedRoute
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, err := s.prov.ListRoutes(ctx, fam)
+		if err != nil {
+			continue
+		}
+		for _, r := range rs {
+			if r.Owner == domain.OwnerRiftRoute {
+				out = append(out, domain.ManagedRoute{Route: r, ProfileID: r.Profile})
+			}
+		}
+	}
+	return out
+}
+
 // actualManagedRules returns the policy rules RiftRoute owns (proto-tagged).
 func (s *Service) actualManagedRules(ctx context.Context) []domain.ManagedRule {
 	var out []domain.ManagedRule
@@ -300,23 +346,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 
 	// Live drift: desired (enabled profiles) vs actual managed. Skipped when no
 	// profiles exist to avoid resolving the gateway on every state push.
-	drift := domain.DriftStatus{}
-	if s.store != nil {
-		if profs, _ := s.store.ListProfiles(); len(profs) > 0 {
-			if dRoutes, dRules, _, derr := s.DesiredFromProfiles(ctx, profs); derr == nil {
-				plan := routing.Reconcile(dRoutes, actualManaged, dRules, s.actualManagedRules(ctx), s.Platform())
-				for _, op := range plan.Ops {
-					switch op.Kind {
-					case domain.OpAddRoute, domain.OpAddRule:
-						drift.Adds++
-					case domain.OpDelRoute, domain.OpDelRule:
-						drift.Dels++
-					}
-				}
-				drift.Pending = len(plan.Ops) > 0
-			}
-		}
-	}
+	drift := s.computeDrift(ctx, actualManaged)
 
 	dns, _ := s.prov.DNSConfig(ctx)
 

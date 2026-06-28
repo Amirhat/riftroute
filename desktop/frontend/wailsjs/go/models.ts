@@ -51,6 +51,7 @@ export namespace domain {
 	    family: string;
 	    owner: string;
 	    proto?: string;
+	    table?: string;
 	    profile?: string;
 	    profile_id: string;
 	    // Go type: time
@@ -69,6 +70,7 @@ export namespace domain {
 	        this.family = source["family"];
 	        this.owner = source["owner"];
 	        this.proto = source["proto"];
+	        this.table = source["table"];
 	        this.profile = source["profile"];
 	        this.profile_id = source["profile_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
@@ -281,6 +283,7 @@ export namespace domain {
 	    family: string;
 	    owner: string;
 	    proto?: string;
+	    table?: string;
 	    profile?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -296,6 +299,7 @@ export namespace domain {
 	        this.family = source["family"];
 	        this.owner = source["owner"];
 	        this.proto = source["proto"];
+	        this.table = source["table"];
 	        this.profile = source["profile"];
 	    }
 	}
@@ -370,6 +374,65 @@ export namespace domain {
 		}
 	}
 	
+	export class DoctorCheck {
+	    name: string;
+	    status: string;
+	    detail: string;
+	    fix?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new DoctorCheck(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.detail = source["detail"];
+	        this.fix = source["fix"];
+	    }
+	}
+	export class DoctorReport {
+	    checks: DoctorCheck[];
+	    pass: number;
+	    warn: number;
+	    fail: number;
+	    ok: boolean;
+	    // Go type: time
+	    generated_at: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new DoctorReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.checks = this.convertValues(source["checks"], DoctorCheck);
+	        this.pass = source["pass"];
+	        this.warn = source["warn"];
+	        this.fail = source["fail"];
+	        this.ok = source["ok"];
+	        this.generated_at = this.convertValues(source["generated_at"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DriftStatus {
 	    pending: boolean;
 	    adds: number;
@@ -430,6 +493,22 @@ export namespace domain {
 	        this.addrs = source["addrs"];
 	        this.mtu = source["mtu"];
 	        this.is_vpn = source["is_vpn"];
+	    }
+	}
+	export class Leak {
+	    kind: string;
+	    severity: string;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Leak(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.kind = source["kind"];
+	        this.severity = source["severity"];
+	        this.detail = source["detail"];
 	    }
 	}
 	
@@ -681,6 +760,8 @@ export namespace domain {
 	    profiles: ProfileStatus[];
 	    drift: DriftStatus;
 	    managed_route_count: number;
+	    auto_apply: boolean;
+	    kill_switch: boolean;
 	    // Go type: time
 	    generated_at: any;
 	
@@ -699,6 +780,8 @@ export namespace domain {
 	        this.profiles = this.convertValues(source["profiles"], ProfileStatus);
 	        this.drift = this.convertValues(source["drift"], DriftStatus);
 	        this.managed_route_count = source["managed_route_count"];
+	        this.auto_apply = source["auto_apply"];
+	        this.kill_switch = source["kill_switch"];
 	        this.generated_at = this.convertValues(source["generated_at"], null);
 	    }
 	

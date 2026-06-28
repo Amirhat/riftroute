@@ -6,10 +6,11 @@ import {
   ProfilesIcon,
   HistoryIcon,
   SettingsIcon,
+  DiagnosticsIcon,
   ShieldIcon,
 } from './icons'
 
-export type View = 'dashboard' | 'routes' | 'explain' | 'profiles' | 'history' | 'settings'
+export type View = 'dashboard' | 'routes' | 'explain' | 'profiles' | 'diagnostics' | 'history' | 'settings'
 
 type Item = {
   view: View
@@ -23,6 +24,7 @@ const items: Item[] = [
   { view: 'routes', label: 'Routing Table', icon: TableIcon },
   { view: 'explain', label: 'Explain', icon: ExplainIcon },
   { view: 'profiles', label: 'Profiles', icon: ProfilesIcon },
+  { view: 'diagnostics', label: 'Diagnostics', icon: DiagnosticsIcon },
   { view: 'history', label: 'History', icon: HistoryIcon },
   { view: 'settings', label: 'Settings', icon: SettingsIcon, soon: 'M7' },
 ]

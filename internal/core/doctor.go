@@ -41,13 +41,11 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 		add("dns", domain.CheckWarn, "no DNS resolvers detected", "check your network's DNS configuration")
 	}
 
-	// Ownership drift (desired vs actual).
-	if d, err := s.Diff(ctx); err == nil {
-		if d.InSync {
-			add("drift", domain.CheckPass, "desired routing matches actual", "")
-		} else {
-			add("drift", domain.CheckWarn, "reconciliation pending (desired != actual)", "run `riftroute apply` to converge")
-		}
+	// Ownership drift (desired vs actual) — same computation as State/dashboard.
+	if dr := s.computeDrift(ctx, s.actualManagedRoutes(ctx)); dr.Pending {
+		add("drift", domain.CheckWarn, "reconciliation pending (desired != actual)", "run `riftroute apply` to converge")
+	} else {
+		add("drift", domain.CheckPass, "desired routing matches actual", "")
 	}
 
 	// Managed next-hops reachable + conflicts.

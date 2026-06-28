@@ -62,6 +62,12 @@ export const SettingsIcon = (p: IconProps) => (
   </svg>
 )
 
+export const DiagnosticsIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M3 12h4l2 5 4-12 2 7h6" />
+  </svg>
+)
+
 export const ShieldIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" />

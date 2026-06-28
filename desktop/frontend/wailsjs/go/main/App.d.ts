@@ -11,7 +11,11 @@ export function Explain(arg1:string):Promise<domain.RouteExplain>;
 
 export function GetAudit():Promise<Array<domain.AuditEvent>>;
 
+export function GetDoctor():Promise<domain.DoctorReport>;
+
 export function GetInterfaces():Promise<Array<domain.Iface>>;
+
+export function GetLeaks():Promise<Array<domain.Leak>>;
 
 export function GetProfiles():Promise<Array<domain.Profile>>;
 
@@ -28,6 +32,8 @@ export function PlanPreview():Promise<domain.Plan>;
 export function Reachable():Promise<boolean>;
 
 export function Rollback(arg1:string):Promise<domain.TxResult>;
+
+export function SetKillSwitch(arg1:boolean):Promise<boolean>;
 
 export function SetProfileEnabled(arg1:string,arg2:boolean):Promise<safety.Result>;
 

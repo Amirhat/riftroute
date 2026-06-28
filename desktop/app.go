@@ -208,6 +208,34 @@ func (a *App) SetProfileEnabled(name string, enable bool) (safety.Result, error)
 	return a.client.SetProfileEnabled(ctx, name, enable, false)
 }
 
+// GetDoctor runs the diagnostics battery.
+func (a *App) GetDoctor() (domain.DoctorReport, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Doctor(ctx)
+}
+
+// GetLeaks returns detected IPv6/DNS leaks.
+func (a *App) GetLeaks() ([]domain.Leak, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	lk, err := a.client.Leaks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if lk == nil {
+		lk = []domain.Leak{}
+	}
+	return lk, nil
+}
+
+// SetKillSwitch enables/disables the egress kill switch and returns its state.
+func (a *App) SetKillSwitch(enabled bool) (bool, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SetKillSwitch(ctx, enabled)
+}
+
 // GetSnapshots lists snapshot metadata.
 func (a *App) GetSnapshots() ([]domain.Snapshot, error) {
 	ctx, cancel := a.call()

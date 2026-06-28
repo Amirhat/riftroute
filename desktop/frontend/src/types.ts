@@ -82,6 +82,7 @@ export interface State {
   drift: DriftStatus
   managed_route_count: number
   auto_apply: boolean
+  kill_switch: boolean
   generated_at: string
 }
 
@@ -191,4 +192,26 @@ export interface Snapshot {
   id: string
   created_at: string
   reason: string
+}
+
+export interface DoctorCheck {
+  name: string
+  status: 'pass' | 'warn' | 'fail'
+  detail: string
+  fix?: string
+}
+
+export interface DoctorReport {
+  checks: DoctorCheck[]
+  pass: number
+  warn: number
+  fail: number
+  ok: boolean
+  generated_at: string
+}
+
+export interface Leak {
+  kind: string
+  severity: string
+  detail: string
 }

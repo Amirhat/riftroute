@@ -18,8 +18,16 @@ export function GetAudit() {
   return window['go']['main']['App']['GetAudit']();
 }
 
+export function GetDoctor() {
+  return window['go']['main']['App']['GetDoctor']();
+}
+
 export function GetInterfaces() {
   return window['go']['main']['App']['GetInterfaces']();
+}
+
+export function GetLeaks() {
+  return window['go']['main']['App']['GetLeaks']();
 }
 
 export function GetProfiles() {
@@ -52,6 +60,10 @@ export function Reachable() {
 
 export function Rollback(arg1) {
   return window['go']['main']['App']['Rollback'](arg1);
+}
+
+export function SetKillSwitch(arg1) {
+  return window['go']['main']['App']['SetKillSwitch'](arg1);
 }
 
 export function SetProfileEnabled(arg1, arg2) {

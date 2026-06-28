@@ -9,6 +9,9 @@ import {
   GetProfiles,
   GetAudit,
   GetSnapshots,
+  GetDoctor,
+  GetLeaks,
+  SetKillSwitch,
   PlanPreview,
   Apply,
   Confirm,
@@ -28,6 +31,8 @@ import type {
   ApplyResult,
   AuditEvent,
   Snapshot,
+  DoctorReport,
+  Leak,
 } from '../types'
 
 export const api = {
@@ -38,6 +43,9 @@ export const api = {
   profiles: () => GetProfiles() as unknown as Promise<Profile[]>,
   audit: () => GetAudit() as unknown as Promise<AuditEvent[]>,
   snapshots: () => GetSnapshots() as unknown as Promise<Snapshot[]>,
+  doctor: () => GetDoctor() as unknown as Promise<DoctorReport>,
+  leaks: () => GetLeaks() as unknown as Promise<Leak[]>,
+  setKillSwitch: (enabled: boolean) => SetKillSwitch(enabled) as Promise<boolean>,
   plan: () => PlanPreview() as unknown as Promise<Plan>,
   apply: (yes: boolean, confirmTimeoutSec: number) => Apply(yes, confirmTimeoutSec) as unknown as Promise<ApplyResult>,
   confirm: (txID: string) => Confirm(txID) as unknown as Promise<string>,
