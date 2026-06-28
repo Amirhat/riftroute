@@ -82,6 +82,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /conflicts", s.handleConflicts)
 	s.mux.HandleFunc("GET /doctor", s.handleDoctor)
 	s.mux.HandleFunc("GET /leaks", s.handleLeaks)
+	s.mux.HandleFunc("GET /flows", s.handleFlows)
 	s.mux.HandleFunc("GET /profiles", s.handleProfiles)
 	s.mux.HandleFunc("GET /lists", s.handleLists)
 	s.mux.HandleFunc("GET /audit", s.handleAudit)
@@ -274,6 +275,18 @@ func (s *Server) handleLeaks(w http.ResponseWriter, r *http.Request) {
 		lk = []domain.Leak{}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"leaks": lk})
+}
+
+func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
+	flows, err := s.svc.Flows(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if flows == nil {
+		flows = []domain.Flow{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"flows": flows})
 }
 
 func (s *Server) handleLists(w http.ResponseWriter, r *http.Request) {

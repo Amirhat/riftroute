@@ -352,6 +352,15 @@ func (c *Client) Leaks(ctx context.Context) ([]domain.Leak, error) {
 	return body.Leaks, err
 }
 
+// Flows lists active connections correlated to their route/interface.
+func (c *Client) Flows(ctx context.Context) ([]domain.Flow, error) {
+	var body struct {
+		Flows []domain.Flow `json:"flows"`
+	}
+	err := c.do(ctx, http.MethodGet, "/flows", nil, &body)
+	return body.Flows, err
+}
+
 // Lists returns configured lists with cache metadata.
 func (c *Client) Lists(ctx context.Context) ([]domain.List, error) {
 	var body struct {

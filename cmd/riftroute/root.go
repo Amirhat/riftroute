@@ -52,6 +52,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(routeCmd())
 	root.AddCommand(diffCmd())
 	root.AddCommand(doctorCmd())
+	root.AddCommand(flowsCmd())
 	root.AddCommand(profileCmd())
 	root.AddCommand(listCmd())
 	root.AddCommand(applyCmd())
