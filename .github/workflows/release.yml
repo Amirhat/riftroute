@@ -29,7 +29,13 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Resolve VERSION
-        run: echo "VERSION=${GITHUB_REF_NAME#v}${{ github.event.inputs.version }}" | sed 's/=v\?/=/' >> "$GITHUB_ENV"
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "VERSION=${V#v}" >> "$GITHUB_ENV"
       - name: Build cross binaries + checksums
         run: make dist VERSION="${VERSION:-0.0.0}"
       - name: Build .deb (amd64 + arm64)
@@ -126,8 +132,8 @@ jobs:
       - name: Flatten + final checksums
         run: |
           mkdir -p release
-          find artifacts -type f -exec cp {} release/ \;
-          (cd release && sha256sum riftroute_* RiftRoute_* RiftRoute-* riftroute_*.deb 2>/dev/null > checksums.txt || true)
+          find artifacts -type f ! -name checksums.txt -exec cp {} release/ \;
+          (cd release && find . -maxdepth 1 -type f -printf '%f\n' | sort | xargs sha256sum > checksums.txt)
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
