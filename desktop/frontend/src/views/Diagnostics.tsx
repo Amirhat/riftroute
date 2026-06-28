@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Skeleton } from '../components/ui'
+import { ConfirmModal } from '../components/ConfirmModal'
 import type { DoctorCheck } from '../types'
 
 export function Diagnostics() {
@@ -9,6 +11,7 @@ export function Diagnostics() {
   const doctorQ = useQuery({ queryKey: ['doctor'], queryFn: api.doctor })
   const leaksQ = useQuery({ queryKey: ['leaks'], queryFn: api.leaks })
   const stateQ = useStateQuery()
+  const [confirmKill, setConfirmKill] = useState(false)
 
   const rerun = () => {
     qc.invalidateQueries({ queryKey: ['doctor'] })
@@ -16,14 +19,18 @@ export function Diagnostics() {
   }
 
   const killOn = stateQ.data?.kill_switch ?? false
-  async function toggleKill() {
-    if (!killOn && !confirm('Enable the kill switch? This blocks all egress except through the tunnel until disabled.')) return
+  async function setKill(enabled: boolean) {
     try {
-      await api.setKillSwitch(!killOn)
+      await api.setKillSwitch(enabled)
     } finally {
       qc.invalidateQueries({ queryKey: stateKey })
       rerun()
     }
+  }
+  function toggleKill() {
+    // Enabling is destructive (fences egress) → confirm first; disabling is safe.
+    if (killOn) void setKill(false)
+    else setConfirmKill(true)
   }
 
   const rep = doctorQ.data
@@ -83,6 +90,19 @@ export function Diagnostics() {
           </div>
         )}
       </Card>
+
+      <ConfirmModal
+        open={confirmKill}
+        danger
+        title="Enable kill switch"
+        message="This blocks all egress except through the tunnel until disabled. A reconnect path (loopback, tunnel, gateway/LAN, DHCP) stays open."
+        confirmLabel="Enable"
+        onConfirm={() => {
+          setConfirmKill(false)
+          void setKill(true)
+        }}
+        onCancel={() => setConfirmKill(false)}
+      />
     </div>
   )
 }

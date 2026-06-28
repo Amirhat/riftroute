@@ -77,7 +77,7 @@ export function Sidebar({
 
       <div className="border-t border-line px-4 py-3 text-[11px] text-muted">
         <div>version {version}</div>
-        <div className="mt-0.5">read-only · M1 core</div>
+        <div className="mt-0.5">split-tunnel controller</div>
       </div>
     </aside>
   )

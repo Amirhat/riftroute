@@ -10,6 +10,7 @@ import { Diagnostics } from './views/Diagnostics'
 import { History } from './views/History'
 import { Placeholder } from './views/Placeholder'
 import { Badge, Dot } from './components/ui'
+import { ConfirmModal } from './components/ConfirmModal'
 import { onConnection, onMenu, onState } from './lib/events'
 import { api } from './lib/api'
 import { stateKey } from './lib/queries'
@@ -32,6 +33,7 @@ export default function App() {
   const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem('rr-theme') as Theme) || 'dark')
   const [reachable, setReachable] = useState(true)
   const [version, setVersion] = useState('')
+  const [confirmPanic, setConfirmPanic] = useState(false)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -83,14 +85,7 @@ export default function App() {
               {reachable ? 'daemon connected' : 'daemon offline'}
             </Badge>
             <button
-              onClick={async () => {
-                if (!confirm('Flush ALL RiftRoute-managed routes and restore baseline?')) return
-                try {
-                  await api.panic()
-                } finally {
-                  qc.invalidateQueries()
-                }
-              }}
+              onClick={() => setConfirmPanic(true)}
               title="Remove all managed routes, restore baseline"
               className="rounded-lg border border-danger/50 px-3 py-1.5 text-sm font-medium text-danger hover:bg-danger/10"
             >
@@ -109,6 +104,22 @@ export default function App() {
           <ViewRouter view={view} />
         </main>
       </div>
+      <ConfirmModal
+        open={confirmPanic}
+        danger
+        title="Panic — flush all managed routes"
+        message="Remove ALL RiftRoute-managed routes and restore the baseline. This is immediate and affects every profile."
+        confirmLabel="Flush all"
+        onConfirm={async () => {
+          setConfirmPanic(false)
+          try {
+            await api.panic()
+          } finally {
+            qc.invalidateQueries()
+          }
+        }}
+        onCancel={() => setConfirmPanic(false)}
+      />
     </div>
   )
 }

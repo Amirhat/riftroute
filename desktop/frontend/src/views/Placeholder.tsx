@@ -6,8 +6,10 @@ export function Placeholder({ title, milestone }: { title: string; milestone: st
       <Card className="max-w-md p-8 text-center">
         <div className="text-lg font-semibold text-default">{title}</div>
         <p className="mt-2 text-sm text-muted">
-          This screen lands in <span className="font-mono text-accent">{milestone}</span>. The read-only core (M1)
-          ships first so nothing here can ever change your routing.
+          Settings are managed declaratively in the config file
+          (<span className="font-mono text-accent">riftroute.yaml</span>) and via the
+          <span className="font-mono text-accent"> riftroute</span> CLI. An in-app editor is
+          planned for <span className="font-mono text-accent">{milestone}</span>.
         </p>
       </Card>
     </div>
