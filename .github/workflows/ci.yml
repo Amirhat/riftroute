@@ -12,6 +12,21 @@ env:
   GO_VERSION: "1.25.x"
 
 jobs:
+  # Frontend headless smoke tests (Vitest + jsdom) + production build. No WebKit.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - run: npm test
+      - run: npm run build
+
   # Pure-logic + engine tests (fake provider, store, config, api, apiclient).
   # Excludes the GUI package so this job needs no cgo/WebKit.
   test:
