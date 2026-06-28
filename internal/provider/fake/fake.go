@@ -27,6 +27,11 @@ type Provider struct {
 	physIface  string
 	caps       domain.Capabilities
 	managedKey map[string]bool // routeKey -> owned, for FlushOwned/ownership
+
+	// failure injection (tests): a CIDR present here makes the matching op error,
+	// to exercise mid-apply rollback (spec §2.5).
+	failAdd map[string]bool
+	failDel map[string]bool
 }
 
 // New returns a fake provider seeded with a realistic split-tunnel scenario: a
@@ -36,6 +41,8 @@ type Provider struct {
 func New() *Provider {
 	p := &Provider{
 		managedKey: map[string]bool{},
+		failAdd:    map[string]bool{},
+		failDel:    map[string]bool{},
 		physGW: map[domain.Family]netip.Addr{
 			domain.FamilyV4: netip.MustParseAddr("192.168.1.1"),
 		},
@@ -181,6 +188,9 @@ func (p *Provider) LookupRoute(_ context.Context, dst netip.Addr) (domain.RouteD
 func (p *Provider) AddRoute(_ context.Context, r domain.ManagedRoute) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.failAdd[r.Route.DstCIDR] {
+		return fmt.Errorf("fake: injected AddRoute failure for %s", r.Route.DstCIDR)
+	}
 	rt := r.Route
 	rt.Owner = domain.OwnerRiftRoute
 	rt.Proto = "riftroute"
@@ -199,6 +209,9 @@ func (p *Provider) AddRoute(_ context.Context, r domain.ManagedRoute) error {
 func (p *Provider) DelRoute(_ context.Context, r domain.ManagedRoute) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.failDel[r.Route.DstCIDR] {
+		return fmt.Errorf("fake: injected DelRoute failure for %s", r.Route.DstCIDR)
+	}
 	rt := r.Route
 	rt.Owner = domain.OwnerRiftRoute
 	key := routeKey(rt)
@@ -252,6 +265,33 @@ func (p *Provider) FlushOwned(_ context.Context) error {
 	p.rules = kept
 	p.managedKey = map[string]bool{}
 	return nil
+}
+
+// FailAddRoute makes a subsequent AddRoute for cidr return an error (tests).
+func (p *Provider) FailAddRoute(cidr string, fail bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.failAdd[cidr] = fail
+}
+
+// FailDelRoute makes a subsequent DelRoute for cidr return an error (tests).
+func (p *Provider) FailDelRoute(cidr string, fail bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.failDel[cidr] = fail
+}
+
+// CountManaged returns how many RiftRoute-owned routes are currently installed.
+func (p *Provider) CountManaged() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := 0
+	for _, r := range append(append([]domain.Route{}, p.routesV4...), p.routesV6...) {
+		if r.Owner == domain.OwnerRiftRoute {
+			n++
+		}
+	}
+	return n
 }
 
 // --- test/dev helpers (not part of RouteProvider) ---
