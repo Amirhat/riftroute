@@ -25,6 +25,9 @@ func IsPrivileged() bool { return os.Geteuid() == 0 }
 // systemSocket is where the installed (root) daemon listens.
 const systemSocket = "/var/run/riftroute.sock"
 
+// SystemSocket returns the socket path the installed root daemon listens on.
+func SystemSocket() string { return systemSocket }
+
 // ClientSocket resolves the socket an unprivileged client (CLI/GUI) should dial:
 // an explicit RIFTROUTE_SOCKET override, else the installed system socket when
 // present, else the per-user dev socket. This lets the GUI/CLI reach a
