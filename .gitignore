@@ -30,3 +30,6 @@ coverage.*
 
 # Release artifacts
 dist/
+
+# Wails frontend dep-hash marker
+desktop/frontend/package.json.md5
