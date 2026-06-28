@@ -178,6 +178,13 @@ func (c *Client) DNS(ctx context.Context) (domain.DNSState, error) {
 	return dns, err
 }
 
+// Diff fetches the desired-vs-actual diff over managed routes.
+func (c *Client) Diff(ctx context.Context) (domain.Diff, error) {
+	var d domain.Diff
+	err := c.do(ctx, http.MethodGet, "/diff", nil, &d)
+	return d, err
+}
+
 // Explain asks where traffic to target goes.
 func (c *Client) Explain(ctx context.Context, target string) (domain.RouteExplain, error) {
 	var ex domain.RouteExplain

@@ -30,7 +30,7 @@ var g globals
 func client() *apiclient.Client {
 	sock := g.socket
 	if sock == "" {
-		sock = platform.DefaultPaths().Socket
+		sock = platform.ClientSocket()
 	}
 	return apiclient.New(sock)
 }
@@ -48,6 +48,9 @@ func rootCmd() *cobra.Command {
 	root.PersistentFlags().BoolVar(&g.json, "json", false, "output machine-readable JSON")
 
 	root.AddCommand(statusCmd())
+	root.AddCommand(tableCmd())
+	root.AddCommand(routeCmd())
+	root.AddCommand(diffCmd())
 	root.AddCommand(versionCmd())
 	return root
 }

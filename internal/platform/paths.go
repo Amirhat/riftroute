@@ -22,6 +22,24 @@ type Paths struct {
 // IsPrivileged reports whether the process is running as root.
 func IsPrivileged() bool { return os.Geteuid() == 0 }
 
+// systemSocket is where the installed (root) daemon listens.
+const systemSocket = "/var/run/riftroute.sock"
+
+// ClientSocket resolves the socket an unprivileged client (CLI/GUI) should dial:
+// an explicit RIFTROUTE_SOCKET override, else the installed system socket when
+// present, else the per-user dev socket. This lets the GUI/CLI reach a
+// root-installed daemon while still working in same-user dev mode (spec §4.4
+// note; resolves the M0 dev-vs-prod path mismatch).
+func ClientSocket() string {
+	if s := os.Getenv("RIFTROUTE_SOCKET"); s != "" {
+		return s
+	}
+	if _, err := os.Stat(systemSocket); err == nil {
+		return systemSocket
+	}
+	return DefaultPaths().Socket
+}
+
 // DefaultPaths returns production paths when running as root, and per-user dev
 // paths otherwise (so M0 needs no root). Explicit flags override these.
 func DefaultPaths() Paths {

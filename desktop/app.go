@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -28,11 +27,7 @@ func NewApp() *App { return &App{} }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	sock := os.Getenv("RIFTROUTE_SOCKET")
-	if sock == "" {
-		sock = platform.DefaultPaths().Socket
-	}
-	a.client = apiclient.New(sock)
+	a.client = apiclient.New(platform.ClientSocket())
 
 	ec, cancel := context.WithCancel(ctx)
 	a.cancelEvents = cancel

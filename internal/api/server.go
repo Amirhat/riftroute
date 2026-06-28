@@ -60,6 +60,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /interfaces", s.handleInterfaces)
 	s.mux.HandleFunc("GET /dns", s.handleDNS)
 	s.mux.HandleFunc("POST /route/explain", s.handleExplain)
+	s.mux.HandleFunc("GET /diff", s.handleDiff)
 	s.mux.HandleFunc("GET /profiles", s.handleProfiles)
 	s.mux.HandleFunc("GET /audit", s.handleAudit)
 	s.mux.HandleFunc("GET /events", s.handleEvents)
@@ -160,6 +161,15 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	d, err := s.svc.Diff(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, d)
 }
 
 func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {

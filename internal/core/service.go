@@ -161,6 +161,33 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 	return out, nil
 }
 
+// Diff computes the desired-vs-actual difference over MANAGED routes (spec §7.3).
+// In M1 there is no reconciler, so desired is empty: a system with no
+// RiftRoute-owned routes is reported InSync. Once the engine lands (M2) desired
+// is derived from enabled profiles and this gains add/change entries.
+func (s *Service) Diff(ctx context.Context) (domain.Diff, error) {
+	var actualManaged []domain.Route
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, err := s.prov.ListRoutes(ctx, fam)
+		if err != nil {
+			continue
+		}
+		for _, r := range rs {
+			if r.Owner == domain.OwnerRiftRoute {
+				actualManaged = append(actualManaged, r)
+			}
+		}
+	}
+	d := domain.Diff{}
+	// desired is empty in M1 → every managed route would be removed to converge.
+	for _, r := range actualManaged {
+		d.Entries = append(d.Entries, domain.DiffEntry{Action: domain.DiffDel, Route: r})
+		d.Dels++
+	}
+	d.InSync = len(d.Entries) == 0
+	return d, nil
+}
+
 func (s *Service) degraded(err error) domain.State {
 	return domain.State{
 		Health: domain.Health{
