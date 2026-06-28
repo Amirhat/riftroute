@@ -275,6 +275,15 @@ func (c *Client) Rollback(ctx context.Context, txID string) (domain.TxResult, er
 	return body.Result, err
 }
 
+// SetKillSwitch enables or disables the egress kill switch.
+func (c *Client) SetKillSwitch(ctx context.Context, enabled bool) (bool, error) {
+	var body struct {
+		KillSwitch bool `json:"kill_switch"`
+	}
+	err := c.do(ctx, http.MethodPost, "/killswitch", map[string]bool{"enabled": enabled}, &body)
+	return body.KillSwitch, err
+}
+
 // Panic flushes all managed routes and restores baseline.
 func (c *Client) Panic(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/panic", struct{}{}, nil)

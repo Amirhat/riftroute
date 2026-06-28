@@ -61,6 +61,8 @@ type State struct {
 	ManagedRouteCount int             `json:"managed_route_count"`
 	// AutoApply reports whether the daemon reconciles automatically on network
 	// changes (spec §6 v1 / §10 settings.auto_apply_on_change).
-	AutoApply   bool      `json:"auto_apply"`
+	AutoApply bool `json:"auto_apply"`
+	// KillSwitch reports whether egress is currently fenced to the tunnel.
+	KillSwitch  bool      `json:"kill_switch"`
 	GeneratedAt time.Time `json:"generated_at"`
 }

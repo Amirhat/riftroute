@@ -16,6 +16,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
@@ -34,11 +35,17 @@ type Server struct {
 	// debugVPN, if set (fake provider only), toggles the simulated VPN so the
 	// auto-apply path can be demonstrated against a running daemon. nil in prod.
 	debugVPN func(up bool)
+
+	// killSwitch fences egress to the tunnel when enabled (nil disables the API).
+	killSwitch killswitch.Manager
 }
 
 // SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
 // fake). It enables live auto-apply demos without touching real networking.
 func (s *Server) SetDebugVPN(fn func(up bool)) { s.debugVPN = fn }
+
+// SetKillSwitch installs the kill-switch manager (daemon wiring).
+func (s *Server) SetKillSwitch(m killswitch.Manager) { s.killSwitch = m }
 
 // NewServer builds the API server. allowUID is the uid permitted to call
 // mutating endpoints (root is always permitted); reads are open to any local
@@ -89,6 +96,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /rollback", s.requireWrite(s.handleRollback))
 	s.mux.HandleFunc("POST /panic", s.requireWrite(s.handlePanic))
 	s.mux.HandleFunc("POST /config", s.requireWrite(s.handleConfig))
+	s.mux.HandleFunc("POST /killswitch", s.requireWrite(s.handleKillSwitch))
 	s.mux.HandleFunc("POST /lists/refresh", s.requireWrite(s.handleListRefreshAll))
 	s.mux.HandleFunc("POST /lists/{name}/refresh", s.requireWrite(s.handleListRefresh))
 	s.mux.HandleFunc("POST /profiles/{name}/enable", s.requireWrite(s.handleProfileToggle(true)))

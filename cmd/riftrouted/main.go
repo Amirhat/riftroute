@@ -19,6 +19,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/api"
 	"github.com/Amirhat/riftroute/internal/core"
+	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/netmon"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/provider"
@@ -106,9 +107,16 @@ func run() error {
 
 	// Fake-only debug hook so auto-apply can be demonstrated against a running
 	// daemon by toggling the simulated VPN (never wired for real providers).
+	var ks killswitch.Manager = killswitch.New()
 	if fp, ok := prov.(*fake.Provider); ok {
 		srv.SetDebugVPN(fp.SetVPN)
+		ks = &killswitch.Fake{} // never touch a real firewall under -provider fake
 	}
+	srv.SetKillSwitch(ks)
+	svc.SetKillSwitchStatus(func() bool {
+		on, _ := ks.Enabled(context.Background())
+		return on
+	})
 
 	ln, err := listen(socketPath, logger)
 	if err != nil {

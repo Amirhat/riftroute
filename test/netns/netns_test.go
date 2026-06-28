@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/provider/linux"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
@@ -235,6 +236,26 @@ func TestNetnsModelBInclude(t *testing.T) {
 	}
 	if out, _ := exec.Command("ip", "route", "show", "table", routing.ModelBTable).CombinedOutput(); strings.TrimSpace(string(out)) != "" {
 		t.Fatalf("panic left routes in table %s: %s", routing.ModelBTable, out)
+	}
+}
+
+// Kill switch on real nftables inside the namespace: enable installs the table,
+// disable removes it. Skips if nft is unavailable.
+func TestNetnsKillSwitch(t *testing.T) {
+	m := killswitch.New() // nftables backend on Linux
+	ctx := context.Background()
+	cfg := killswitch.Config{TunnelIfaces: []string{"dummy0"}, Gateway: "10.0.0.1", LANSubnets: []string{"10.0.0.0/24"}}
+	if err := m.Enable(ctx, cfg); err != nil {
+		t.Skipf("nftables unavailable in this environment: %v", err)
+	}
+	if on, _ := m.Enabled(ctx); !on {
+		t.Fatal("kill switch should report enabled")
+	}
+	if err := m.Disable(ctx); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if on, _ := m.Enabled(ctx); on {
+		t.Fatal("kill switch should report disabled after Disable")
 	}
 }
 

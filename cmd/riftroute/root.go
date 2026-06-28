@@ -56,6 +56,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(listCmd())
 	root.AddCommand(applyCmd())
 	root.AddCommand(panicCmd())
+	root.AddCommand(killswitchCmd())
 	root.AddCommand(snapshotCmd())
 	root.AddCommand(daemonCmd())
 	root.AddCommand(versionCmd())

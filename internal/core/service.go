@@ -24,17 +24,22 @@ func pid() int { return os.Getpid() }
 
 // Service is the headless application core.
 type Service struct {
-	prov      provider.RouteProvider
-	store     *store.Store
-	version   string
-	started   time.Time
-	now       func() time.Time
-	autoApply bool
-	domains   *dns.Cache
+	prov       provider.RouteProvider
+	store      *store.Store
+	version    string
+	started    time.Time
+	now        func() time.Time
+	autoApply  bool
+	domains    *dns.Cache
+	killStatus func() bool
 }
 
 // SetResolver overrides the domain resolver cache (tests).
 func (s *Service) SetResolver(c *dns.Cache) { s.domains = c }
+
+// SetKillSwitchStatus installs a callback reporting whether the kill switch is
+// active, so State can surface it (the manager lives in the daemon).
+func (s *Service) SetKillSwitchStatus(fn func() bool) { s.killStatus = fn }
 
 // SetAutoApply records whether the daemon's auto-apply loop is active (surfaced
 // in State for the UI/CLI).
@@ -341,6 +346,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Drift:             drift,
 		ManagedRouteCount: managed,
 		AutoApply:         s.autoApply,
+		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		GeneratedAt:       s.now(),
 	}, nil
 }
