@@ -41,30 +41,39 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, error) {
 		if !p.Enabled || p.Mode != domain.ModeExclude {
 			continue
 		}
+		// Collect each family's prefixes, then aggregate per family so the kernel
+		// table stays small (spec §5.2). A profile has one gateway/iface per
+		// family, so aggregation preserves attribution and behavior.
+		byFamily := map[domain.Family][]netip.Prefix{}
 		for _, r := range p.Rules {
 			pfx, fam, ok := ruleToPrefix(r)
 			if !ok {
 				continue // domain/asn/country/app: handled in later milestones
 			}
+			byFamily[fam] = append(byFamily[fam], pfx)
+		}
+		for fam, prefixes := range byFamily {
 			gw, iface, err := resolveGateway(p.Gateway, fam, in)
 			if err != nil {
 				return nil, fmt.Errorf("profile %q: %w", p.Name, err)
 			}
-			rt := domain.Route{
-				DstCIDR: pfx.Masked().String(),
-				Gateway: gw.String(),
-				Iface:   iface,
-				Family:  fam,
-				Owner:   domain.OwnerRiftRoute,
-				Proto:   protoFor(in.Platform),
-				Profile: p.ID,
+			for _, pfx := range Aggregate(prefixes) {
+				rt := domain.Route{
+					DstCIDR: pfx.String(),
+					Gateway: gw.String(),
+					Iface:   iface,
+					Family:  fam,
+					Owner:   domain.OwnerRiftRoute,
+					Proto:   protoFor(in.Platform),
+					Profile: p.ID,
+				}
+				k := RouteKey(rt)
+				if seen[k] {
+					continue
+				}
+				seen[k] = true
+				out = append(out, domain.ManagedRoute{Route: rt, ProfileID: p.ID, CreatedAt: in.Now})
 			}
-			k := RouteKey(rt)
-			if seen[k] {
-				continue
-			}
-			seen[k] = true
-			out = append(out, domain.ManagedRoute{Route: rt, ProfileID: p.ID, CreatedAt: in.Now})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].DstCIDR < out[j].DstCIDR })

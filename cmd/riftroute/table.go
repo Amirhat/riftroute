@@ -20,15 +20,27 @@ func tableCmd() *cobra.Command {
 
 func tableShowCmd() *cobra.Command {
 	var (
-		managed bool
-		system  bool
-		v6      bool
+		managed   bool
+		system    bool
+		v6        bool
+		conflicts bool
 	)
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show the routing table (classified by owner)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if conflicts {
+				cs, err := client().Conflicts(cmd.Context())
+				if err != nil {
+					return err
+				}
+				if g.json {
+					return printJSON(cmd.OutOrStdout(), cs)
+				}
+				renderConflicts(cmd, cs)
+				return nil
+			}
 			family := domain.FamilyV4
 			if v6 {
 				family = domain.FamilyV6
@@ -53,8 +65,20 @@ func tableShowCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&managed, "managed", false, "only RiftRoute-owned routes")
 	cmd.Flags().BoolVar(&system, "system", false, "only system routes")
+	cmd.Flags().BoolVar(&conflicts, "conflicts", false, "show overlapping-route conflicts among profiles")
 	cmd.Flags().BoolVarP(&v6, "6", "6", false, "show IPv6 instead of IPv4")
 	return cmd
+}
+
+func renderConflicts(cmd *cobra.Command, cs []domain.Conflict) {
+	out := cmd.OutOrStdout()
+	if len(cs) == 0 {
+		fmt.Fprintln(out, "no conflicts")
+		return
+	}
+	for _, c := range cs {
+		fmt.Fprintf(out, "%s: %s  ⨯  %s\n  %s\n", c.Kind, c.A, c.B, c.Detail)
+	}
 }
 
 func renderRoutes(cmd *cobra.Command, routes []domain.Route) {

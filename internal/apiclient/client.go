@@ -202,6 +202,15 @@ func (c *Client) Diff(ctx context.Context) (domain.Diff, error) {
 	return d, err
 }
 
+// Conflicts fetches overlapping-route conflicts among enabled profiles.
+func (c *Client) Conflicts(ctx context.Context) ([]domain.Conflict, error) {
+	var body struct {
+		Conflicts []domain.Conflict `json:"conflicts"`
+	}
+	err := c.do(ctx, http.MethodGet, "/conflicts", nil, &body)
+	return body.Conflicts, err
+}
+
 // Explain asks where traffic to target goes.
 func (c *Client) Explain(ctx context.Context, target string) (domain.RouteExplain, error) {
 	var ex domain.RouteExplain

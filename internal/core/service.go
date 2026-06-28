@@ -263,6 +263,15 @@ func (s *Service) vpnByIface(ctx context.Context) map[string]bool {
 	return m
 }
 
+// Conflicts reports overlapping desired routes with different next hops (§7.8).
+func (s *Service) Conflicts(ctx context.Context) ([]domain.Conflict, error) {
+	desired, _, err := s.DesiredManaged(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return routing.DetectConflicts(desired), nil
+}
+
 // Diff computes the desired-vs-actual difference over MANAGED routes (spec §7.3).
 // In M1 there is no reconciler, so desired is empty: a system with no
 // RiftRoute-owned routes is reported InSync. Once the engine lands (M2) desired
