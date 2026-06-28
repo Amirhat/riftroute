@@ -22,6 +22,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/provider/fake"
+	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -83,8 +84,18 @@ func run() error {
 	logger.Info("provider selected", "provider", prov.Name())
 
 	svc := core.New(prov, st, version)
+	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, prov.Capabilities().Platform, logger)
+
+	// Crash recovery: re-assert/repair owned routes against the kernel on startup
+	// (spec §2.5/§13). No-op on a fresh DB.
+	if added, removed, rerr := proto.ReconcileOwnership(context.Background()); rerr != nil {
+		logger.Warn("ownership reconcile on startup failed", "err", rerr)
+	} else if added > 0 || removed > 0 {
+		logger.Info("reconciled ownership on startup", "re-added", added, "removed", removed)
+	}
+
 	allowUID := uint32(os.Getuid())
-	srv := api.NewServer(svc, st, allowUID, version, logger)
+	srv := api.NewServer(svc, st, proto, allowUID, version, logger)
 
 	ln, err := listen(socketPath, logger)
 	if err != nil {

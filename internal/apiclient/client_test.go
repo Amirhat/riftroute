@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,12 +13,13 @@ import (
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider/fake"
+	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
 // serveTest spins up the real API server over a real UDS and returns a client
 // pointed at it. Exercises the full transport, including peer-cred (same user).
-func serveTest(t *testing.T) (*Client, *api.Server) {
+func serveTest(t *testing.T) (*Client, *api.Server, *store.Store) {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "rr.sock")
 	ln, err := net.Listen("unix", sock)
@@ -28,8 +30,10 @@ func serveTest(t *testing.T) (*Client, *api.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := core.New(fake.New(), st, "test")
-	srv := api.NewServer(svc, st, 0, "test", nil)
+	prov := fake.New()
+	svc := core.New(prov, st, "test")
+	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, "fake", nil)
+	srv := api.NewServer(svc, st, proto, uint32(os.Getuid()), "test", nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = srv.Serve(ctx, ln) }()
@@ -38,11 +42,11 @@ func serveTest(t *testing.T) (*Client, *api.Server) {
 		_ = ln.Close()
 		_ = st.Close()
 	})
-	return New(sock), srv
+	return New(sock), srv, st
 }
 
 func TestClientReadRoundTrip(t *testing.T) {
-	c, _ := serveTest(t)
+	c, _, _ := serveTest(t)
 	ctx := context.Background()
 
 	ver, err := c.Ping(ctx)
@@ -69,6 +73,53 @@ func TestClientReadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientApplyConfirmPanic(t *testing.T) {
+	c, _, st := serveTest(t)
+	ctx := context.Background()
+
+	// Seed an enabled exclude profile so apply has something to install.
+	if err := st.UpsertProfile(domain.Profile{
+		ID: "p1", Name: "direct", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "9.9.9.0/24"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// dry-run first: plan should show one add, nothing installed.
+	plan, diff, err := c.Plan(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Ops) != 1 || diff.Adds != 1 {
+		t.Fatalf("plan should add 1 route, got ops=%d adds=%d", len(plan.Ops), diff.Adds)
+	}
+
+	// apply (non-interactive), then confirm to resolve promptly.
+	res, err := c.Apply(ctx, ApplyOptions{Yes: true})
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.Status != domain.TxPending || res.TxID == "" {
+		t.Fatalf("apply result: %+v", res)
+	}
+	managed, _ := c.Routes(ctx, domain.FamilyV4, domain.OwnerRiftRoute)
+	if len(managed) != 1 || managed[0].DstCIDR != "9.9.9.0/24" {
+		t.Fatalf("expected the bypass route installed, got %+v", managed)
+	}
+	if result, err := c.Confirm(ctx, res.TxID); err != nil || result != domain.TxCommitted {
+		t.Fatalf("confirm: result=%s err=%v", result, err)
+	}
+
+	// panic removes it.
+	if err := c.Panic(ctx); err != nil {
+		t.Fatal(err)
+	}
+	managed, _ = c.Routes(ctx, domain.FamilyV4, domain.OwnerRiftRoute)
+	if len(managed) != 0 {
+		t.Fatalf("panic should remove managed routes, got %+v", managed)
+	}
+}
+
 func TestClientUnreachable(t *testing.T) {
 	c := New(filepath.Join(t.TempDir(), "nonexistent.sock"))
 	_, err := c.Ping(context.Background())
@@ -78,7 +129,7 @@ func TestClientUnreachable(t *testing.T) {
 }
 
 func TestClientEventsStream(t *testing.T) {
-	c, srv := serveTest(t)
+	c, srv, _ := serveTest(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 

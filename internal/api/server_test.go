@@ -21,7 +21,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	svc := core.New(fake.New(), st, "test")
-	srv := NewServer(svc, st, 0, "test", nil)
+	srv := NewServer(svc, st, nil, 0, "test", nil)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts

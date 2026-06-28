@@ -51,6 +51,10 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(tableCmd())
 	root.AddCommand(routeCmd())
 	root.AddCommand(diffCmd())
+	root.AddCommand(profileCmd())
+	root.AddCommand(applyCmd())
+	root.AddCommand(panicCmd())
+	root.AddCommand(snapshotCmd())
 	root.AddCommand(daemonCmd())
 	root.AddCommand(versionCmd())
 	return root

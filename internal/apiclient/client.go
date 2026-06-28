@@ -16,8 +16,25 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/safety"
 )
+
+// ConfigResult is the response to a declarative config apply.
+type ConfigResult struct {
+	Issues []config.Issue `json:"issues,omitempty"`
+	Plan   *domain.Plan   `json:"plan,omitempty"`
+	Diff   *domain.Diff   `json:"diff,omitempty"`
+	Result *safety.Result `json:"result,omitempty"`
+}
+
+// ApplyOptions are the wire options for an apply request.
+type ApplyOptions struct {
+	DryRun            bool `json:"dry_run"`
+	Yes               bool `json:"yes"`
+	ConfirmTimeoutSec int  `json:"confirm_timeout_sec"`
+}
 
 // ErrDaemonUnreachable indicates the daemon could not be contacted (socket
 // missing, connection refused, timeout). Callers map this to a distinct exit
@@ -212,6 +229,96 @@ func (c *Client) Audit(ctx context.Context, since time.Time) ([]domain.AuditEven
 	}
 	err := c.do(ctx, http.MethodGet, path, nil, &body)
 	return body.Events, err
+}
+
+// Plan returns the dry-run plan + diff for the current enabled profiles.
+func (c *Client) Plan(ctx context.Context) (domain.Plan, domain.Diff, error) {
+	var body struct {
+		Plan domain.Plan `json:"plan"`
+		Diff domain.Diff `json:"diff"`
+	}
+	err := c.do(ctx, http.MethodPost, "/plan", struct{}{}, &body)
+	return body.Plan, body.Diff, err
+}
+
+// Apply reconciles to the enabled profiles via the Apply Protocol.
+func (c *Client) Apply(ctx context.Context, opts ApplyOptions) (safety.Result, error) {
+	var res safety.Result
+	err := c.do(ctx, http.MethodPost, "/apply", opts, &res)
+	return res, err
+}
+
+// Confirm keeps a pending interactive change.
+func (c *Client) Confirm(ctx context.Context, txID string) (domain.TxResult, error) {
+	var body struct {
+		Result domain.TxResult `json:"result"`
+	}
+	err := c.do(ctx, http.MethodPost, "/confirm", map[string]string{"tx_id": txID}, &body)
+	return body.Result, err
+}
+
+// Rollback reverts a pending change immediately.
+func (c *Client) Rollback(ctx context.Context, txID string) (domain.TxResult, error) {
+	var body struct {
+		Result domain.TxResult `json:"result"`
+	}
+	err := c.do(ctx, http.MethodPost, "/rollback", map[string]string{"tx_id": txID}, &body)
+	return body.Result, err
+}
+
+// Panic flushes all managed routes and restores baseline.
+func (c *Client) Panic(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/panic", struct{}{}, nil)
+}
+
+// SetProfileEnabled enables or disables a profile by name and reconciles.
+func (c *Client) SetProfileEnabled(ctx context.Context, name string, enable bool) (safety.Result, error) {
+	action := "disable"
+	if enable {
+		action = "enable"
+	}
+	var res safety.Result
+	err := c.do(ctx, http.MethodPost, "/profiles/"+name+"/"+action, struct{}{}, &res)
+	return res, err
+}
+
+// ApplyConfig sends a declarative config file for validation + reconcile. When
+// the config has errors the result carries line-referenced Issues and the call
+// returns an APIError (status 400) — but the ConfigResult is still populated.
+func (c *Client) ApplyConfig(ctx context.Context, data []byte, format string, dryRun, yes bool) (ConfigResult, error) {
+	path := "/config?format=" + format
+	if dryRun {
+		path += "&dry_run=1"
+	}
+	if yes {
+		path += "&yes=1"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url(path), bytes.NewReader(data))
+	if err != nil {
+		return ConfigResult{}, err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return ConfigResult{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
+	}
+	defer resp.Body.Close()
+	var out ConfigResult
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = json.Unmarshal(body, &out)
+	if resp.StatusCode >= 400 {
+		return out, &APIError{StatusCode: resp.StatusCode, Message: "config validation failed"}
+	}
+	return out, nil
+}
+
+// Snapshots lists snapshot metadata (route payloads omitted).
+func (c *Client) Snapshots(ctx context.Context) ([]domain.Snapshot, error) {
+	var body struct {
+		Snapshots []domain.Snapshot `json:"snapshots"`
+	}
+	err := c.do(ctx, http.MethodGet, "/snapshots", nil, &body)
+	return body.Snapshots, err
 }
 
 // Events streams server-sent events, invoking handle for each, until ctx is

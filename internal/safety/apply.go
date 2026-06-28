@@ -78,12 +78,13 @@ const (
 )
 
 type pendingTx struct {
-	id      string
-	plan    domain.Plan
-	decided chan decision
-	cancel  context.CancelFunc
-	done    chan struct{}
-	result  domain.TxResult
+	id          string
+	plan        domain.Plan
+	interactive bool
+	decided     chan decision
+	cancel      context.CancelFunc
+	done        chan struct{}
+	result      domain.TxResult
 }
 
 func (pt *pendingTx) decide(d decision) {
@@ -161,13 +162,23 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, opt
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 
-	// One unresolved transaction at a time (spec §11 serialized applies).
+	// Serialize applies (spec §11). An interactive change awaiting confirmation
+	// blocks new applies; a non-interactive change is just guarding in the
+	// background, so a new apply supersedes it (commit it, stop its guard).
 	p.txmu.Lock()
-	if len(p.pending) > 0 {
-		p.txmu.Unlock()
-		return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: ErrApplyInProgress.Error()}, ErrApplyInProgress
+	var supersede []*pendingTx
+	for _, pt := range p.pending {
+		if pt.interactive {
+			p.txmu.Unlock()
+			return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: ErrApplyInProgress.Error()}, ErrApplyInProgress
+		}
+		supersede = append(supersede, pt)
 	}
 	p.txmu.Unlock()
+	for _, pt := range supersede {
+		pt.decide(decCommit)
+		<-pt.done
+	}
 
 	// Snapshot (restore point of last resort behind the inverse).
 	if p.store != nil {
@@ -192,7 +203,7 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, opt
 	// ARM watchdog + commit-confirm and resolve in the background.
 	txID := p.nextTxID()
 	ctxTx, cancel := context.WithCancel(context.Background())
-	pt := &pendingTx{id: txID, plan: plan, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
+	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
 	p.register(pt)
 
 	prober := p.newProber()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider"
+	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -41,6 +42,41 @@ func New(prov provider.RouteProvider, st *store.Store, version string) *Service 
 // Provider exposes the underlying provider (used by the daemon for wiring).
 func (s *Service) Provider() provider.RouteProvider { return s.prov }
 
+// Platform reports the provider platform ("darwin"|"linux"|"fake").
+func (s *Service) Platform() string { return s.prov.Capabilities().Platform }
+
+// Store exposes the persistence layer (used by the daemon for wiring).
+func (s *Service) Store() *store.Store { return s.store }
+
+// DesiredManaged builds the managed routes implied by the enabled profiles,
+// resolving the physical gateway from the provider (spec §2.2 step 1 / §4.4). It
+// also returns the v4 physical gateway for guardrail checks.
+func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, netip.Addr, error) {
+	var profiles []domain.Profile
+	if s.store != nil {
+		profiles, _ = s.store.ListProfiles()
+	}
+	return s.DesiredFromProfiles(ctx, profiles)
+}
+
+// DesiredFromProfiles builds desired managed routes from an explicit profile set
+// (used by config dry-run before anything is persisted).
+func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, netip.Addr, error) {
+	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
+	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	in := routing.DesiredInput{
+		Profiles: profiles,
+		Platform: s.Platform(),
+		Now:      s.now(),
+	}
+	if err4 == nil {
+		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
+	}
+	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
+	desired, err := routing.BuildDesired(in)
+	return desired, gw4, err
+}
+
 // State assembles the full aggregate state for the dashboard/status (spec §11).
 func (s *Service) State(ctx context.Context) (domain.State, error) {
 	ifaces, err := s.prov.Interfaces(ctx)
@@ -64,10 +100,31 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		defaultFor(v6, domain.FamilyV6, "::/0", vpnByIface),
 	}
 
-	managed := 0
+	var actualManaged []domain.ManagedRoute
 	for _, r := range append(append([]domain.Route{}, v4...), v6...) {
 		if r.Owner == domain.OwnerRiftRoute {
-			managed++
+			actualManaged = append(actualManaged, domain.ManagedRoute{Route: r, ProfileID: r.Profile})
+		}
+	}
+	managed := len(actualManaged)
+
+	// Live drift: desired (enabled profiles) vs actual managed. Skipped when no
+	// profiles exist to avoid resolving the gateway on every state push.
+	drift := domain.DriftStatus{}
+	if s.store != nil {
+		if profs, _ := s.store.ListProfiles(); len(profs) > 0 {
+			if desired, _, derr := s.DesiredFromProfiles(ctx, profs); derr == nil {
+				plan := routing.Reconcile(desired, actualManaged, s.Platform())
+				for _, op := range plan.Ops {
+					switch op.Kind {
+					case domain.OpAddRoute:
+						drift.Adds++
+					case domain.OpDelRoute:
+						drift.Dels++
+					}
+				}
+				drift.Pending = len(plan.Ops) > 0
+			}
 		}
 	}
 
@@ -96,7 +153,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Defaults:          defaults,
 		DNS:               dns,
 		Profiles:          profs,
-		Drift:             domain.DriftStatus{}, // reconciler-driven (M2+)
+		Drift:             drift,
 		ManagedRouteCount: managed,
 		GeneratedAt:       s.now(),
 	}, nil

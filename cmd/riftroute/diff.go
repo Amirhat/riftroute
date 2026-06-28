@@ -21,7 +21,7 @@ func diffCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 			if d.InSync {
-				fmt.Fprintln(out, "in sync — desired == actual (no managed routes)")
+				fmt.Fprintln(out, "in sync — desired matches actual")
 				return nil
 			}
 			fmt.Fprintf(out, "%d to add, %d to remove, %d to change:\n", d.Adds, d.Dels, d.Changes)

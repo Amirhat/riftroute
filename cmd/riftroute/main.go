@@ -41,10 +41,18 @@ func exitCode(err error) int {
 	case errors.Is(err, errUsage):
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return exitUsage
+	case errors.Is(err, errGuardrail):
+		return exitGuardrail // message already printed by the command
+	case errors.Is(err, errRolledBack):
+		return exitRolledBack
 	default:
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return exitError
 	}
 }
 
-var errUsage = errors.New("usage error")
+var (
+	errUsage      = errors.New("usage error")
+	errGuardrail  = errors.New("refused by guardrail")
+	errRolledBack = errors.New("change rolled back")
+)

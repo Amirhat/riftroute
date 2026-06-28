@@ -16,6 +16,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -23,6 +24,7 @@ import (
 type Server struct {
 	svc      *core.Service
 	store    *store.Store
+	proto    *safety.Protocol
 	hub      *Hub
 	allowUID uint32
 	version  string
@@ -32,13 +34,14 @@ type Server struct {
 
 // NewServer builds the API server. allowUID is the uid permitted to call
 // mutating endpoints (root is always permitted); reads are open to any local
-// peer that can reach the 0600 socket.
-func NewServer(svc *core.Service, st *store.Store, allowUID uint32, version string, logger *slog.Logger) *Server {
+// peer that can reach the 0600 socket. proto may be nil to disable mutation
+// (read-only mode).
+func NewServer(svc *core.Service, st *store.Store, proto *safety.Protocol, allowUID uint32, version string, logger *slog.Logger) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	s := &Server{
-		svc: svc, store: st, hub: NewHub(), allowUID: allowUID, version: version, log: logger,
+		svc: svc, store: st, proto: proto, hub: NewHub(), allowUID: allowUID, version: version, log: logger,
 	}
 	s.routes()
 	return s
@@ -63,8 +66,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /diff", s.handleDiff)
 	s.mux.HandleFunc("GET /profiles", s.handleProfiles)
 	s.mux.HandleFunc("GET /audit", s.handleAudit)
+	s.mux.HandleFunc("GET /snapshots", s.handleSnapshots)
 	s.mux.HandleFunc("GET /events", s.handleEvents)
-	// Mutating endpoints land in M2 behind requireWrite.
+
+	// Mutating endpoints — peer-credential gated (spec §12). /plan is a dry-run
+	// preview and does not mutate, but lives with its siblings for clarity.
+	s.mux.HandleFunc("POST /plan", s.handlePlan)
+	s.mux.HandleFunc("POST /apply", s.requireWrite(s.handleApply))
+	s.mux.HandleFunc("POST /confirm", s.requireWrite(s.handleConfirm))
+	s.mux.HandleFunc("POST /rollback", s.requireWrite(s.handleRollback))
+	s.mux.HandleFunc("POST /panic", s.requireWrite(s.handlePanic))
+	s.mux.HandleFunc("POST /config", s.requireWrite(s.handleConfig))
+	s.mux.HandleFunc("POST /profiles/{name}/enable", s.requireWrite(s.handleProfileToggle(true)))
+	s.mux.HandleFunc("POST /profiles/{name}/disable", s.requireWrite(s.handleProfileToggle(false)))
 }
 
 // Serve runs the HTTP server over ln (a UDS listener) until ctx is canceled. It
@@ -164,6 +178,18 @@ func (s *Server) handleExplain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
+	// With the engine available, diff = desired (from enabled profiles) vs actual
+	// managed. Without it (read-only mode) fall back to the empty-desired diff.
+	if s.proto != nil {
+		desired, _, err := s.svc.DesiredManaged(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		_, diff := s.proto.Plan(r.Context(), desired)
+		writeJSON(w, http.StatusOK, diff)
+		return
+	}
 	d, err := s.svc.Diff(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
