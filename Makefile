@@ -8,7 +8,7 @@ GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
-.PHONY: all build daemon cli desktop dev test vet fmt tidy cross clean run-daemon bindings \
+.PHONY: all build daemon cli desktop dev test test-e2e vet fmt tidy cross clean run-daemon bindings \
         dist dist-binaries checksums package-deb package-dmg package-appimage tray
 
 all: build
@@ -42,6 +42,12 @@ bindings:
 ## test: run unit/integration tests for the daemon, CLI, and engine (not the GUI)
 test:
 	go test $(CORE_PKGS)
+
+## test-e2e: real end-to-end — builds the binaries, drives the daemon over a
+## live socket through the full apply/confirm/rollback/panic lifecycle (fake
+## provider; host-safe, offline).
+test-e2e:
+	go test -count=1 ./test/e2e/...
 
 vet:
 	go vet $(CORE_PKGS)

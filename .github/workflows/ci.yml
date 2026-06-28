@@ -39,6 +39,17 @@ jobs:
       - run: go vet ./internal/... ./cmd/...
       - run: go test -race ./internal/... ./cmd/...
 
+  # Real end-to-end: builds the binaries, boots the daemon over a live UDS, and
+  # drives the full lifecycle via the client + CLI (fake provider; host-safe).
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go test -count=1 ./test/e2e/...
+
   # Linux netns integration tests (real `ip` inside an isolated namespace).
   # M2+ populates internal/provider/linux; runs under sudo, fully offline.
   netns:
