@@ -3,6 +3,7 @@ module github.com/Amirhat/riftroute
 go 1.25.0
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/pelletier/go-toml/v2 v2.4.2

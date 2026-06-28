@@ -9,7 +9,7 @@ WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
 .PHONY: all build daemon cli desktop dev test vet fmt tidy cross clean run-daemon bindings \
-        dist dist-binaries checksums package-deb package-dmg package-appimage
+        dist dist-binaries checksums package-deb package-dmg package-appimage tray
 
 all: build
 
@@ -25,6 +25,11 @@ cli:
 ## desktop: build the native GUI app (RiftRoute.app / binary) via Wails
 desktop:
 	cd desktop && $(WAILS) build -trimpath -ldflags "-X main.version=$(VERSION)"
+
+## tray: build the menu-bar/system-tray companion (cgo + native tray libs).
+## Linux also needs libayatana-appindicator3-dev (or libappindicator3-dev).
+tray:
+	CGO_ENABLED=1 go build $(GOFLAGS) -tags tray -ldflags "$(LDFLAGS)" -o bin/riftroute-tray ./cmd/riftroute-tray
 
 ## dev: run the GUI with hot reload (rebuilds + restarts on change)
 dev:
