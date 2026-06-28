@@ -27,3 +27,6 @@ desktop/frontend/node_modules/
 *.test
 *.out
 coverage.*
+
+# Release artifacts
+dist/

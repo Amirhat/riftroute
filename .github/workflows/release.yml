@@ -1,0 +1,135 @@
+name: Release
+
+# Tag-driven release: cross-compiled CLI/daemon tarballs + checksums + .deb are
+# always built; the signed/notarized macOS .dmg and Linux AppImage are built per
+# OS. Code signing + notarization run only when the corresponding secrets exist
+# (MAC_*/AC_*), so forks and unsigned dry-runs still succeed (Gatekeeper warns).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version (without leading v), e.g. 1.2.3"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  GO_VERSION: "1.25.x"
+
+jobs:
+  # Always-buildable core: cross binaries, checksums, .deb. No secrets needed.
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Resolve VERSION
+        run: echo "VERSION=${GITHUB_REF_NAME#v}${{ github.event.inputs.version }}" | sed 's/=v\?/=/' >> "$GITHUB_ENV"
+      - name: Build cross binaries + checksums
+        run: make dist VERSION="${VERSION:-0.0.0}"
+      - name: Build .deb (amd64 + arm64)
+        run: |
+          ARCH=amd64 VERSION="${VERSION:-0.0.0}" packaging/deb/build-deb.sh
+          ARCH=arm64 VERSION="${VERSION:-0.0.0}" packaging/deb/build-deb.sh
+      - name: Refresh checksums (include debs)
+        run: make checksums
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-dist
+          path: dist/
+
+  # macOS GUI → signed/notarized .dmg (signing gated on secrets).
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: Import signing certificate
+        if: ${{ secrets.MAC_CERT_P12 != '' }}
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/app.keychain-db"
+          security create-keychain -p actions "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p actions "$KEYCHAIN"
+          echo "$MAC_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$KEYCHAIN"
+      - name: Build GUI + package DMG
+        env:
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+          AC_APPLE_ID: ${{ secrets.AC_APPLE_ID }}
+          AC_TEAM_ID: ${{ secrets.AC_TEAM_ID }}
+          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
+        run: |
+          V="${VERSION#v}"
+          make desktop VERSION="$V"
+          VERSION="$V" packaging/macos/build-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dmg-dist
+          path: dist/*.dmg
+
+  # Linux GUI → AppImage.
+  appimage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install WebKit deps + FUSE
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libfuse2
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+      - name: Build GUI + AppImage
+        env:
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          V="${VERSION#v}"
+          cd desktop && "$(go env GOPATH)/bin/wails" build -tags webkit2_41 -trimpath -ldflags "-X main.version=$V"
+          cd "$GITHUB_WORKSPACE"
+          VERSION="$V" packaging/appimage/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-dist
+          path: dist/*.AppImage
+
+  publish:
+    needs: [core, dmg, appimage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Flatten + final checksums
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          (cd release && sha256sum riftroute_* RiftRoute_* RiftRoute-* riftroute_*.deb 2>/dev/null > checksums.txt || true)
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
