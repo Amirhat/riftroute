@@ -8,7 +8,7 @@ import { ExplainView } from './views/ExplainView'
 import { Profiles } from './views/Profiles'
 import { Diagnostics } from './views/Diagnostics'
 import { History } from './views/History'
-import { Placeholder } from './views/Placeholder'
+import { Settings } from './views/Settings'
 import { Badge, Dot } from './components/ui'
 import { ConfirmModal } from './components/ConfirmModal'
 import { onConnection, onMenu, onState } from './lib/events'
@@ -101,7 +101,7 @@ export default function App() {
           </div>
         </header>
         <main className="min-h-0 flex-1 overflow-auto p-5">
-          <ViewRouter view={view} />
+          <ViewRouter view={view} theme={theme} onToggleTheme={toggleTheme} />
         </main>
       </div>
       <ConfirmModal
@@ -124,7 +124,15 @@ export default function App() {
   )
 }
 
-function ViewRouter({ view }: { view: View }) {
+function ViewRouter({
+  view,
+  theme,
+  onToggleTheme,
+}: {
+  view: View
+  theme: Theme
+  onToggleTheme: () => void
+}) {
   switch (view) {
     case 'dashboard':
       return <Dashboard />
@@ -139,6 +147,6 @@ function ViewRouter({ view }: { view: View }) {
     case 'history':
       return <History />
     case 'settings':
-      return <Placeholder title="Settings" milestone="M7" />
+      return <Settings theme={theme} onToggleTheme={onToggleTheme} />
   }
 }

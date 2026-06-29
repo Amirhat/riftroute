@@ -57,7 +57,7 @@ function ExplainResult({ result }: { result: RouteExplain }) {
         <DecisionCard title="Simulated (desired)" decision={result.simulated} drift={result.drift} />
       ) : (
         <Card className="p-4 text-xs text-muted">
-          Simulated decision &amp; drift detection arrive with the routing engine (M1+).
+          No simulated decision for this target — it isn't affected by any managed route.
         </Card>
       )}
     </div>

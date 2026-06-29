@@ -26,7 +26,7 @@ const items: Item[] = [
   { view: 'profiles', label: 'Profiles', icon: ProfilesIcon },
   { view: 'diagnostics', label: 'Diagnostics', icon: DiagnosticsIcon },
   { view: 'history', label: 'History', icon: HistoryIcon },
-  { view: 'settings', label: 'Settings', icon: SettingsIcon, soon: 'M7' },
+  { view: 'settings', label: 'Settings', icon: SettingsIcon },
 ]
 
 export function Sidebar({
