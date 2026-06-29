@@ -35,7 +35,7 @@ export interface Iface {
   name: string
   up: boolean
   kind: string
-  addrs: string[]
+  addrs: string[] | null // real interfaces with no address marshal as null
   mtu?: number
   is_vpn: boolean
 }
@@ -50,8 +50,8 @@ export interface DefaultRoute {
 }
 
 export interface DNSState {
-  servers: string[]
-  search_domains?: string[]
+  servers: string[] | null
+  search_domains?: string[] | null
   iface?: string
 }
 

@@ -11,6 +11,7 @@ import { History } from './views/History'
 import { Settings } from './views/Settings'
 import { Badge, Dot } from './components/ui'
 import { ConfirmModal } from './components/ConfirmModal'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { onConnection, onMenu, onState } from './lib/events'
 import { api } from './lib/api'
 import { stateKey } from './lib/queries'
@@ -101,7 +102,9 @@ export default function App() {
           </div>
         </header>
         <main className="min-h-0 flex-1 overflow-auto p-5">
-          <ViewRouter view={view} theme={theme} onToggleTheme={toggleTheme} />
+          <ErrorBoundary key={view}>
+            <ViewRouter view={view} theme={theme} onToggleTheme={toggleTheme} />
+          </ErrorBoundary>
         </main>
       </div>
       <ConfirmModal

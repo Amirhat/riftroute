@@ -24,7 +24,7 @@ function DashboardContent({ state }: { state: State }) {
           label="VPN"
           value={state.vpn.active ? 'Active' : 'Inactive'}
           tone={state.vpn.active ? 'vpn' : 'muted'}
-          sub={state.vpn.active ? state.vpn.interfaces.join(', ') : 'no tunnel detected'}
+          sub={state.vpn.active ? (state.vpn.interfaces ?? []).join(', ') : 'no tunnel detected'}
         />
         <HeadlineCard
           label="Default route (v4)"
@@ -74,8 +74,8 @@ function DashboardContent({ state }: { state: State }) {
         <Card>
           <CardHeader title="DNS" hint={state.dns.iface ? `via ${state.dns.iface}` : undefined} />
           <div className="space-y-2 p-4">
-            {state.dns.servers.length === 0 && <div className="text-sm text-muted">No resolvers reported.</div>}
-            {state.dns.servers.map((s) => (
+            {(state.dns.servers ?? []).length === 0 && <div className="text-sm text-muted">No resolvers reported.</div>}
+            {(state.dns.servers ?? []).map((s) => (
               <div key={s} className="flex items-center gap-2">
                 <Dot tone="accent" />
                 <Addr>{s}</Addr>
@@ -123,7 +123,7 @@ function DashboardContent({ state }: { state: State }) {
                   {ifc.is_vpn && <Badge tone="vpn">vpn</Badge>}
                 </div>
                 <div className="ltr text-right text-xs text-muted">
-                  {ifc.addrs[0] ?? ifc.kind}
+                  {ifc.addrs?.[0] ?? ifc.kind}
                   {ifc.mtu ? ` · mtu ${ifc.mtu}` : ''}
                 </div>
               </div>
