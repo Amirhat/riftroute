@@ -1,5 +1,11 @@
 # RiftRoute
 
+[![CI](https://github.com/Amirhat/riftroute/actions/workflows/ci.yml/badge.svg)](https://github.com/Amirhat/riftroute/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
+[![Release](https://github.com/Amirhat/riftroute/actions/workflows/release.yml/badge.svg)](https://github.com/Amirhat/riftroute/actions/workflows/release.yml)
+
 **Split-tunneling / policy-based routing controller for macOS & Linux.**
 
 RiftRoute lets you say *"these destinations bypass the VPN, everything else goes
@@ -13,6 +19,8 @@ leaving the machine in a broken network state.**
 > include mode), domains & subscribable lists, power features (kill switch,
 > doctor, leak detector, flow monitor, per-app routing, split-DNS), and the
 > ship surface (TUI, tray, packaging, update check, CI/release) are all in.
+
+![RiftRoute dashboard](docs/screenshot-dashboard.png)
 
 ## Two non-negotiable pillars
 
@@ -207,8 +215,10 @@ Signing/notarization secrets: `MAC_CERT_P12`, `MAC_CERT_PASSWORD`,
 - Frontend: `cd desktop/frontend && npm test` (Vitest + jsdom smoke tests).
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the Go tests
-(race), the netns suite, cgo-free cross builds, the native GUI builds, and the
-frontend smoke tests.
+(race), the real end-to-end suite (`test/e2e`), the Linux netns suite, cgo-free
+cross builds, the native GUI builds, and the frontend smoke tests.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev/test/build workflow.
 
 ## Safety model in one paragraph
 
@@ -220,4 +230,20 @@ commit-confirm — if connectivity drops or you don't confirm in time, the chang
 auto-reverts atomically. A daemon crash mid-transaction is repaired by an
 ownership reconcile on startup. The kill switch fails closed but always keeps a
 reconnect path (loopback, tunnel, gateway/LAN, DHCP) open.
-```
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the dev
+environment, the build/test workflow, code conventions, and the host-safety
+rules. Please also read the [Code of Conduct](CODE_OF_CONDUCT.md). Architecture
+and behavior are specified in [`riftroute-spec.md`](riftroute-spec.md) (source of
+truth) and [`AGENTS.md`](AGENTS.md).
+
+## Security
+
+RiftRoute runs a privileged daemon; please report vulnerabilities privately as
+described in [`SECURITY.md`](SECURITY.md) — do not open a public issue.
+
+## License
+
+[MIT](LICENSE) © AmirHat

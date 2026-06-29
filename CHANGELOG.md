@@ -1,0 +1,65 @@
+# Changelog
+
+All notable changes to RiftRoute are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
+adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+First release candidate — the complete M0–M7 product. Everything below is part of
+the initial release.
+
+### Added
+
+**Core & safety**
+- Privileged daemon (`riftrouted`) owning all route mutation; unprivileged CLI
+  (`riftroute`) and Wails desktop app (`RiftRoute.app`) over a peer-cred-gated
+  Unix domain socket (HTTP/JSON + SSE).
+- Apply Protocol: snapshot → reconcile → dry-run → watchdog → atomic apply with
+  precomputed inverse → verify → commit-confirm → rollback. The §2.5 failure &
+  recovery matrix is green on the fake provider and the Linux netns suite.
+- Ownership-scoped mutation (`proto riftroute` on Linux; ownership DB on macOS).
+- Crash recovery via ownership reconcile on startup.
+
+**Routing**
+- Exclude mode (Model A: host/CIDR routes) and include mode (Linux **Model B**:
+  dedicated table `5252` + `ip rule … proto riftroute`).
+- Rule types: `cidr`, `ip`, `domain` (scheduled re-resolution), `asn`/`country`
+  (with a MaxMind MMDB), and `app` (Linux cgroup + fwmark per-app routing).
+- Safe CIDR aggregation, conflict/overlap detection, and an LPM route-explain
+  simulator with drift detection.
+- Subscribable lists (HTTPS-only, size-capped, checksummed, never executed).
+
+**Auto-apply & monitoring**
+- Network-change monitor + debounced reconciler (auto-apply on VPN up/down etc.,
+  guardrails kept), and a background domain re-resolver.
+
+**Power features & observability**
+- Kill switch (nftables on Linux / pf on macOS) with a reconnect allow-list.
+- Doctor diagnostics battery + IPv6/DNS leak detector + MTU/blackhole check.
+- Live flow monitor (per-connection via-VPN vs direct correlation).
+- Per-domain split-DNS (macOS scoped resolvers / Linux resolvectl).
+- `riftroute watch` live TUI; menu-bar/tray companion with quick toggles + Panic.
+- Safe update check against GitHub Releases (SHA-256 verified; never self-replaces).
+
+**Desktop GUI**
+- Dashboard, Routing Table, Route Explain, Profiles (staged changes +
+  commit-confirm countdown), History (audit timeline + snapshots), Diagnostics.
+
+**Tooling & release**
+- Cross-compiled CLI/daemon tarballs + checksums; `.deb`, `.dmg`, AppImage, and
+  Homebrew packaging; tag-driven release workflow (code signing/notarization
+  gated on Apple secrets).
+- CI: Go race tests, real end-to-end suite, Linux netns suite, cgo-free cross
+  builds, native GUI builds, and frontend smoke tests.
+
+### Fixed
+- GUI Panic and kill-switch confirmations were no-ops because `window.confirm()`
+  is unimplemented in the Wails WKWebView; replaced with an in-app confirm modal.
+
+### Notes
+- The agent never mutates the host: all route/firewall/DNS mutation is verified on
+  the fake provider and the Linux netns suite only.
+- GeoIP/ASN rules require a user-supplied MaxMind MMDB.
+
+[Unreleased]: https://github.com/Amirhat/riftroute/commits/main
