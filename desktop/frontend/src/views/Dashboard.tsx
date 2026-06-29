@@ -1,5 +1,6 @@
 import { useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Label, Badge, Dot, Addr, Skeleton } from '../components/ui'
+import { DaemonSetup } from '../components/DaemonSetup'
 import { fmtUptime } from '../lib/format'
 import type { State } from '../types'
 
@@ -7,7 +8,7 @@ export function Dashboard() {
   const { data, isLoading, isError, error, refetch } = useStateQuery()
 
   if (isLoading) return <DashboardSkeleton />
-  if (isError || !data) return <Disconnected message={(error as Error)?.message} onRetry={() => refetch()} />
+  if (isError || !data) return <DaemonSetup message={(error as Error)?.message} onRetry={() => refetch()} />
 
   return <DashboardContent state={data} />
 }
@@ -197,19 +198,3 @@ function DashboardSkeleton() {
   )
 }
 
-function Disconnected({ message, onRetry }: { message?: string; onRetry: () => void }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-      <div className="text-lg font-semibold text-default">Can’t reach riftrouted</div>
-      <p className="max-w-md text-sm text-muted">
-        The RiftRoute daemon isn’t answering. Routing is unaffected — this app is just a viewer.
-        Start it with <span className="font-mono text-default">riftrouted</span> or check{' '}
-        <span className="font-mono text-default">riftroute daemon status</span>.
-      </p>
-      {message && <p className="max-w-md break-words font-mono text-xs text-muted">{message}</p>}
-      <button onClick={onRetry} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-contrast hover:opacity-90">
-        Retry
-      </button>
-    </div>
-  )
-}

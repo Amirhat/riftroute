@@ -192,8 +192,16 @@ rolled back · `6` doctor failure. `--json` works on every command.
 ### macOS
 The GUI ships as `RiftRoute.dmg`. **Developer ID signed + notarized** builds open
 with no prompts. Unsigned/ad-hoc builds require **right-click → Open** once (or
-`xattr -dr com.apple.quarantine RiftRoute.app`). The CLI + daemon are also
-available via Homebrew:
+`xattr -dr com.apple.quarantine RiftRoute.app`).
+
+**No terminal needed:** on first launch the app detects there's no daemon and
+shows a **Set up RiftRoute** screen — click **Install & start**, approve the macOS
+admin prompt, and it installs the background service and connects. You can later
+**start / stop / restart / uninstall** the service from **Settings → Daemon
+service** (each privileged action uses the native admin prompt). The bundled CLI
++ daemon live inside the app, so nothing else is required.
+
+Prefer the command line? The CLI + daemon are also on Homebrew:
 
 ```bash
 brew install Amirhat/tap/riftroute

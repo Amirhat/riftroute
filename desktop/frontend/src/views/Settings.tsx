@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Stat, Skeleton } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { useDaemon } from '../lib/useDaemon'
 import { fmtUptime } from '../lib/format'
 
 type Theme = 'dark' | 'light'
@@ -23,6 +24,8 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
   const stateQ = useStateQuery()
   const s = stateQ.data
   const [confirmKill, setConfirmKill] = useState(false)
+  const d = useDaemon()
+  const [confirmDaemon, setConfirmDaemon] = useState<null | 'stop' | 'uninstall'>(null)
 
   async function setKill(enabled: boolean) {
     try {
@@ -87,6 +90,54 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
       </Card>
 
       <Card>
+        <CardHeader title="Daemon service" hint="background service (riftrouted)" />
+        {!d.info ? (
+          <div className="p-4"><Skeleton className="h-10 w-full" /></div>
+        ) : !d.info.can_manage ? (
+          <div className="p-4 text-sm text-muted">
+            Service management isn’t supported on this platform. Install manually:
+            <span className="font-mono text-default"> sudo riftroute daemon install</span>
+          </div>
+        ) : (
+          <div className="space-y-3 p-4">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted">{d.info.manager}</span>
+              <Badge tone={d.info.installed ? 'success' : 'muted'}>{d.info.installed ? 'installed' : 'not installed'}</Badge>
+              {d.info.installed && (
+                <Badge tone={d.info.reachable ? 'success' : 'warning'}>{d.info.reachable ? 'running' : 'stopped'}</Badge>
+              )}
+            </div>
+            <p className="text-xs text-muted">
+              Privileged actions ask for your password. The daemon owns the routing table and keeps
+              running when this window is closed.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {!d.info.installed && (
+                <DaemonBtn onClick={d.install} busy={d.busy === 'install'} primary>Install &amp; start</DaemonBtn>
+              )}
+              {d.info.installed && !d.info.reachable && (
+                <DaemonBtn onClick={d.start} busy={d.busy === 'start'} primary>Start</DaemonBtn>
+              )}
+              {d.info.installed && d.info.reachable && (
+                <>
+                  <DaemonBtn onClick={d.restart} busy={d.busy === 'restart'}>Restart</DaemonBtn>
+                  <DaemonBtn onClick={() => setConfirmDaemon('stop')} busy={d.busy === 'stop'}>Stop</DaemonBtn>
+                </>
+              )}
+              {d.info.installed && (
+                <DaemonBtn onClick={() => setConfirmDaemon('uninstall')} busy={d.busy === 'uninstall'} danger>
+                  Uninstall
+                </DaemonBtn>
+              )}
+            </div>
+            {d.error && (
+              <p className="break-words rounded-lg bg-danger/10 px-3 py-2 font-mono text-xs text-danger">{d.error}</p>
+            )}
+          </div>
+        )}
+      </Card>
+
+      <Card>
         <CardHeader title="Daemon & connection" hint={s ? `as of ${new Date(s.generated_at).toLocaleTimeString()}` : ''} />
         {!s ? (
           <div className="p-4"><Skeleton className="h-16 w-full" /></div>
@@ -144,6 +195,50 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
         }}
         onCancel={() => setConfirmKill(false)}
       />
+
+      <ConfirmModal
+        open={confirmDaemon !== null}
+        danger
+        title={confirmDaemon === 'uninstall' ? 'Uninstall the daemon?' : 'Stop the daemon?'}
+        message={
+          confirmDaemon === 'uninstall'
+            ? 'Removes the RiftRoute background service. Managed routes are restored to baseline and policy enforcement stops until reinstalled.'
+            : 'Stops the background service. Policy enforcement pauses (managed routes are removed) until you start it again.'
+        }
+        confirmLabel={confirmDaemon === 'uninstall' ? 'Uninstall' : 'Stop'}
+        onConfirm={() => {
+          const which = confirmDaemon
+          setConfirmDaemon(null)
+          if (which === 'uninstall') void d.uninstall()
+          else if (which === 'stop') void d.stop()
+        }}
+        onCancel={() => setConfirmDaemon(null)}
+      />
     </div>
+  )
+}
+
+function DaemonBtn({
+  onClick,
+  busy,
+  primary,
+  danger,
+  children,
+}: {
+  onClick: () => void
+  busy?: boolean
+  primary?: boolean
+  danger?: boolean
+  children: ReactNode
+}) {
+  const tone = danger
+    ? 'border border-danger/50 text-danger hover:bg-danger/10'
+    : primary
+      ? 'bg-accent text-accent-contrast hover:opacity-90'
+      : 'border border-line text-muted hover:text-default'
+  return (
+    <button onClick={onClick} disabled={busy} className={`rounded-lg px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${tone}`}>
+      {busy ? '…' : children}
+    </button>
   )
 }

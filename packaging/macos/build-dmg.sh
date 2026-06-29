@@ -21,6 +21,16 @@ DMG="${OUT}/RiftRoute_${VERSION}.dmg"
 [ -d "$APP" ] || { echo "missing ${APP} — run 'make desktop' first" >&2; exit 1; }
 mkdir -p "$OUT"
 
+# Bundle the CLI + daemon inside the app so the GUI can install/manage the
+# service (it escalates `riftroute daemon …` via the admin prompt). They go under
+# Contents/Resources/bin — NOT next to the GUI in MacOS/, because the filesystem
+# is case-insensitive and "riftroute" would collide with "RiftRoute".
+echo "bundling riftroute + riftrouted into the app…"
+BINDIR="${APP}/Contents/Resources/bin"
+mkdir -p "$BINDIR"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${BINDIR}/riftroute" "${ROOT}/cmd/riftroute"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${BINDIR}/riftrouted" "${ROOT}/cmd/riftrouted"
+
 if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
   echo "signing app with Developer ID…"
   codesign --force --deep --options runtime --timestamp \

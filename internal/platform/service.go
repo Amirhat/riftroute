@@ -28,9 +28,13 @@ type ServiceStatus struct {
 // macOS, systemd on Linux). Privileged operations require root; the agent never
 // runs these — the user does (spec §12).
 type ServiceManager interface {
-	Install(daemonBin, socket string) error
+	// Install copies the daemon, writes the service unit (launching it with
+	// -allow-uid so the desktop user can control the root daemon), and starts it.
+	Install(daemonBin, socket string, allowUID int) error
 	Uninstall() error
 	Restart() error
+	Start() error // load/start an already-installed service
+	Stop() error  // stop a running service without removing it
 	Status() ServiceStatus
 }
 
@@ -40,21 +44,50 @@ func NewServiceManager() ServiceManager { return newServiceManager() }
 // FindDaemonBinary locates the riftrouted binary: next to the running CLI, then
 // on PATH.
 func FindDaemonBinary() (string, error) {
+	return findBinary("riftrouted")
+}
+
+// FindCLIBinary locates the riftroute CLI binary: next to the running executable
+// (e.g. bundled inside RiftRoute.app/Contents/MacOS), then on PATH. The GUI uses
+// it to run privileged `riftroute daemon …` commands via an admin prompt.
+func FindCLIBinary() (string, error) {
+	return findBinary("riftroute")
+}
+
+func findBinary(name string) (string, error) {
 	if exe, err := os.Executable(); err == nil {
-		cand := filepath.Join(filepath.Dir(exe), "riftrouted")
-		if fileExists(cand) {
-			return cand, nil
+		dir := filepath.Dir(exe)
+		for _, cand := range []string{
+			// macOS .app bundle FIRST: the GUI is Contents/MacOS/RiftRoute and the
+			// CLIs are bundled under Contents/Resources/bin. We must check here before
+			// the sibling, because the filesystem is case-insensitive — the sibling
+			// "MacOS/riftroute" would otherwise resolve to the GUI binary "RiftRoute".
+			filepath.Join(dir, "..", "Resources", "bin", name),
+			filepath.Join(dir, name), // sibling (dev ./bin, Linux layout)
+		} {
+			if fileExists(cand) && !sameFile(cand, exe) {
+				return cand, nil
+			}
 		}
 	}
-	if p, err := exec.LookPath("riftrouted"); err == nil {
+	if p, err := exec.LookPath(name); err == nil {
 		return p, nil
 	}
-	return "", errors.New("riftrouted binary not found (build it, or place it on PATH)")
+	return "", fmt.Errorf("%s binary not found (build it, or place it on PATH)", name)
 }
 
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
+}
+
+// sameFile reports whether two paths resolve to the same on-disk file (used to
+// avoid handing back the GUI's own executable on case-insensitive filesystems,
+// where "riftroute" and "RiftRoute" collide).
+func sameFile(a, b string) bool {
+	fa, err1 := os.Stat(a)
+	fb, err2 := os.Stat(b)
+	return err1 == nil && err2 == nil && os.SameFile(fa, fb)
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {

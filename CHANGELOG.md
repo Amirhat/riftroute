@@ -44,7 +44,14 @@ the initial release.
 
 **Desktop GUI**
 - Dashboard, Routing Table, Route Explain, Profiles (staged changes +
-  commit-confirm countdown), History (audit timeline + snapshots), Diagnostics.
+  commit-confirm countdown), History (audit timeline + snapshots), Diagnostics,
+  and a Settings screen (theme, behavior, daemon & capabilities).
+- In-app daemon setup — no terminal required: a first-run "Set up RiftRoute"
+  screen installs + starts the privileged service via the native admin prompt,
+  and Settings → Daemon service offers start / stop / restart / uninstall. The
+  daemon is installed with `-allow-uid <desktop user>` so the unprivileged GUI
+  can control a root daemon (socket handed to that user; writes still peer-cred
+  gated). The CLI + daemon are bundled inside the app.
 
 **Tooling & release**
 - Cross-compiled CLI/daemon tarballs + checksums; `.deb`, `.dmg`, AppImage, and
@@ -56,6 +63,11 @@ the initial release.
 ### Fixed
 - GUI Panic and kill-switch confirmations were no-ops because `window.confirm()`
   is unimplemented in the Wails WKWebView; replaced with an in-app confirm modal.
+- GUI showed a blank window with the real provider: macOS interfaces with no
+  address marshal `addrs: null` and the dashboard dereferenced `addrs[0]`. Added
+  null guards + an error boundary so one bad field can't blank the whole app.
+- Broken Settings gear icon (a mangled SVG arc path rendered as a tangle of
+  loops); replaced with a correct gear.
 
 ### Notes
 - The agent never mutates the host: all route/firewall/DNS mutation is verified on

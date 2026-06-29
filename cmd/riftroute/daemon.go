@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
@@ -13,7 +15,8 @@ func daemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Manage the riftrouted system service (launchd/systemd)",
 	}
-	cmd.AddCommand(daemonStatusCmd(), daemonInstallCmd(), daemonUninstallCmd(), daemonRestartCmd())
+	cmd.AddCommand(daemonStatusCmd(), daemonInstallCmd(), daemonUninstallCmd(),
+		daemonRestartCmd(), daemonStartCmd(), daemonStopCmd())
 	return cmd
 }
 
@@ -51,26 +54,46 @@ func daemonStatusCmd() *cobra.Command {
 }
 
 func daemonInstallCmd() *cobra.Command {
-	return &cobra.Command{
+	var allowUID int
+	cmd := &cobra.Command{
 		Use:   "install",
 		Short: "Install and start riftrouted as a system service (requires root)",
 		Long: "Installs the riftrouted binary to /usr/local/bin, writes the launchd\n" +
-			"plist / systemd unit, and starts it. Run with sudo.",
+			"plist / systemd unit, and starts it. Run with sudo.\n\n" +
+			"The daemon runs as root but authorizes --allow-uid (default: the invoking\n" +
+			"user, even under sudo) for mutating calls, so an unprivileged GUI/CLI can\n" +
+			"control it.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			bin, err := platform.FindDaemonBinary()
 			if err != nil {
 				return err
 			}
+			if allowUID < 0 {
+				allowUID = invokingUID()
+			}
 			socket := platform.SystemSocket()
-			if err := platform.NewServiceManager().Install(bin, socket); err != nil {
+			if err := platform.NewServiceManager().Install(bin, socket, allowUID); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "installed and started riftrouted (socket %s)\n", socket)
+			fmt.Fprintf(cmd.OutOrStdout(), "installed and started riftrouted (socket %s, allow-uid %d)\n", socket, allowUID)
 			fmt.Fprintln(cmd.OutOrStdout(), "verify with: riftroute daemon status")
 			return nil
 		},
 	}
+	cmd.Flags().IntVar(&allowUID, "allow-uid", -1, "uid allowed to control the daemon (default: invoking user)")
+	return cmd
+}
+
+// invokingUID returns the real user behind a privileged invocation: SUDO_UID if
+// present (run via sudo), else the current uid.
+func invokingUID() int {
+	if s := os.Getenv("SUDO_UID"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			return n
+		}
+	}
+	return os.Getuid()
 }
 
 func daemonUninstallCmd() *cobra.Command {
@@ -98,6 +121,36 @@ func daemonRestartCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "restarted riftrouted")
+			return nil
+		},
+	}
+}
+
+func daemonStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the installed riftrouted service (requires root)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := platform.NewServiceManager().Start(); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "started riftrouted")
+			return nil
+		},
+	}
+}
+
+func daemonStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the running riftrouted service without removing it (requires root)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := platform.NewServiceManager().Stop(); err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "stopped riftrouted")
 			return nil
 		},
 	}

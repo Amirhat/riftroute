@@ -20,6 +20,12 @@ import {
   SetProfileEnabled,
   Reachable,
   Version,
+  GetDaemonInfo,
+  InstallDaemon,
+  StartDaemon,
+  StopDaemon,
+  RestartDaemon,
+  UninstallDaemon,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -33,6 +39,7 @@ import type {
   Snapshot,
   DoctorReport,
   Leak,
+  DaemonInfo,
 } from '../types'
 
 export const api = {
@@ -55,4 +62,11 @@ export const api = {
     SetProfileEnabled(name, enable) as unknown as Promise<ApplyResult>,
   reachable: () => Reachable() as Promise<boolean>,
   version: () => Version() as Promise<string>,
+  // Daemon lifecycle (privileged ops prompt for admin via the OS).
+  daemonInfo: () => GetDaemonInfo() as unknown as Promise<DaemonInfo>,
+  installDaemon: () => InstallDaemon() as Promise<void>,
+  startDaemon: () => StartDaemon() as Promise<void>,
+  stopDaemon: () => StopDaemon() as Promise<void>,
+  restartDaemon: () => RestartDaemon() as Promise<void>,
+  uninstallDaemon: () => UninstallDaemon() as Promise<void>,
 }

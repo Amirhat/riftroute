@@ -18,6 +18,10 @@ export function GetAudit() {
   return window['go']['main']['App']['GetAudit']();
 }
 
+export function GetDaemonInfo() {
+  return window['go']['main']['App']['GetDaemonInfo']();
+}
+
 export function GetDoctor() {
   return window['go']['main']['App']['GetDoctor']();
 }
@@ -46,6 +50,10 @@ export function GetState() {
   return window['go']['main']['App']['GetState']();
 }
 
+export function InstallDaemon() {
+  return window['go']['main']['App']['InstallDaemon']();
+}
+
 export function PanicFlush() {
   return window['go']['main']['App']['PanicFlush']();
 }
@@ -58,6 +66,10 @@ export function Reachable() {
   return window['go']['main']['App']['Reachable']();
 }
 
+export function RestartDaemon() {
+  return window['go']['main']['App']['RestartDaemon']();
+}
+
 export function Rollback(arg1) {
   return window['go']['main']['App']['Rollback'](arg1);
 }
@@ -68,6 +80,18 @@ export function SetKillSwitch(arg1) {
 
 export function SetProfileEnabled(arg1, arg2) {
   return window['go']['main']['App']['SetProfileEnabled'](arg1, arg2);
+}
+
+export function StartDaemon() {
+  return window['go']['main']['App']['StartDaemon']();
+}
+
+export function StopDaemon() {
+  return window['go']['main']['App']['StopDaemon']();
+}
+
+export function UninstallDaemon() {
+  return window['go']['main']['App']['UninstallDaemon']();
 }
 
 export function Version() {

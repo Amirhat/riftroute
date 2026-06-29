@@ -24,14 +24,14 @@ func (systemdManager) Status() ServiceStatus {
 	return st
 }
 
-func (systemdManager) Install(daemonBin, socket string) error {
+func (systemdManager) Install(daemonBin, socket string, allowUID int) error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
 	if err := copyFile(daemonBin, installedBin, 0o755); err != nil {
 		return fmt.Errorf("install binary: %w", err)
 	}
-	if err := os.WriteFile(systemdUnitPath, []byte(renderUnit(installedBin, socket)), 0o644); err != nil {
+	if err := os.WriteFile(systemdUnitPath, []byte(renderUnit(installedBin, socket, allowUID)), 0o644); err != nil {
 		return fmt.Errorf("write unit: %w", err)
 	}
 	if err := runCmd("systemctl", "daemon-reload"); err != nil {
@@ -57,19 +57,37 @@ func (systemdManager) Restart() error {
 	return runCmd("systemctl", "restart", systemdUnitName)
 }
 
-func renderUnit(bin, socket string) string {
+func (systemdManager) Start() error {
+	if os.Geteuid() != 0 {
+		return ErrNeedRoot
+	}
+	return runCmd("systemctl", "start", systemdUnitName)
+}
+
+func (systemdManager) Stop() error {
+	if os.Geteuid() != 0 {
+		return ErrNeedRoot
+	}
+	return runCmd("systemctl", "stop", systemdUnitName)
+}
+
+func renderUnit(bin, socket string, allowUID int) string {
+	allowArg := ""
+	if allowUID >= 0 {
+		allowArg = fmt.Sprintf(" -allow-uid %d", allowUID)
+	}
 	return fmt.Sprintf(`[Unit]
 Description=RiftRoute split-tunneling routing daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=%s -socket %s
+ExecStart=%s -provider auto -socket %s%s
 Restart=on-failure
 RestartSec=2
 AmbientCapabilities=CAP_NET_ADMIN
 
 [Install]
 WantedBy=multi-user.target
-`, bin, socket)
+`, bin, socket, allowArg)
 }

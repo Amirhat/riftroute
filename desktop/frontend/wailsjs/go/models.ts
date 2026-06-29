@@ -806,6 +806,33 @@ export namespace domain {
 
 }
 
+export namespace main {
+	
+	export class DaemonInfo {
+	    manager: string;
+	    installed: boolean;
+	    loaded: boolean;
+	    reachable: boolean;
+	    version?: string;
+	    can_manage: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new DaemonInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.manager = source["manager"];
+	        this.installed = source["installed"];
+	        this.loaded = source["loaded"];
+	        this.reachable = source["reachable"];
+	        this.version = source["version"];
+	        this.can_manage = source["can_manage"];
+	    }
+	}
+
+}
+
 export namespace safety {
 	
 	export class Violation {

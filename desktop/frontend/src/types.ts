@@ -6,6 +6,17 @@
 export type Family = 'v4' | 'v6'
 export type Owner = 'system' | 'riftroute' | 'vpn' | 'unknown'
 
+// DaemonInfo mirrors desktop/daemon.go — the system-service + connection state
+// the setup screen renders.
+export interface DaemonInfo {
+  manager: string // launchd | systemd | unsupported
+  installed: boolean
+  loaded: boolean
+  reachable: boolean
+  version?: string
+  can_manage: boolean
+}
+
 export interface Health {
   daemon: 'ok' | 'degraded'
   reason?: string

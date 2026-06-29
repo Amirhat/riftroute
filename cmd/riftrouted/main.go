@@ -50,6 +50,7 @@ func run() error {
 		autoApply    bool
 		pollInterval time.Duration
 		showVersion  bool
+		allowUIDFlag int
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -59,6 +60,7 @@ func run() error {
 	flag.BoolVar(&autoApply, "auto-apply", true, "reconcile automatically on network changes (VPN up/down, etc.)")
 	flag.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "network-change poll interval")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
 	if showVersion {
@@ -103,7 +105,13 @@ func run() error {
 	}
 
 	svc.SetAutoApply(autoApply)
+	// allowUID is the uid permitted to call mutating endpoints. It defaults to the
+	// daemon's own uid, but the installer passes -allow-uid <desktop user> so an
+	// unprivileged GUI/CLI can drive a root-installed daemon.
 	allowUID := uint32(os.Getuid())
+	if allowUIDFlag >= 0 {
+		allowUID = uint32(allowUIDFlag)
+	}
 	srv := api.NewServer(svc, st, proto, allowUID, version, logger)
 
 	// Fake-only debug hook so auto-apply can be demonstrated against a running
@@ -125,6 +133,16 @@ func run() error {
 	ln, err := listen(socketPath, logger)
 	if err != nil {
 		return err
+	}
+	// When serving a different uid than our own (root daemon ↔ desktop-user GUI),
+	// hand socket ownership to that user so it can connect; writes stay gated by
+	// peer-cred authz (allowUID). Same-uid (dev) keeps the default 0600.
+	if int(allowUID) != os.Getuid() {
+		if err := os.Chown(socketPath, int(allowUID), -1); err != nil {
+			logger.Warn("chown socket to allow-uid failed", "uid", allowUID, "err", err)
+		} else if err := os.Chmod(socketPath, 0o660); err != nil {
+			logger.Warn("chmod socket failed", "err", err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

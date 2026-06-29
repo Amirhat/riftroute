@@ -24,7 +24,7 @@ func (launchdManager) Status() ServiceStatus {
 	return st
 }
 
-func (launchdManager) Install(daemonBin, socket string) error {
+func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
@@ -34,7 +34,7 @@ func (launchdManager) Install(daemonBin, socket string) error {
 	if err := os.MkdirAll("/var/log/riftroute", 0o755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
-	if err := os.WriteFile(launchdPlist, []byte(renderPlist(installedBin, socket)), 0o644); err != nil {
+	if err := os.WriteFile(launchdPlist, []byte(renderPlist(installedBin, socket, allowUID)), 0o644); err != nil {
 		return fmt.Errorf("write plist: %w", err)
 	}
 	// Reload cleanly if already loaded.
@@ -59,7 +59,28 @@ func (launchdManager) Restart() error {
 	return runCmd("launchctl", "load", launchdPlist)
 }
 
-func renderPlist(bin, socket string) string {
+func (launchdManager) Start() error {
+	if os.Geteuid() != 0 {
+		return ErrNeedRoot
+	}
+	if !fileExists(launchdPlist) {
+		return fmt.Errorf("service not installed")
+	}
+	return runCmd("launchctl", "load", "-w", launchdPlist)
+}
+
+func (launchdManager) Stop() error {
+	if os.Geteuid() != 0 {
+		return ErrNeedRoot
+	}
+	return runCmd("launchctl", "unload", launchdPlist)
+}
+
+func renderPlist(bin, socket string, allowUID int) string {
+	allowArg := ""
+	if allowUID >= 0 {
+		allowArg = fmt.Sprintf("\n    <string>-allow-uid</string>\n    <string>%d</string>", allowUID)
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,8 +89,10 @@ func renderPlist(bin, socket string) string {
   <key>ProgramArguments</key>
   <array>
     <string>%s</string>
+    <string>-provider</string>
+    <string>auto</string>
     <string>-socket</string>
-    <string>%s</string>
+    <string>%s</string>%s
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -77,5 +100,5 @@ func renderPlist(bin, socket string) string {
   <key>StandardErrorPath</key><string>/var/log/riftroute/riftrouted.err.log</string>
 </dict>
 </plist>
-`, launchdLabel, bin, socket)
+`, launchdLabel, bin, socket, allowArg)
 }
