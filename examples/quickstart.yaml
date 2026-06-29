@@ -1,0 +1,19 @@
+# Minimal, safe quickstart — applies cleanly on `-provider fake` so you can try
+# the full flow without root or a real network. See examples/riftroute.yaml for
+# the complete annotated reference (it includes 192.168.0.0/16, which the safety
+# guardrail intentionally refuses when it would capture your gateway).
+version: 1
+
+settings:
+  ip_version: [v4]
+  split_dns:
+    - { domain: corp.example.com, resolver: 10.0.0.53 }
+
+profiles:
+  - name: work-bypass
+    enabled: true
+    mode: exclude # these destinations bypass the VPN (go direct)
+    rules:
+      - { type: cidr, value: "10.0.0.0/8", comment: "corp LAN" }
+      - { type: cidr, value: "172.16.0.0/12" }
+      - { type: domain, value: "github.com" }

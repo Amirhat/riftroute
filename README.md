@@ -96,6 +96,32 @@ make cross           # prove every target compiles (incl. Windows fallback)
 and no real network** — every mutation is simulated. `-provider auto` selects the
 real per-OS backend.
 
+### Try it yourself (safe, no root)
+
+Start the daemon with **no flags** so it listens on the per-user socket; the CLI
+**and** the GUI then auto-connect to it — no `--socket` and no env needed:
+
+```bash
+make build && make desktop
+
+# Terminal 1 — daemon on the fake provider (no root, no real network):
+./bin/riftrouted -provider fake
+
+# Terminal 2 — drive it with the CLI:
+./bin/riftroute status
+./bin/riftroute apply examples/quickstart.yaml --dry-run   # preview the plan
+./bin/riftroute apply examples/quickstart.yaml --yes        # apply (simulated)
+./bin/riftroute doctor          # diagnostics + leak detector
+./bin/riftroute watch           # live TUI
+
+# Open the desktop app — it connects to the same daemon automatically:
+open ./desktop/build/bin/RiftRoute.app
+```
+
+Everything is simulated on `-provider fake`, so it's completely safe to explore —
+nothing touches your real routing table, firewall, or DNS. To point the GUI/CLI
+at a specific daemon instead, set `RIFTROUTE_SOCKET=/path/to.sock`.
+
 ## Configuration
 
 RiftRoute is driven by a declarative, git-committable file (YAML or TOML).
