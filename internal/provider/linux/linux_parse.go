@@ -24,16 +24,30 @@ type ipRoute struct {
 	Scope    string `json:"scope"`
 }
 
-// ipRule mirrors one element of `ip -j rule show`.
+// ipRule mirrors one element of `ip -j rule show`. iproute2 reports the selector
+// address WITHOUT its prefix length (that comes in a separate dstlen/srclen), so
+// we reconstruct the CIDR — otherwise "to 1.1.1.0/24" round-trips as "to 1.1.1.0"
+// and no longer matches (breaks rule deletion on teardown).
 type ipRule struct {
 	Priority int    `json:"priority"`
 	Src      string `json:"src"`
+	SrcLen   int    `json:"srclen"`
 	Dst      string `json:"dst"`
+	DstLen   int    `json:"dstlen"`
 	Table    string `json:"table"`
 	FwMark   string `json:"fwmark"`
 	Protocol string `json:"protocol"`
 	IifName  string `json:"iif"`
 	OifName  string `json:"oif"`
+}
+
+// withLen reconstructs "addr/len" from a possibly length-less address plus a
+// separate prefix length. If the address already carries a "/", it's used as-is.
+func withLen(addr string, length int) string {
+	if addr == "" || strings.Contains(addr, "/") || length <= 0 {
+		return addr
+	}
+	return addr + "/" + strconv.Itoa(length)
 }
 
 func normalizeDst(dst string, family domain.Family) string {
@@ -134,9 +148,9 @@ func ruleSelector(r ipRule) string {
 	var parts []string
 	switch {
 	case r.Dst != "":
-		parts = append(parts, "to "+r.Dst)
+		parts = append(parts, "to "+withLen(r.Dst, r.DstLen))
 	case r.Src != "":
-		parts = append(parts, "from "+r.Src)
+		parts = append(parts, "from "+withLen(r.Src, r.SrcLen))
 	default:
 		parts = append(parts, "from all")
 	}

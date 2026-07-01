@@ -98,6 +98,26 @@ func TestParseRulesJSON(t *testing.T) {
 	}
 }
 
+// Real `ip -j rule show` reports the selector address WITHOUT its prefix length,
+// carrying the length in a separate dstlen/srclen. We must reconstruct the CIDR
+// so "to 1.1.1.0/24" round-trips (else teardown can't match the rule to delete).
+func TestParseRulesJSON_ReconstructsPrefixLen(t *testing.T) {
+	const j = `[
+	  {"priority":5252,"dst":"1.1.1.0","dstlen":24,"table":"5252","protocol":"152"},
+	  {"priority":100,"src":"10.0.0.0","srclen":8,"table":"50"}
+	]`
+	rules, err := parseRulesJSON([]byte(j), domain.FamilyV4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules[0].Selector != "to 1.1.1.0/24" || rules[0].Proto != "riftroute" {
+		t.Errorf("rule0 selector should reconstruct the /24 + normalize proto: %+v", rules[0])
+	}
+	if rules[1].Selector != "from 10.0.0.0/8" {
+		t.Errorf("rule1 selector should reconstruct the /8: %+v", rules[1])
+	}
+}
+
 func TestParseRouteGetJSON(t *testing.T) {
 	const j = `[{"dst":"8.8.8.8","gateway":"10.6.0.1","dev":"wg0","prefsrc":"10.6.0.2","flags":[],"uid":1000,"cache":[]}]`
 	dec, err := parseRouteGetJSON([]byte(j), "8.8.8.8", domain.FamilyV4)

@@ -113,10 +113,12 @@ func (p *Provider) FlushOwned(ctx context.Context) error {
 		}
 	}
 	for _, fam := range []string{"-4", "-6"} {
-		_, err := runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum)
-		note(err)
-		_, err = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.ModelBTable)
-		note(err)
+		// Route flushes are best-effort teardown: a not-yet-created Model B table,
+		// a disabled address family (some hosts have IPv6 off), or "nothing to
+		// flush" must not fail the operation. The DB-driven Panic path deletes the
+		// actually-owned routes individually; this is the belt-and-suspenders sweep.
+		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum)
+		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.ModelBTable)
 		// Delete proto-tagged rules enumerated from `ip -j rule show`.
 		if out, e := runCombined(ctx, "ip", "-j", fam, "rule", "show"); e == nil {
 			if rules, perr := parseRulesJSON([]byte(out), famOf(fam)); perr == nil {
