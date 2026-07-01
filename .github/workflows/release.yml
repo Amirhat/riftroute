@@ -49,9 +49,18 @@ jobs:
           name: core-dist
           path: dist/
 
-  # macOS GUI → signed/notarized .dmg (signing gated on secrets).
+  # macOS GUI → signed/notarized .dmg (signing gated on secrets). Secrets are
+  # surfaced as job-level env because the `secrets` context is NOT allowed in an
+  # `if:` (that made the whole workflow a startup failure); the step gates on env.
   dmg:
     runs-on: macos-latest
+    env:
+      MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+      MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+      MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
+      AC_APPLE_ID: ${{ secrets.AC_APPLE_ID }}
+      AC_TEAM_ID: ${{ secrets.AC_TEAM_ID }}
+      AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -63,10 +72,7 @@ jobs:
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - name: Import signing certificate
-        if: ${{ secrets.MAC_CERT_P12 != '' }}
-        env:
-          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
-          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        if: ${{ env.MAC_CERT_P12 != '' }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/app.keychain-db"
           security create-keychain -p actions "$KEYCHAIN"
@@ -79,10 +85,6 @@ jobs:
       - name: Build GUI + package DMG
         env:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
-          MAC_SIGN_IDENTITY: ${{ secrets.MAC_SIGN_IDENTITY }}
-          AC_APPLE_ID: ${{ secrets.AC_APPLE_ID }}
-          AC_TEAM_ID: ${{ secrets.AC_TEAM_ID }}
-          AC_PASSWORD: ${{ secrets.AC_PASSWORD }}
         run: |
           V="${VERSION#v}"
           make desktop VERSION="$V"
@@ -124,6 +126,10 @@ jobs:
 
   publish:
     needs: [core, dmg, appimage]
+    # Publish as long as the always-buildable core succeeded; a flaky GUI build
+    # (dmg/appimage) then just omits those artifacts rather than blocking the
+    # whole release. download-artifact fetches whatever succeeded.
+    if: ${{ always() && needs.core.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -137,5 +143,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', github.event.inputs.version) || github.ref_name }}
           files: release/*
           generate_release_notes: true
