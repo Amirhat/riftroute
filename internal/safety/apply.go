@@ -31,6 +31,9 @@ type Store interface {
 	ClearOwned() error
 	SaveSnapshot(domain.Snapshot) error
 	AppendAudit(domain.AuditEvent) (int64, error)
+	PutPendingTx(id string, plan domain.Plan) error
+	ClearPendingTx(id string) error
+	ListPendingTx() (map[string]domain.Plan, error)
 }
 
 // Options configure a single apply (spec §2.2/§10 connectivity_guard).
@@ -187,9 +190,21 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 		}
 	}
 
+	// Write-ahead journal: record how to undo this tx BEFORE touching the kernel.
+	// If we're SIGKILLed/power-lost between here and COMMIT, startup RecoverPending
+	// replays the inverse — the only crash-safe recovery on macOS, where kernel
+	// routes carry no owner tag to reattribute them.
+	txID := p.nextTxID()
+	if p.store != nil {
+		if err := p.store.PutPendingTx(txID, plan); err != nil {
+			p.log.Warn("could not journal pending tx; proceeding without crash-recovery for it", "tx", txID, "err", err)
+		}
+	}
+
 	// EXECUTE atomically; on error the executor has already rolled back.
 	exec := NewExecutor(p.prov)
 	if err := exec.Apply(ctx, plan); err != nil {
+		p.clearPending(txID)
 		p.audit(opts.Actor, "apply", string(domain.TxFailed), err.Error(), &plan, true)
 		return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: err.Error()}, nil
 	}
@@ -199,7 +214,6 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 	p.audit(opts.Actor, "apply", "applied", "", &plan, false)
 
 	// ARM watchdog + commit-confirm and resolve in the background.
-	txID := p.nextTxID()
 	ctxTx, cancel := context.WithCancel(context.Background())
 	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
 	p.register(pt)
@@ -208,8 +222,8 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 	guardFirst := p.clock.After(opts.ProbeInterval) // registered synchronously (fake-clock safe)
 	decisionTimer := p.clock.After(opts.window())
 	wd := NewWatchdog(p.clock, prober, opts.Anchors, opts.K, opts.ProbeInterval, func() { pt.decide(decRollback) })
-	go wd.Run(ctxTx, guardFirst)
-	go func() {
+	p.goSafe("watchdog", func() { wd.Run(ctxTx, guardFirst) })
+	p.goSafe("decision-timer", func() {
 		select {
 		case <-ctxTx.Done():
 		case <-decisionTimer:
@@ -219,26 +233,80 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 				pt.decide(decCommit) // guard window elapsed cleanly → commit
 			}
 		}
-	}()
+	})
 	go p.resolve(pt, opts.Actor)
 
 	return Result{TxID: txID, Plan: plan, Diff: diff, Status: domain.TxPending, NeedsConfirm: opts.Interactive}, nil
 }
 
+// goSafe runs fn in a goroutine that recovers from panics — an unrecovered panic
+// in ANY goroutine crashes the whole daemon, which would kill an armed watchdog
+// and strand the user. Background signalers just log; the tx-resolving goroutine
+// has its own panic path (see resolve) that forces a rollback.
+func (p *Protocol) goSafe(name string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p.log.Error("recovered panic in daemon goroutine", "where", name, "panic", r)
+			}
+		}()
+		fn()
+	}()
+}
+
 func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
+	// A panic here (e.g. in the provider during rollback) must never leave a tx
+	// half-resolved with a dead watchdog. Recover and force a best-effort revert
+	// so the host converges to the safe (pre-change) state.
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("recovered panic resolving tx; forcing rollback", "tx", pt.id, "panic", r)
+			_ = NewExecutor(p.prov).RunOps(context.Background(), pt.plan.Inverse)
+			p.applyOwnership(pt.plan, true)
+			pt.result = domain.TxRolledBack
+			p.finishTx(pt)
+		}
+	}()
+
 	d := <-pt.decided
 	pt.cancel() // stop watchdog + decision timer
 	if d == decCommit {
 		pt.result = domain.TxCommitted
+		p.clearPending(pt.id) // resolved cleanly → no crash-recovery needed
 		p.audit(actor, "confirm", "committed", "", nil, false)
 	} else {
 		exec := NewExecutor(p.prov)
-		_ = exec.RunOps(context.Background(), pt.plan.Inverse)
+		if rbErr := exec.RunOps(context.Background(), pt.plan.Inverse); rbErr != nil {
+			// The kernel wasn't fully reverted. KEEP the ownership records AND the
+			// pending-tx journal so Panic / startup RecoverPending can retry the
+			// revert; report the true outcome rather than a false "rolled back".
+			pt.result = domain.TxRolledBack
+			p.audit(actor, "rollback", "rollback_incomplete", rbErr.Error(), nil, true)
+			p.finishTx(pt)
+			return
+		}
 		p.applyOwnership(pt.plan, true)
+		p.clearPending(pt.id)
 		pt.result = domain.TxRolledBack
 		p.audit(actor, "rollback", "rolled_back", "watchdog or missed confirm", nil, true)
 	}
+	p.finishTx(pt)
+}
+
+func (p *Protocol) clearPending(id string) {
+	if p.store != nil {
+		_ = p.store.ClearPendingTx(id)
+	}
+}
+
+// finishTx records the resolved result and unblocks Wait/Confirm/Rollback,
+// tolerating a double-call from the panic-recovery path.
+func (p *Protocol) finishTx(pt *pendingTx) {
 	p.txmu.Lock()
+	if _, done := p.resolved[pt.id]; done {
+		p.txmu.Unlock()
+		return
+	}
 	p.resolved[pt.id] = pt.result
 	delete(p.pending, pt.id)
 	p.txmu.Unlock()
@@ -329,6 +397,33 @@ func (p *Protocol) ReconcileOwnership(ctx context.Context) (added, removed int, 
 		}
 	}
 	return added, removed, nil
+}
+
+// RecoverPending is the startup fail-safe for the write-ahead journal. Any tx
+// still journaled was in flight — or on probation with its watchdog armed — when
+// the daemon last stopped (crash/power loss/SIGKILL). We can't know it was safe,
+// so we replay its inverse to revert to the pre-change state and clear it. This
+// is the only crash recovery that works on macOS, where kernel routes carry no
+// owner tag to reattribute. Run it on startup BEFORE ReconcileOwnership.
+func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
+	if p.store == nil {
+		return 0, nil
+	}
+	pend, err := p.store.ListPendingTx()
+	if err != nil {
+		return 0, err
+	}
+	exec := NewExecutor(p.prov)
+	n := 0
+	for id, plan := range pend {
+		_ = exec.RunOps(ctx, plan.Inverse) // best-effort revert to baseline
+		p.applyOwnership(plan, true)       // undo any ownership records it wrote
+		_ = p.store.ClearPendingTx(id)
+		p.audit(domain.ActorDaemon, "recover", "reverted_pending",
+			"crash recovery: reverted in-flight transaction "+id, nil, true)
+		n++
+	}
+	return n, nil
 }
 
 // --- internals ---

@@ -14,7 +14,11 @@ export function Dashboard() {
 }
 
 function DashboardContent({ state }: { state: State }) {
-  const v4 = state.defaults.find((d) => d.family === 'v4')
+  // A degraded State (provider read error) marshals defaults/interfaces as null;
+  // coalesce so the dashboard renders instead of throwing (same class as addrs).
+  const defaults = state.defaults ?? []
+  const interfaces = state.interfaces ?? []
+  const v4 = defaults.find((d) => d.family === 'v4')
   const degraded = state.health.daemon !== 'ok'
 
   return (
@@ -92,7 +96,7 @@ function DashboardContent({ state }: { state: State }) {
         <Card>
           <CardHeader title="Default routes" />
           <div className="divide-y divide-line">
-            {state.defaults.map((d) => (
+            {defaults.map((d) => (
               <div key={d.family} className="flex items-center justify-between px-4 py-3">
                 <div className="flex items-center gap-3">
                   <Badge tone="muted">{d.family}</Badge>
@@ -114,9 +118,9 @@ function DashboardContent({ state }: { state: State }) {
 
         {/* Interfaces */}
         <Card>
-          <CardHeader title="Interfaces" hint={`${state.interfaces.filter((i) => i.up).length}/${state.interfaces.length} up`} />
+          <CardHeader title="Interfaces" hint={`${interfaces.filter((i) => i.up).length}/${interfaces.length} up`} />
           <div className="divide-y divide-line">
-            {state.interfaces.map((ifc) => (
+            {interfaces.map((ifc) => (
               <div key={ifc.name} className="flex items-center justify-between px-4 py-2.5">
                 <div className="flex items-center gap-3">
                   <Dot tone={ifc.up ? 'success' : 'muted'} />

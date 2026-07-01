@@ -81,6 +81,42 @@ func fileExists(p string) bool {
 	return err == nil && !fi.IsDir()
 }
 
+// secureRootDir creates dir (if absent) and forces it to root-owned, 0755, and
+// not a symlink — so a non-root user can't plant or swap what lives there. Called
+// as root during install; prevents LPE via an attacker-writable install/log path.
+func secureRootDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to install (possible attack)", dir)
+	}
+	if err := os.Chown(dir, 0, 0); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o755)
+}
+
+// secureRootFile forces path to root-owned with the given mode and rejects a
+// symlink — so a root-run binary/plist can't be replaced by a non-root user.
+func secureRootFile(path string, mode os.FileMode) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing (possible attack)", path)
+	}
+	if err := os.Chown(path, 0, 0); err != nil {
+		return err
+	}
+	return os.Chmod(path, mode)
+}
+
 // sameFile reports whether two paths resolve to the same on-disk file (used to
 // avoid handing back the GUI's own executable on case-insensitive filesystems,
 // where "riftroute" and "RiftRoute" collide).

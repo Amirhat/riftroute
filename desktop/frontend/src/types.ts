@@ -86,8 +86,8 @@ export interface State {
   health: Health
   capabilities: Capabilities
   vpn: VPNStatus
-  interfaces: Iface[]
-  defaults: DefaultRoute[]
+  interfaces: Iface[] | null // null on a degraded/partial provider read
+  defaults: DefaultRoute[] | null
   dns: DNSState
   profiles: ProfileStatus[]
   drift: DriftStatus

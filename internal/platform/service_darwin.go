@@ -10,7 +10,13 @@ import (
 const (
 	launchdLabel = "com.riftroute.daemon"
 	launchdPlist = "/Library/LaunchDaemons/com.riftroute.daemon.plist"
-	installedBin = "/usr/local/bin/riftrouted"
+	// Root-only, non-SIP location for the privileged binary. Deliberately NOT
+	// /usr/local/bin: on macOS that is frequently owned/writable by the admin user
+	// (Homebrew), which would let a non-root user swap a binary launchd runs as
+	// root (LPE). /Library/PrivilegedHelperTools is root:wheel.
+	installDir   = "/Library/PrivilegedHelperTools"
+	installedBin = installDir + "/riftrouted"
+	logDir       = "/var/log/riftroute"
 )
 
 type launchdManager struct{}
@@ -28,14 +34,25 @@ func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
+	// Install the root-run binary into a root-only directory (LPE defense).
+	if err := secureRootDir(installDir); err != nil {
+		return fmt.Errorf("secure install dir: %w", err)
+	}
 	if err := copyFile(daemonBin, installedBin, 0o755); err != nil {
 		return fmt.Errorf("install binary: %w", err)
 	}
-	if err := os.MkdirAll("/var/log/riftroute", 0o755); err != nil {
-		return fmt.Errorf("create log dir: %w", err)
+	if err := secureRootFile(installedBin, 0o755); err != nil {
+		return fmt.Errorf("secure binary: %w", err)
+	}
+	// Harden the log dir; reject a pre-planted symlink (arbitrary-root-write).
+	if err := secureRootDir(logDir); err != nil {
+		return fmt.Errorf("secure log dir: %w", err)
 	}
 	if err := os.WriteFile(launchdPlist, []byte(renderPlist(installedBin, socket, allowUID)), 0o644); err != nil {
 		return fmt.Errorf("write plist: %w", err)
+	}
+	if err := secureRootFile(launchdPlist, 0o644); err != nil {
+		return fmt.Errorf("secure plist: %w", err)
 	}
 	// Reload cleanly if already loaded.
 	_ = runCmd("launchctl", "unload", launchdPlist)
@@ -48,6 +65,7 @@ func (launchdManager) Uninstall() error {
 	}
 	_ = runCmd("launchctl", "unload", "-w", launchdPlist)
 	_ = os.Remove(launchdPlist)
+	_ = os.Remove(installedBin) // remove the privileged binary too
 	return nil
 }
 

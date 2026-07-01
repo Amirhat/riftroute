@@ -85,6 +85,11 @@ CREATE TABLE IF NOT EXISTS ownership (
   doc        TEXT NOT NULL,
   PRIMARY KEY (family, dst_cidr, gateway, iface)
 );
+CREATE TABLE IF NOT EXISTS pending_tx (
+  id         TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  doc        TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   ts       TEXT NOT NULL,
@@ -412,4 +417,48 @@ func (s *Store) DelOwned(mr domain.ManagedRoute) error {
 func (s *Store) ClearOwned() error {
 	_, err := s.db.Exec(`DELETE FROM ownership`)
 	return err
+}
+
+// PutPendingTx write-ahead-logs a transaction's plan BEFORE the kernel is
+// mutated, so a crash/power-loss mid-apply (or mid-probation) can be rolled back
+// on the next startup — critical on macOS, where kernel routes carry no owner
+// tag and can't otherwise be reattributed. Cleared once the tx commits/reverts.
+func (s *Store) PutPendingTx(id string, plan domain.Plan) error {
+	doc, err := json.Marshal(plan)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO pending_tx(id,created_at,doc) VALUES(?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET doc=excluded.doc`,
+		id, time.Now().UTC().Format(time.RFC3339Nano), string(doc))
+	return err
+}
+
+// ClearPendingTx removes a resolved transaction's journal entry.
+func (s *Store) ClearPendingTx(id string) error {
+	_, err := s.db.Exec(`DELETE FROM pending_tx WHERE id=?`, id)
+	return err
+}
+
+// ListPendingTx returns transactions that were in flight when the daemon last
+// stopped (crash recovery replays their inverse to fail-safe).
+func (s *Store) ListPendingTx() (map[string]domain.Plan, error) {
+	rows, err := s.db.Query(`SELECT id, doc FROM pending_tx`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]domain.Plan{}
+	for rows.Next() {
+		var id, doc string
+		if err := rows.Scan(&id, &doc); err != nil {
+			return nil, err
+		}
+		var pl domain.Plan
+		if json.Unmarshal([]byte(doc), &pl) == nil {
+			out[id] = pl
+		}
+	}
+	return out, rows.Err()
 }

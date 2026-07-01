@@ -96,7 +96,16 @@ func run() error {
 	svc := core.New(prov, st, version)
 	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, prov.Capabilities().Platform, logger)
 
-	// Crash recovery: re-assert/repair owned routes against the kernel on startup
+	// Crash recovery, step 1: replay the write-ahead journal. Any transaction that
+	// was in flight (or on probation) at the last shutdown is reverted to its
+	// pre-change state — fail-safe, and the only recovery that works on macOS.
+	if reverted, perr := proto.RecoverPending(context.Background()); perr != nil {
+		logger.Warn("pending-tx recovery on startup failed", "err", perr)
+	} else if reverted > 0 {
+		logger.Info("reverted in-flight transactions on startup (crash recovery)", "count", reverted)
+	}
+
+	// Crash recovery, step 2: re-assert/repair owned routes against the kernel
 	// (spec §2.5/§13). No-op on a fresh DB.
 	if added, removed, rerr := proto.ReconcileOwnership(context.Background()); rerr != nil {
 		logger.Warn("ownership reconcile on startup failed", "err", rerr)
@@ -149,17 +158,20 @@ func run() error {
 	defer stop()
 
 	if pushInterval > 0 {
-		go broadcastLoop(ctx, srv, pushInterval)
+		go supervise(ctx, logger, "broadcast", func(c context.Context) { broadcastLoop(c, srv, pushInterval) })
 	}
 
 	// Auto-apply: watch for network changes and reconcile safely (guard kept,
 	// manual confirm skipped). Routing keeps working with no UI open (spec §3.1).
+	// Each loop is supervised: a panic is recovered + the loop restarted, so a
+	// single bad snapshot can never crash the daemon (which would kill an armed
+	// watchdog and strand the user).
 	if autoApply {
 		poller := netmon.NewPoller(prov, pollInterval)
 		rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, func() bool { return autoApply })
-		go poller.Run(ctx)
-		go rec.Run(ctx, poller.Events())
-		go domainReresolveLoop(ctx, svc, rec, logger)
+		go supervise(ctx, logger, "poller", poller.Run)
+		go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
+		go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
 		logger.Info("auto-apply enabled", "poll", pollInterval)
 	}
 
@@ -173,6 +185,31 @@ func run() error {
 	}
 	logger.Info("riftrouted stopped")
 	return nil
+}
+
+// supervise runs a long-lived loop, recovering from panics and restarting it
+// (with a short backoff) until ctx is done. A panic in one background loop must
+// never crash the daemon — that would tear down every goroutine, including an
+// armed watchdog mid-transaction, and strand the user.
+func supervise(ctx context.Context, logger *slog.Logger, name string, fn func(context.Context)) {
+	for ctx.Err() == nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("recovered panic in loop; restarting", "loop", name, "panic", r)
+				}
+			}()
+			fn(ctx)
+		}()
+		if ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // listen creates the UDS listener, removing any stale socket and locking down

@@ -31,8 +31,14 @@ func (systemdManager) Install(daemonBin, socket string, allowUID int) error {
 	if err := copyFile(daemonBin, installedBin, 0o755); err != nil {
 		return fmt.Errorf("install binary: %w", err)
 	}
+	if err := secureRootFile(installedBin, 0o755); err != nil {
+		return fmt.Errorf("secure binary: %w", err)
+	}
 	if err := os.WriteFile(systemdUnitPath, []byte(renderUnit(installedBin, socket, allowUID)), 0o644); err != nil {
 		return fmt.Errorf("write unit: %w", err)
+	}
+	if err := secureRootFile(systemdUnitPath, 0o644); err != nil {
+		return fmt.Errorf("secure unit: %w", err)
 	}
 	if err := runCmd("systemctl", "daemon-reload"); err != nil {
 		return err
@@ -46,6 +52,7 @@ func (systemdManager) Uninstall() error {
 	}
 	_ = runCmd("systemctl", "disable", "--now", systemdUnitName)
 	_ = os.Remove(systemdUnitPath)
+	_ = os.Remove(installedBin) // remove the privileged binary too
 	_ = runCmd("systemctl", "daemon-reload")
 	return nil
 }

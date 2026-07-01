@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -99,13 +101,30 @@ func invokingUID() int {
 func daemonUninstallCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
-		Short: "Stop and remove the riftrouted system service (requires root)",
-		Args:  cobra.NoArgs,
+		Short: "Flush managed routes, then stop and remove the riftrouted service (requires root)",
+		Long: "Restores the host to its pre-RiftRoute state: flushes ALL managed routes/\n" +
+			"rules while the daemon is still alive (its ownership DB is the source of\n" +
+			"truth on macOS), then unloads and removes the service and binary.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// Flush first, while the daemon is up. The reconciler is event-driven, so
+			// nothing re-applies between the flush and the unload below.
+			ctx, cancel := context.WithTimeout(cmd.Context(), 8*time.Second)
+			flushErr := client().Panic(ctx)
+			cancel()
+			if flushErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"warning: could not flush managed routes (daemon may be down): %v\n"+
+						"if any RiftRoute routes remain, start the daemon and run `riftroute panic`.\n", flushErr)
+			}
 			if err := platform.NewServiceManager().Uninstall(); err != nil {
 				return err
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "uninstalled riftrouted")
+			if flushErr == nil {
+				fmt.Fprintln(cmd.OutOrStdout(), "flushed managed routes and uninstalled riftrouted")
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "uninstalled riftrouted")
+			}
 			return nil
 		},
 	}

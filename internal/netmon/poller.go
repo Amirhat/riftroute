@@ -59,8 +59,8 @@ func (p *Poller) Run(ctx context.Context) {
 // resulting events, and returns them (the return value aids testing). The first
 // call only establishes the baseline.
 func (p *Poller) PollOnce(ctx context.Context) []Event {
-	cur := p.capture(ctx)
 	prev := p.last
+	cur := p.capture(ctx, prev)
 	p.last = cur
 	if prev == nil {
 		return nil // baseline
@@ -97,40 +97,60 @@ func (p *Poller) PollOnce(ctx context.Context) []Event {
 	return events
 }
 
-func (p *Poller) capture(ctx context.Context) *snapshot {
+// capture builds a fresh snapshot. When a provider read FAILS for a field, it
+// carries the previous snapshot's value forward instead of recording an empty
+// value — otherwise a transient read error looks identical to a real state
+// change and fires a spurious event → a needless (and potentially unsafe)
+// reconcile during network turbulence.
+func (p *Poller) capture(ctx context.Context, prev *snapshot) *snapshot {
 	s := &snapshot{}
-	ifaces, _ := p.prov.Interfaces(ctx)
-	var ifNames []string
-	for _, ifc := range ifaces {
-		state := "down"
-		if ifc.Up {
-			state = "up"
+	if ifaces, err := p.prov.Interfaces(ctx); err == nil {
+		var ifNames []string
+		for _, ifc := range ifaces {
+			state := "down"
+			if ifc.Up {
+				state = "up"
+			}
+			ifNames = append(ifNames, ifc.Name+":"+state)
+			if ifc.IsVPN && ifc.Up {
+				s.vpnOn = true
+				s.vpnUp = append(s.vpnUp, ifc.Name)
+			}
 		}
-		ifNames = append(ifNames, ifc.Name+":"+state)
-		if ifc.IsVPN && ifc.Up {
-			s.vpnOn = true
-			s.vpnUp = append(s.vpnUp, ifc.Name)
-		}
+		sort.Strings(s.vpnUp)
+		sort.Strings(ifNames)
+		s.ifaces = strings.Join(ifNames, ",")
+	} else if prev != nil {
+		s.vpnOn, s.vpnUp, s.ifaces = prev.vpnOn, prev.vpnUp, prev.ifaces
 	}
-	sort.Strings(s.vpnUp)
-	sort.Strings(ifNames)
-	s.ifaces = strings.Join(ifNames, ",")
-	s.defaultV4 = defaultKey(ctx, p.prov, domain.FamilyV4)
-	s.defaultV6 = defaultKey(ctx, p.prov, domain.FamilyV6)
+	s.defaultV4 = defaultKey(ctx, p.prov, domain.FamilyV4, prevOr(prev, func(x *snapshot) string { return x.defaultV4 }))
+	s.defaultV6 = defaultKey(ctx, p.prov, domain.FamilyV6, prevOr(prev, func(x *snapshot) string { return x.defaultV6 }))
 	if dns, err := p.prov.DNSConfig(ctx); err == nil {
 		s.dns = strings.Join(dns.Servers, ",")
+	} else if prev != nil {
+		s.dns = prev.dns
 	}
 	return s
 }
 
-func defaultKey(ctx context.Context, prov provider.RouteProvider, fam domain.Family) string {
+func prevOr(prev *snapshot, get func(*snapshot) string) string {
+	if prev == nil {
+		return ""
+	}
+	return get(prev)
+}
+
+// defaultKey returns "gw|iface|owner" for the default route in fam. On a provider
+// read error it returns prevVal (carry-forward), NOT "" — so a transient failure
+// is not mistaken for "the default route disappeared".
+func defaultKey(ctx context.Context, prov provider.RouteProvider, fam domain.Family, prevVal string) string {
 	def := "0.0.0.0/0"
 	if fam == domain.FamilyV6 {
 		def = "::/0"
 	}
 	routes, err := prov.ListRoutes(ctx, fam)
 	if err != nil {
-		return ""
+		return prevVal // read failed → keep prior value, don't fire a false change
 	}
 	for _, r := range routes {
 		if r.DstCIDR == def {

@@ -259,6 +259,43 @@ func TestNetnsKillSwitch(t *testing.T) {
 	}
 }
 
+// Crash recovery on a REAL kernel: a route applied but never confirmed (the
+// daemon "crashed"/lost power while it was on probation) is reverted from the
+// kernel on the next startup via the write-ahead journal. This is the host-safety
+// backstop against SIGKILL / power loss leaving stranded routes.
+func TestNetnsRecoverPending(t *testing.T) {
+	prov := linux.New()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mk := func() *safety.Protocol {
+		return safety.NewProtocol(prov, st, safety.NewFakeClock(time.Unix(0, 0)),
+			func() safety.Prober { return safety.NewFakeProber() }, "linux", log)
+	}
+
+	p1 := mk()
+	res, err := p1.Apply(context.Background(), bypass("9.9.9.0/24"), nil, opts(true))
+	if err != nil || !res.NeedsConfirm {
+		t.Fatalf("apply: %+v err=%v", res, err)
+	}
+	if managedCount(t, prov) != 1 {
+		t.Fatal("route should be installed in the kernel pending confirm")
+	}
+
+	// Simulate restart: a fresh Protocol over the SAME store + provider.
+	p2 := mk()
+	n, err := p2.RecoverPending(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("RecoverPending n=%d err=%v", n, err)
+	}
+	if managedCount(t, prov) != 0 {
+		t.Fatalf("crash recovery must remove the real kernel route, got %d", managedCount(t, prov))
+	}
+}
+
 // Per-app routing (routing half): a real fwmark `ip rule` into the tunnel table.
 func TestNetnsFwmarkRule(t *testing.T) {
 	prov := linux.New()

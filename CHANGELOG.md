@@ -60,9 +60,35 @@ the initial release.
 - CI: Go race tests, real end-to-end suite, Linux netns suite, cgo-free cross
   builds, native GUI builds, and frontend smoke tests.
 
+### Security & host-safety (pre-ship audit)
+- **Crash-safe apply.** A write-ahead journal records how to undo a transaction
+  *before* the kernel is touched; on startup, any in-flight/on-probation tx is
+  reverted (fail-safe) — the only recovery that works on macOS, where kernel
+  routes carry no owner tag. Closes SIGKILL/power-loss orphan routes and the
+  "killed while the watchdog was armed" gap. (netns-tested on a real kernel.)
+- **LPE fix.** The root daemon binary now installs to `/Library/PrivilegedHelper
+  Tools` (root-only), not `/usr/local/bin` (admin-writable on macOS → root code
+  swap). Binary/plist/unit are chowned to root and rejected if symlinked; the log
+  dir is hardened.
+- **Uninstall restores the host.** Uninstall now flushes all managed routes/rules
+  (while the daemon is live — its DB is authoritative on macOS) before removing
+  the service and binary, instead of leaving them installed.
+- **No crash strands the user.** Every long-lived daemon goroutine (poller,
+  reconciler, watchdog, tx-resolver) recovers from panics; an apply/resolve panic
+  forces a rollback rather than freezing a half-applied change with a dead
+  watchdog.
+- **Fail-safe on unreadable gateway.** A transient gateway read (DHCP renewal,
+  Wi-Fi↔Ethernet) no longer silently disables the gateway-capture guardrail or
+  fires spurious reconciles; main-table changes are refused until the gateway is
+  verifiable.
+- **Conflicting routes refused** before apply; rollback reports its true outcome
+  (keeps ownership + journal on an incomplete revert instead of a false success).
+
 ### Fixed
 - GUI Panic and kill-switch confirmations were no-ops because `window.confirm()`
   is unimplemented in the Wails WKWebView; replaced with an in-app confirm modal.
+- GUI degraded/real-provider `null` slices (`interfaces`/`defaults`/`servers`/
+  `addrs`) no longer crash the dashboard (null-guards + error boundary).
 - GUI showed a blank window with the real provider: macOS interfaces with no
   address marshal `addrs: null` and the dashboard dereferenced `addrs[0]`. Added
   null guards + an error boundary so one bad field can't blank the whole app.

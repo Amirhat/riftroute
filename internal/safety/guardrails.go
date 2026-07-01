@@ -23,6 +23,23 @@ type Violation struct {
 func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired []domain.ManagedRoute, physGW netip.Addr) []Violation {
 	var vs []Violation
 
+	// 0. Fail-safe: if the physical gateway couldn't be resolved (e.g. a transient
+	//    read error during DHCP renewal / Wi-Fi↔Ethernet switch) we CANNOT verify
+	//    the gateway-capture check below. Refuse any main-table (Model A) change
+	//    rather than proceed with the guard silently disabled. Isolated Model-B
+	//    table routes don't touch the on-link gateway path, so they're exempt.
+	if !physGW.IsValid() {
+		for _, d := range desired {
+			if d.Table == "" { // a main-table route
+				vs = append(vs, Violation{
+					Rule:   "gateway-unresolved",
+					Detail: "cannot verify routing safety: the physical gateway is currently unreadable; refusing to change main-table routes",
+				})
+				break
+			}
+		}
+	}
+
 	// 1. Never capture the physical gateway inside a bypass — it can break the
 	//    on-link path to the gateway and strand everything.
 	if physGW.IsValid() {
@@ -69,6 +86,24 @@ func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired [
 		case dec.ViaVPN:
 			vs = append(vs, Violation{Rule: "next-hop-via-vpn", Detail: fmt.Sprintf("gateway %s is not on-link (currently routed via the VPN)", d.Gateway)})
 		}
+	}
+
+	// 2b. Internal conflict: the desired set must not carry the same destination
+	//     with two different next-hops — the kernel would pick one by longest-prefix
+	//     arbitrarily, so the user's intent is ambiguous. Refuse rather than install
+	//     a nondeterministic route.
+	nextHop := map[string]string{} // family|table|cidr → "gw|iface"
+	for _, d := range desired {
+		k := string(d.Family) + "|" + d.Table + "|" + d.DstCIDR
+		nh := d.Gateway + "|" + d.Iface
+		if prev, ok := nextHop[k]; ok && prev != nh {
+			vs = append(vs, Violation{
+				Rule:   "conflicting-route",
+				Detail: fmt.Sprintf("destination %s has conflicting next-hops (%s vs %s)", d.DstCIDR, prev, nh),
+			})
+			continue
+		}
+		nextHop[k] = nh
 	}
 
 	// 3. SSH-session self-lockout protection: refuse changes that would alter the
