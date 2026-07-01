@@ -7,6 +7,9 @@
 package linux
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider"
 )
@@ -17,8 +20,32 @@ type Provider struct {
 	provider.Base
 }
 
-// New returns a Linux provider.
-func New() *Provider { return &Provider{} }
+// New returns a Linux provider. It best-effort registers the "riftroute" proto
+// name so `ip route show` reads nicely; correctness never depends on it (we tag
+// and match by the numeric value regardless).
+func New() *Provider {
+	registerProtoName()
+	return &Provider{}
+}
+
+// registerProtoName maps routeProtoNum → "riftroute" in rt_protos.d so tooling
+// prints the friendly name. Best-effort and idempotent: needs root + a writable
+// /etc/iproute2 (absent in unprivileged/test namespaces), and any failure is
+// ignored because the numeric tag is authoritative.
+func registerProtoName() {
+	if os.Geteuid() != 0 {
+		return
+	}
+	const dir = "/etc/iproute2/rt_protos.d"
+	path := filepath.Join(dir, "riftroute.conf")
+	if _, err := os.Stat(path); err == nil {
+		return // already registered
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return // no rt_protos.d on this system; skip
+	}
+	_ = os.WriteFile(path, []byte(routeProtoNum+" "+routeProtoName+"\n"), 0o644)
+}
 
 func (p *Provider) Name() string { return "linux" }
 

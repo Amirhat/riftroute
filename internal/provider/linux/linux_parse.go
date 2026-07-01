@@ -53,11 +53,35 @@ func normalizeDst(dst string, family domain.Family) string {
 	}
 }
 
-// ownerForLinux classifies a route's owner from its proto tag and device. The
-// `riftroute` proto is our ownership marker (registered in rt_protos); a default
-// via a tunnel device is best-effort VPN; everything else is system.
+// RiftRoute tags its routes/rules with a kernel route protocol (RTPROT) value so
+// it can enumerate and flush exactly what it owns. The `ip` commands use the
+// NUMERIC value because iproute2 rejects an *unregistered protocol name*
+// ("protocol value is invalid") — the name "riftroute" only works where it's
+// registered in rt_protos. We tag with the number, treat BOTH the number and the
+// name as ours, and (best-effort, see linux.go) register the name for readable
+// `ip route show`. These live in this non-build-tagged file so the pure parsers
+// and the linux-only mutation code both see them.
+const (
+	routeProtoNum  = "152"       // RTPROT tag; unassigned in the standard rt_protos
+	routeProtoName = "riftroute" // canonical internal name
+)
+
+func isOurProto(p string) bool { return p == routeProtoNum || p == routeProtoName }
+
+// canonicalProto normalizes a parsed protocol string to our internal name when
+// it's ours (whether the kernel reported the number or the registered name).
+func canonicalProto(p string) string {
+	if isOurProto(p) {
+		return routeProtoName
+	}
+	return p
+}
+
+// ownerForLinux classifies a route's owner from its proto tag and device. Our
+// proto (number or registered name) is the ownership marker; a default via a
+// tunnel device is best-effort VPN; everything else is system.
 func ownerForLinux(protocol, dev string) domain.Owner {
-	if protocol == "riftroute" {
+	if isOurProto(protocol) {
 		return domain.OwnerRiftRoute
 	}
 	if isTunnel(dev) {
@@ -81,7 +105,7 @@ func parseRoutesJSON(data []byte, family domain.Family) ([]domain.Route, error) 
 			Metric:  r.Metric,
 			Family:  family,
 			Owner:   ownerForLinux(r.Protocol, r.Dev),
-			Proto:   r.Protocol,
+			Proto:   canonicalProto(r.Protocol),
 		})
 	}
 	return out, nil
@@ -100,7 +124,7 @@ func parseRulesJSON(data []byte, family domain.Family) ([]domain.PolicyRule, err
 			Selector: ruleSelector(r),
 			Table:    r.Table,
 			Family:   family,
-			Proto:    r.Protocol,
+			Proto:    canonicalProto(r.Protocol),
 		})
 	}
 	return out, nil
@@ -173,7 +197,7 @@ func parseRoutesText(text string, family domain.Family) []domain.Route {
 				}
 			}
 		}
-		r.Proto = proto
+		r.Proto = canonicalProto(proto)
 		r.Owner = ownerForLinux(proto, r.Iface)
 		out = append(out, r)
 	}

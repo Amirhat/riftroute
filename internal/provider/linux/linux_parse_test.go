@@ -42,6 +42,30 @@ func TestParseRoutesJSON(t *testing.T) {
 	}
 }
 
+// On a host that hasn't registered the "riftroute" name in rt_protos, `ip` shows
+// our routes by their NUMERIC proto tag. They must still be recognized as owned
+// and normalized to the canonical "riftroute" — this is what makes the provider
+// portable across iproute2 setups (the CI-failure fix).
+func TestParseRoutesJSON_NumericProtoRecognized(t *testing.T) {
+	const j = `[{"dst":"10.0.0.0/8","gateway":"192.168.1.1","dev":"eth0","protocol":"152","metric":0,"flags":[]}]`
+	routes, err := parseRoutesJSON([]byte(j), domain.FamilyV4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("want 1 route, got %d", len(routes))
+	}
+	if routes[0].Owner != domain.OwnerRiftRoute {
+		t.Errorf("numeric proto %q should be owned by riftroute: %+v", routeProtoNum, routes[0])
+	}
+	if routes[0].Proto != "riftroute" {
+		t.Errorf("numeric proto should normalize to canonical name, got %q", routes[0].Proto)
+	}
+	if !isOurProto("152") || !isOurProto("riftroute") || isOurProto("dhcp") {
+		t.Error("isOurProto should match both the number and the name, not others")
+	}
+}
+
 func TestParseRoutesJSONv6Default(t *testing.T) {
 	const j = `[{"dst":"default","gateway":"fe80::1","dev":"eth0","protocol":"ra","flags":[]}]`
 	routes, err := parseRoutesJSON([]byte(j), domain.FamilyV6)

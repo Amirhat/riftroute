@@ -25,7 +25,7 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	if mr.Route.Gateway != "" {
 		args = append(args, "via", mr.Route.Gateway)
 	}
-	args = append(args, "dev", mr.Route.Iface, "proto", "riftroute")
+	args = append(args, "dev", mr.Route.Iface, "proto", routeProtoNum)
 	if mr.Route.Metric > 0 {
 		args = append(args, "metric", fmt.Sprint(mr.Route.Metric))
 	}
@@ -47,7 +47,7 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	if _, err := netip.ParsePrefix(mr.Route.DstCIDR); err != nil {
 		return fmt.Errorf("linux: invalid destination CIDR %q", mr.Route.DstCIDR)
 	}
-	args := []string{"route", "del", mr.Route.DstCIDR, "proto", "riftroute"}
+	args := []string{"route", "del", mr.Route.DstCIDR, "proto", routeProtoNum}
 	if mr.Route.Table != "" {
 		args = append(args, "table", mr.Route.Table)
 	}
@@ -68,7 +68,7 @@ func (p *Provider) AddRule(ctx context.Context, mr domain.ManagedRule) error {
 	base = append(base, strings.Fields(mr.Selector)...)
 	base = append(base, "lookup", mr.Table, "priority", fmt.Sprint(mr.Priority))
 
-	out, err := runCombined(ctx, "ip", append(append([]string{}, base...), "protocol", "riftroute")...)
+	out, err := runCombined(ctx, "ip", append(append([]string{}, base...), "protocol", routeProtoNum)...)
 	if err != nil {
 		if strings.Contains(out, "File exists") {
 			return nil
@@ -113,15 +113,15 @@ func (p *Provider) FlushOwned(ctx context.Context) error {
 		}
 	}
 	for _, fam := range []string{"-4", "-6"} {
-		_, err := runCombined(ctx, "ip", fam, "route", "flush", "proto", "riftroute")
+		_, err := runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum)
 		note(err)
-		_, err = runCombined(ctx, "ip", fam, "route", "flush", "proto", "riftroute", "table", routing.ModelBTable)
+		_, err = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.ModelBTable)
 		note(err)
 		// Delete proto-tagged rules enumerated from `ip -j rule show`.
 		if out, e := runCombined(ctx, "ip", "-j", fam, "rule", "show"); e == nil {
 			if rules, perr := parseRulesJSON([]byte(out), famOf(fam)); perr == nil {
 				for _, r := range rules {
-					if r.Proto != "riftroute" {
+					if r.Proto != routeProtoName { // normalized by parseRulesJSON
 						continue
 					}
 					mr := domain.ManagedRule{PolicyRule: r}
