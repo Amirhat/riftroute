@@ -399,6 +399,29 @@ func (p *Protocol) ReconcileOwnership(ctx context.Context) (added, removed int, 
 	return added, removed, nil
 }
 
+// ShutdownResolve resolves in-flight transactions for a GRACEFUL shutdown, so a
+// clean reboot doesn't trip crash-recovery: a guarding non-interactive change is
+// committed (it was applied and working — routing should survive the reboot), an
+// unconfirmed interactive change is rolled back (the user never confirmed it).
+// Only an actual crash — which never runs this — leaves the journal for
+// RecoverPending to revert. Idempotent; safe to call once on the way out.
+func (p *Protocol) ShutdownResolve() {
+	p.txmu.Lock()
+	pts := make([]*pendingTx, 0, len(p.pending))
+	for _, pt := range p.pending {
+		pts = append(pts, pt)
+	}
+	p.txmu.Unlock()
+	for _, pt := range pts {
+		if pt.interactive {
+			pt.decide(decRollback)
+		} else {
+			pt.decide(decCommit)
+		}
+		<-pt.done
+	}
+}
+
 // RecoverPending is the startup fail-safe for the write-ahead journal. Any tx
 // still journaled was in flight — or on probation with its watchdog armed — when
 // the daemon last stopped (crash/power loss/SIGKILL). We can't know it was safe,

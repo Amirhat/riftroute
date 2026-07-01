@@ -178,6 +178,11 @@ func run() error {
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version, "uid", allowUID)
 	serveErr := srv.Serve(ctx, ln)
 
+	// Graceful shutdown: resolve any in-flight transactions (commit auto-applied,
+	// roll back unconfirmed) so a clean reboot doesn't trip crash-recovery. An
+	// actual crash never reaches here, leaving the journal for RecoverPending.
+	proto.ShutdownResolve()
+
 	// Clean up the socket so the next launch starts fresh (spec/AGENTS §4).
 	_ = os.Remove(socketPath)
 	if serveErr != nil {
