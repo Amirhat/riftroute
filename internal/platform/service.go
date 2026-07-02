@@ -101,6 +101,19 @@ func secureRootDir(dir string) error {
 	return os.Chmod(dir, 0o755)
 }
 
+// readTail returns the last n bytes of a file (for surfacing why a daemon that
+// failed to come up died). Returns a placeholder if the file can't be read.
+func readTail(path string, n int) string {
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) == 0 {
+		return "(no log output)"
+	}
+	if len(b) > n {
+		b = b[len(b)-n:]
+	}
+	return strings.TrimSpace(string(b))
+}
+
 // secureRootFile forces path to root-owned with the given mode and rejects a
 // symlink — so a root-run binary/plist can't be replaced by a non-root user.
 func secureRootFile(path string, mode os.FileMode) error {

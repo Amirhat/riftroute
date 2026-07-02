@@ -1,36 +1,15 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#6366F1"/>
-      <stop offset="0.55" stop-color="#4F46E5"/>
-      <stop offset="1" stop-color="#7C3AED"/>
-    </linearGradient>
-    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
-      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#635BFF"/>
+      <stop offset="1" stop-color="#4338CA"/>
     </linearGradient>
   </defs>
-
-  <!-- app-tile background -->
-  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#bg)"/>
-  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#sheen)"/>
-
-  <!-- shield (safety) -->
-  <path d="M512 150 L298 236 V520 C298 712 410 826 512 874 C614 826 726 712 726 520 V236 Z"
-        fill="#ffffff" fill-opacity="0.12"
-        stroke="#ffffff" stroke-width="30" stroke-linejoin="round"/>
-
-  <!-- split route: one flow forks into two destinations -->
-  <g fill="none" stroke="#ffffff" stroke-width="48" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M512 742 V566"/>
-    <path d="M512 566 C512 486 452 470 404 430"/>
-    <path d="M512 566 C512 486 572 470 620 430"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#bg)"/>
+  <!-- one route that forks into two — minimal split-tunnel mark -->
+  <g fill="none" stroke="#ffffff" stroke-width="76" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 736 V520"/>
+    <path d="M512 520 C512 452 452 452 372 372"/>
+    <path d="M512 520 C512 452 572 452 652 372"/>
   </g>
-
-  <!-- nodes: source (bottom) + two destinations (top corners of the shield) -->
-  <circle cx="512" cy="742" r="40" fill="#ffffff"/>
-  <circle cx="404" cy="430" r="40" fill="#ffffff"/>
-  <circle cx="620" cy="430" r="40" fill="#ffffff"/>
-  <!-- accent: the bypass destination glows -->
-  <circle cx="620" cy="430" r="18" fill="#A78BFA"/>
 </svg>

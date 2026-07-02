@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/apiclient"
 	"github.com/Amirhat/riftroute/internal/platform"
 )
 
@@ -60,10 +62,26 @@ func (a *App) privilegedDaemon(sub, extra string) error {
 	if err := runElevated(cli, sub, extra); err != nil {
 		return err
 	}
-	// launchd/systemd needs a beat; then tell the UI to re-check reachability.
-	time.Sleep(900 * time.Millisecond)
+	// After install the daemon listens on the SYSTEM socket, not the per-user dev
+	// socket the GUI first bound to — re-resolve and reconnect, else the UI would
+	// stay "offline" even on a perfect install.
+	a.reconnect()
+	time.Sleep(600 * time.Millisecond)
 	a.emit("rr:connection", map[string]any{"reachable": a.Reachable()})
 	return nil
+}
+
+// reconnect re-resolves the daemon socket (it changes from the per-user dev
+// socket to the system socket once the service is installed) and restarts the
+// live event stream against it, so the UI comes online after an install.
+func (a *App) reconnect() {
+	if a.cancelEvents != nil {
+		a.cancelEvents()
+	}
+	a.client = apiclient.New(platform.ClientSocket())
+	ec, cancel := context.WithCancel(a.ctx)
+	a.cancelEvents = cancel
+	go a.streamEvents(ec)
 }
 
 // runElevated executes `<cli> daemon <sub> [extra]` with administrator
@@ -87,7 +105,13 @@ func runElevated(cli, sub, extra string) error {
 func elevateCmd(goos, cli, sub, extra string) (string, []string, error) {
 	switch goos {
 	case "darwin":
-		inner := fmt.Sprintf("%q daemon %s", cli, sub)
+		// Strip the download-quarantine from the bundled CLIs FIRST (as root, inside
+		// the elevated shell) so Gatekeeper doesn't block executing them — otherwise
+		// an app opened via right-click→Open (which only clears the main binary)
+		// would fail the install silently. /bin/sh + xattr aren't quarantined, so the
+		// strip runs before we exec the now-clean CLI.
+		inner := fmt.Sprintf("/usr/bin/xattr -dr com.apple.quarantine %q 2>/dev/null; %q daemon %s",
+			filepath.Dir(cli), cli, sub)
 		if extra != "" {
 			inner += " " + extra
 		}

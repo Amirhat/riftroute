@@ -19,7 +19,8 @@ func TestElevateCmdDarwin(t *testing.T) {
 		"do shell script ",
 		"with administrator privileges",
 		"daemon install --allow-uid 501",
-		`\"` + cli + `\"`, // the CLI path is quoted inside the AppleScript string
+		`\"` + cli + `\"`,                // the CLI path is quoted inside the AppleScript string
+		"xattr -dr com.apple.quarantine", // de-quarantine the bundled CLIs first
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("script missing %q:\n%s", want, s)

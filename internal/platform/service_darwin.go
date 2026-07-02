@@ -5,7 +5,46 @@ package platform
 import (
 	"fmt"
 	"os"
+	"time"
 )
+
+const launchdTarget = "system/" + launchdLabel
+
+// bootService (re)loads the daemon into the SYSTEM launchd domain and starts it.
+// Uses the modern verbs — `launchctl load` is legacy and does not reliably load
+// a system LaunchDaemon on macOS 11+ (it was the reason the service "installed
+// but never started"). Falls back to `load -w` only on ancient macOS.
+func bootService() error {
+	_ = runCmd("launchctl", "bootout", "system", launchdPlist) // clear any prior copy
+	_ = runCmd("launchctl", "enable", launchdTarget)           // undo any earlier disable
+	if err := runCmd("launchctl", "bootstrap", "system", launchdPlist); err != nil {
+		if lerr := runCmd("launchctl", "load", "-w", launchdPlist); lerr != nil {
+			return fmt.Errorf("launchctl bootstrap failed: %w", err)
+		}
+	}
+	_ = runCmd("launchctl", "kickstart", "-k", launchdTarget) // ensure it's running now
+	return nil
+}
+
+func unbootService() {
+	_ = runCmd("launchctl", "bootout", "system", launchdPlist)
+	_ = runCmd("launchctl", "bootout", launchdTarget) // belt-and-suspenders
+}
+
+// waitForSocket blocks until the daemon's socket appears (proof it actually came
+// up), or returns an error with the daemon's log tail so the failure is visible
+// instead of a silent "installed but not running".
+func waitForSocket(socket string) error {
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if fileExists(socket) {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("riftrouted did not come up within 8s — recent log (%s/riftrouted.err.log):\n%s",
+		logDir, readTail(logDir+"/riftrouted.err.log", 1200))
+}
 
 const (
 	launchdLabel = "com.riftroute.daemon"
@@ -54,16 +93,17 @@ func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
 	if err := secureRootFile(launchdPlist, 0o644); err != nil {
 		return fmt.Errorf("secure plist: %w", err)
 	}
-	// Reload cleanly if already loaded.
-	_ = runCmd("launchctl", "unload", launchdPlist)
-	return runCmd("launchctl", "load", "-w", launchdPlist)
+	if err := bootService(); err != nil {
+		return err
+	}
+	return waitForSocket(socket) // confirm it actually started, else surface the log
 }
 
 func (launchdManager) Uninstall() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	_ = runCmd("launchctl", "unload", "-w", launchdPlist)
+	unbootService()
 	_ = os.Remove(launchdPlist)
 	_ = os.Remove(installedBin) // remove the privileged binary too
 	return nil
@@ -73,8 +113,8 @@ func (launchdManager) Restart() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	_ = runCmd("launchctl", "unload", launchdPlist)
-	return runCmd("launchctl", "load", launchdPlist)
+	unbootService()
+	return bootService()
 }
 
 func (launchdManager) Start() error {
@@ -84,14 +124,15 @@ func (launchdManager) Start() error {
 	if !fileExists(launchdPlist) {
 		return fmt.Errorf("service not installed")
 	}
-	return runCmd("launchctl", "load", "-w", launchdPlist)
+	return bootService()
 }
 
 func (launchdManager) Stop() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	return runCmd("launchctl", "unload", launchdPlist)
+	unbootService()
+	return nil
 }
 
 func renderPlist(bin, socket string, allowUID int) string {

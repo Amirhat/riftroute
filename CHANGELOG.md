@@ -85,6 +85,16 @@ the initial release.
   (keeps ownership + journal on an incomplete revert instead of a false success).
 
 ### Fixed
+- **macOS daemon install now actually starts** (was "installed but never ran"):
+  switched the launchd verbs from the legacy `launchctl load` to `bootstrap
+  system` / `bootout` / `kickstart` (validated on macOS 15); the escalated install
+  strips download-quarantine from the bundled CLIs first so Gatekeeper can't block
+  them; the GUI reconnects to the system socket after install; and install now
+  waits for the socket and surfaces the daemon log on failure instead of failing
+  silently.
+- macOS `.dmg` no longer reported "damaged": the app is re-signed (ad-hoc when no
+  Developer ID) after the CLIs are bundled, so the signature stays valid.
+- New minimal app icon (a clean split-route fork on an indigo tile).
 - GUI Panic and kill-switch confirmations were no-ops because `window.confirm()`
   is unimplemented in the Wails WKWebView; replaced with an in-app confirm modal.
 - GUI degraded/real-provider `null` slices (`interfaces`/`defaults`/`servers`/
