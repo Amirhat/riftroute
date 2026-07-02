@@ -31,14 +31,22 @@ mkdir -p "$BINDIR"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${BINDIR}/riftroute" "${ROOT}/cmd/riftroute"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${BINDIR}/riftrouted" "${ROOT}/cmd/riftrouted"
 
+# Re-sign AFTER bundling — adding files under Contents/ invalidates the signature
+# Wails applied at build time. A VALID signature is REQUIRED even without a
+# Developer ID: an app with a broken signature is reported by macOS as "damaged
+# and can't be opened". So we always re-sign — Developer ID when available, else
+# ad-hoc (users then just clear quarantine on first launch; see README).
 if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
   echo "signing app with Developer ID…"
-  codesign --force --deep --options runtime --timestamp \
-    --sign "${MAC_SIGN_IDENTITY}" "$APP"
-  codesign --verify --deep --strict --verbose=2 "$APP"
+  codesign --force --options runtime --timestamp --sign "${MAC_SIGN_IDENTITY}" \
+    "${BINDIR}/riftrouted" "${BINDIR}/riftroute"
+  codesign --force --options runtime --timestamp --deep --sign "${MAC_SIGN_IDENTITY}" "$APP"
 else
-  echo "MAC_SIGN_IDENTITY unset — producing ad-hoc (unsigned) build"
+  echo "no Developer ID — ad-hoc signing (valid signature so macOS won't call it 'damaged')"
+  codesign --force --deep --sign - "$APP"
 fi
+codesign --verify --deep --strict --verbose=2 "$APP" || {
+  echo "code signature verification failed" >&2; exit 1; }
 
 STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
 cp -R "$APP" "$STAGE/"

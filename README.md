@@ -190,9 +190,21 @@ rolled back · `6` doctor failure. `--json` works on every command.
 ## Install
 
 ### macOS
-The GUI ships as `RiftRoute.dmg`. **Developer ID signed + notarized** builds open
-with no prompts. Unsigned/ad-hoc builds require **right-click → Open** once (or
-`xattr -dr com.apple.quarantine RiftRoute.app`).
+The GUI ships as `RiftRoute.dmg`. Because the project isn't (yet) distributed
+with an Apple **Developer ID + notarization**, macOS Gatekeeper will not open it
+on the first try — this is expected for any unsigned open-source app, not a
+problem with the download. The app *is* validly (ad-hoc) code-signed, so it won't
+be reported as "damaged"; you just need to clear the download quarantine once:
+
+```bash
+# after dragging RiftRoute.app to /Applications:
+xattr -dr com.apple.quarantine /Applications/RiftRoute.app
+open /Applications/RiftRoute.app
+```
+
+Or, without the terminal: **right-click the app → Open → Open** (confirm once).
+Either way you only do it once. Developer ID + notarized builds (zero prompts)
+are produced automatically when the maintainer adds signing secrets to CI.
 
 **No terminal needed:** on first launch the app detects there's no daemon and
 shows a **Set up RiftRoute** screen — click **Install & start**, approve the macOS
