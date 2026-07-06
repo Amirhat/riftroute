@@ -25,11 +25,24 @@ mkdir -p "$OUT"
 # service (it escalates `riftroute daemon …` via the admin prompt). They go under
 # Contents/Resources/bin — NOT next to the GUI in MacOS/, because the filesystem
 # is case-insensitive and "riftroute" would collide with "RiftRoute".
-echo "bundling riftroute + riftrouted into the app…"
+echo "bundling riftroute + riftrouted into the app (universal arm64 + x86_64)…"
 BINDIR="${APP}/Contents/Resources/bin"
 mkdir -p "$BINDIR"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${BINDIR}/riftroute" "${ROOT}/cmd/riftroute"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "${BINDIR}/riftrouted" "${ROOT}/cmd/riftrouted"
+LD="-s -w -X main.version=${VERSION}"
+
+# Build each CLI for both Mac architectures and lipo them into one universal
+# binary, so the bundled tools run on Apple Silicon AND Intel regardless of which
+# runner built the DMG (matches the universal GUI — see `make desktop-universal`).
+build_universal() {
+  local pkg="$1" out="$2" tmp
+  tmp="$(mktemp -d)"
+  GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$LD" -o "${tmp}/arm64" "$pkg"
+  GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$LD" -o "${tmp}/amd64" "$pkg"
+  lipo -create -output "$out" "${tmp}/arm64" "${tmp}/amd64"
+  rm -rf "$tmp"
+}
+build_universal "${ROOT}/cmd/riftroute"  "${BINDIR}/riftroute"
+build_universal "${ROOT}/cmd/riftrouted" "${BINDIR}/riftrouted"
 
 # Re-sign AFTER bundling — adding files under Contents/ invalidates the signature
 # Wails applied at build time. A VALID signature is REQUIRED even without a

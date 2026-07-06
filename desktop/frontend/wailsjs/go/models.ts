@@ -1,3 +1,67 @@
+export namespace apiclient {
+	
+	export class ConfigResult {
+	    issues?: config.Issue[];
+	    plan?: domain.Plan;
+	    diff?: domain.Diff;
+	    result?: safety.Result;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.issues = this.convertValues(source["issues"], config.Issue);
+	        this.plan = this.convertValues(source["plan"], domain.Plan);
+	        this.diff = this.convertValues(source["diff"], domain.Diff);
+	        this.result = this.convertValues(source["result"], safety.Result);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace config {
+	
+	export class Issue {
+	    severity: string;
+	    line?: number;
+	    field?: string;
+	    msg: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Issue(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.severity = source["severity"];
+	        this.line = source["line"];
+	        this.field = source["field"];
+	        this.msg = source["msg"];
+	    }
+	}
+
+}
+
 export namespace domain {
 	
 	export class ManagedRule {
@@ -6,6 +70,8 @@ export namespace domain {
 	    table: string;
 	    family: string;
 	    proto?: string;
+	    route_to_iface?: string;
+	    route_to_gw?: string;
 	    profile_id: string;
 	    // Go type: time
 	    created_at: any;
@@ -21,6 +87,8 @@ export namespace domain {
 	        this.table = source["table"];
 	        this.family = source["family"];
 	        this.proto = source["proto"];
+	        this.route_to_iface = source["route_to_iface"];
+	        this.route_to_gw = source["route_to_gw"];
 	        this.profile_id = source["profile_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
@@ -220,6 +288,7 @@ export namespace domain {
 	    ipv6: boolean;
 	    kill_switch: boolean;
 	    iface_scoping: boolean;
+	    backend?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Capabilities(source);
@@ -235,6 +304,7 @@ export namespace domain {
 	        this.ipv6 = source["ipv6"];
 	        this.kill_switch = source["kill_switch"];
 	        this.iface_scoping = source["iface_scoping"];
+	        this.backend = source["backend"];
 	    }
 	}
 	export class DNSState {
@@ -438,6 +508,7 @@ export namespace domain {
 	    adds: number;
 	    dels: number;
 	    changes: number;
+	    reason?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new DriftStatus(source);
@@ -449,6 +520,31 @@ export namespace domain {
 	        this.adds = source["adds"];
 	        this.dels = source["dels"];
 	        this.changes = source["changes"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class Flow {
+	    proto: string;
+	    local: string;
+	    remote: string;
+	    state?: string;
+	    process?: string;
+	    iface?: string;
+	    via_vpn: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Flow(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.proto = source["proto"];
+	        this.local = source["local"];
+	        this.remote = source["remote"];
+	        this.state = source["state"];
+	        this.process = source["process"];
+	        this.iface = source["iface"];
+	        this.via_vpn = source["via_vpn"];
 	    }
 	}
 	export class Health {
@@ -511,6 +607,49 @@ export namespace domain {
 	        this.detail = source["detail"];
 	    }
 	}
+	export class List {
+	    name: string;
+	    static?: string[];
+	    source?: string;
+	    refresh?: string;
+	    // Go type: time
+	    last_fetched?: any;
+	    checksum?: string;
+	    resolved?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new List(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.static = source["static"];
+	        this.source = source["source"];
+	        this.refresh = source["refresh"];
+	        this.last_fetched = this.convertValues(source["last_fetched"], null);
+	        this.checksum = source["checksum"];
+	        this.resolved = source["resolved"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	
 	
 	
@@ -521,6 +660,8 @@ export namespace domain {
 	    table: string;
 	    family: string;
 	    proto?: string;
+	    route_to_iface?: string;
+	    route_to_gw?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new PolicyRule(source);
@@ -533,6 +674,8 @@ export namespace domain {
 	        this.table = source["table"];
 	        this.family = source["family"];
 	        this.proto = source["proto"];
+	        this.route_to_iface = source["route_to_iface"];
+	        this.route_to_gw = source["route_to_gw"];
 	    }
 	}
 	export class Rule {
@@ -554,6 +697,7 @@ export namespace domain {
 	export class Profile {
 	    id: string;
 	    name: string;
+	    description?: string;
 	    enabled: boolean;
 	    mode: string;
 	    gateway: string;
@@ -570,6 +714,7 @@ export namespace domain {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	        this.description = source["description"];
 	        this.enabled = source["enabled"];
 	        this.mode = source["mode"];
 	        this.gateway = source["gateway"];
@@ -736,6 +881,20 @@ export namespace domain {
 		    return a;
 		}
 	}
+	export class SplitDNSRoute {
+	    domain: string;
+	    resolver: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SplitDNSRoute(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.domain = source["domain"];
+	        this.resolver = source["resolver"];
+	    }
+	}
 	export class VPNStatus {
 	    active: boolean;
 	    interfaces: string[];
@@ -808,6 +967,24 @@ export namespace domain {
 
 export namespace main {
 	
+	export class ConfigFile {
+	    path: string;
+	    name: string;
+	    format: string;
+	    content: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ConfigFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.format = source["format"];
+	        this.content = source["content"];
+	    }
+	}
 	export class DaemonInfo {
 	    manager: string;
 	    installed: boolean;
@@ -871,6 +1048,65 @@ export namespace safety {
 	        this.status = source["status"];
 	        this.needs_confirm = source["needs_confirm"];
 	        this.error = source["error"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+}
+
+export namespace update {
+	
+	export class Asset {
+	    name: string;
+	    browser_download_url: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Asset(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.browser_download_url = source["browser_download_url"];
+	    }
+	}
+	export class Result {
+	    current: string;
+	    latest: string;
+	    available: boolean;
+	    url?: string;
+	    notes?: string;
+	    assets?: Asset[];
+	
+	    static createFrom(source: any = {}) {
+	        return new Result(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.current = source["current"];
+	        this.latest = source["latest"];
+	        this.available = source["available"];
+	        this.url = source["url"];
+	        this.notes = source["notes"];
+	        this.assets = this.convertValues(source["assets"], Asset);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -59,8 +59,8 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 
 | Area | What you get |
 |------|--------------|
-| Routing models | Exclude (Model A: host/CIDR routes) and Include (Linux **Model B**: dedicated table `5252` + `ip rule … proto riftroute`) |
-| Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark) |
+| Routing models | Exclude (Model A: host/CIDR routes) and Include — Linux **Model B** (dedicated table `5252` + `ip rule … proto riftroute`) or macOS **PF `route-to`** anchors (the Darwin analogue; policy routing + per-app parity) |
+| Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark; macOS PF match on uid/user) |
 | Lists | Inline static + subscribable remote lists (HTTPS-only, size-capped, checksummed, never executed) |
 | Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails |
 | Kill switch | Default-drop egress fence (nftables on Linux / pf on macOS) with a reconnect allow-list |
@@ -126,7 +126,15 @@ at a specific daemon instead, set `RIFTROUTE_SOCKET=/path/to.sock`.
 
 RiftRoute is driven by a declarative, git-committable file (YAML or TOML).
 Validate it (`riftroute apply --dry-run config.yaml`) or apply it
-(`riftroute apply config.yaml`). Example:
+(`riftroute apply config.yaml`). **Everything is also fully configurable in the
+GUI — no YAML required**: the Profiles screen has a visual **Profile Builder**
+(Include/Exclude mode, CIDR/IP + domain + per-app rules with inline validation, a
+live staged-changes banner, plan preview, commit-confirmed apply) and a **lists
+manager** (static or subscribable remote lists); Settings has a **split-DNS
+editor**, the daemon lifecycle, the kill switch, and an update check; a **Flows**
+view shows live connections via-VPN vs direct. Import a `.yaml` with
+**Import / Apply Config File**, or round-trip the other way with
+**Export config**. Example config:
 
 ```yaml
 version: 1
@@ -157,10 +165,12 @@ profiles:
       - { type: domain, value: intranet.example.com }
   - name: only-stream
     enabled: false
-    mode: include              # ONLY these go through the tunnel (Linux Model B)
-    rules:
+    mode: include              # ONLY these go through the tunnel
+    rules:                     # Linux Model B, or macOS PF route-to anchors
       - { type: cidr, value: 198.51.100.0/24 }
-      - { type: app,  value: firefox }   # marked traffic → tunnel table
+      - { type: app,  value: firefox }   # Linux: marked traffic → tunnel table
+      # on macOS an `app` rule matches by uid/username (PF socket owner), e.g.
+      # - { type: app, value: "501" }    # → route this user's egress into the tunnel
 ```
 
 ## CLI
@@ -190,8 +200,10 @@ rolled back · `6` doctor failure. `--json` works on every command.
 ## Install
 
 ### macOS
-The GUI ships as `RiftRoute.dmg`. Because the project isn't (yet) distributed
-with an Apple **Developer ID + notarization**, macOS Gatekeeper will not open it
+The GUI ships as `RiftRoute.dmg` — a **universal** app (Apple Silicon **and**
+Intel; the bundled CLI + daemon are universal too). Because the project isn't
+(yet) distributed with an Apple **Developer ID + notarization**, macOS Gatekeeper
+will not open it
 on the first try — this is expected for any unsigned open-source app, not a
 problem with the download. The app *is* validly (ad-hoc) code-signed, so it won't
 be reported as "damaged"; you just need to clear the download quarantine once:
@@ -269,8 +281,14 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full dev/test/build workflow.
 ## Safety model in one paragraph
 
 Routes RiftRoute installs are tagged as its own (`proto riftroute` on Linux; an
-ownership map on macOS), so it only ever touches what it created. Each apply
-snapshots the affected state and precomputes an exact inverse; it arms a watchdog
+ownership map on macOS), so it only ever touches what it created. macOS policy
+routing (include / per-app mode) lives in a dedicated PF anchor referenced by a
+single **marked, backed-up, reversible** block in `/etc/pf.conf` — added only the
+first time you enable it, and removed (anchor flushed, `pf.conf` restored) on
+Panic / uninstall. Its rules only ever *pass* matched traffic into the tunnel,
+never block, so an orphaned rule can never fence the host off the network. Each
+apply snapshots the affected state and precomputes an exact inverse; it arms a
+watchdog
 that probes anchor reachability and, on an interactive apply, requires a
 commit-confirm — if connectivity drops or you don't confirm in time, the change
 auto-reverts atomically. A daemon crash mid-transaction is repaired by an

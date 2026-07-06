@@ -4,13 +4,14 @@ import {
   TableIcon,
   ExplainIcon,
   ProfilesIcon,
+  FlowsIcon,
   HistoryIcon,
   SettingsIcon,
   DiagnosticsIcon,
   ShieldIcon,
 } from './icons'
 
-export type View = 'dashboard' | 'routes' | 'explain' | 'profiles' | 'diagnostics' | 'history' | 'settings'
+export type View = 'dashboard' | 'routes' | 'explain' | 'profiles' | 'flows' | 'diagnostics' | 'history' | 'settings'
 
 type Item = {
   view: View
@@ -24,6 +25,7 @@ const items: Item[] = [
   { view: 'routes', label: 'Routing Table', icon: TableIcon },
   { view: 'explain', label: 'Explain', icon: ExplainIcon },
   { view: 'profiles', label: 'Profiles', icon: ProfilesIcon },
+  { view: 'flows', label: 'Flows', icon: FlowsIcon },
   { view: 'diagnostics', label: 'Diagnostics', icon: DiagnosticsIcon },
   { view: 'history', label: 'History', icon: HistoryIcon },
   { view: 'settings', label: 'Settings', icon: SettingsIcon },

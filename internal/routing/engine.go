@@ -98,7 +98,15 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 		switch p.Mode {
 		case domain.ModeInclude:
 			if !in.PolicyRouting {
-				return nil, nil, fmt.Errorf("profile %q: include mode requires policy routing (Linux Model B); unavailable on this platform", p.Name)
+				return nil, nil, fmt.Errorf("profile %q: include mode requires policy routing (Linux Model B / macOS PF route-to); unavailable on this platform", p.Name)
+			}
+			if in.Platform == "darwin" {
+				// macOS: PF route-to anchors — the Darwin analogue of Model B. No
+				// dedicated table/default; the tunnel target rides on each rule.
+				if err := buildDarwinInclude(p, byFamily, in, seenRule, &rules); err != nil {
+					return nil, nil, err
+				}
+				break
 			}
 			addRule := func(pr domain.PolicyRule, fam domain.Family) {
 				k := RuleKey(pr)
@@ -167,6 +175,74 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 	sort.SliceStable(routes, func(i, j int) bool { return RouteKey(routes[i].Route) < RouteKey(routes[j].Route) })
 	sort.SliceStable(rules, func(i, j int) bool { return RuleKey(rules[i].PolicyRule) < RuleKey(rules[j].PolicyRule) })
 	return routes, rules, nil
+}
+
+// buildDarwinInclude emits macOS PF route-to rules for an include-mode profile:
+// each aggregated destination prefix — and each per-app uid — is steered into the
+// active tunnel. Unlike Linux Model B there is no dedicated table or table
+// default; the route-to target (tunnel iface + optional gateway) is carried on
+// the rule itself, and the macOS provider renders it into a `pass out quick
+// route-to (...)` anchor rule. Refuses when no tunnel is active (fail-safe: never
+// emit an include rule that would blackhole matched traffic into a dead iface).
+func buildDarwinInclude(p domain.Profile, byFamily map[domain.Family][]netip.Prefix, in DesiredInput, seenRule map[string]bool, rules *[]domain.ManagedRule) error {
+	add := func(pr domain.PolicyRule) {
+		k := RuleKey(pr)
+		if seenRule[k] {
+			return
+		}
+		seenRule[k] = true
+		*rules = append(*rules, domain.ManagedRule{PolicyRule: pr, ProfileID: p.ID, CreatedAt: in.Now})
+	}
+	mkRule := func(selector string, fam domain.Family) (domain.PolicyRule, bool) {
+		vpnGW, vpnIface := vpnFor(fam, in)
+		if vpnIface == "" {
+			return domain.PolicyRule{}, false
+		}
+		gwStr := ""
+		if vpnGW.IsValid() {
+			gwStr = vpnGW.String()
+		}
+		return domain.PolicyRule{
+			Priority: ModelBRulePrio, Selector: selector, Family: fam,
+			Proto: "riftroute", RouteToIface: vpnIface, RouteToGW: gwStr,
+		}, true
+	}
+
+	for fam, prefixes := range byFamily {
+		for _, pfx := range Aggregate(prefixes) {
+			pr, ok := mkRule("to "+pfx.String(), fam)
+			if !ok {
+				return fmt.Errorf("profile %q: include mode has no active VPN tunnel for %s to route into", p.Name, fam)
+			}
+			add(pr)
+		}
+	}
+
+	// Per-app (Darwin): macOS has no cgroup/fwmark, but PF matches on the socket
+	// owner, so an `app` rule whose value is a uid/username steers that user's
+	// egress into the tunnel. Applies to whichever families have a live tunnel.
+	// The value is interpolated into a pfctl rule, so refuse anything that isn't
+	// uid-like — one malformed token would fail the whole anchor load and take
+	// every other rule down with it.
+	for _, r := range p.Rules {
+		if r.Type != domain.RuleApp {
+			continue
+		}
+		if !domain.IsUIDLike(r.Value) {
+			return fmt.Errorf("profile %q: on macOS, per-app rules match by uid/username (PF socket owner); %q is not a uid/username", p.Name, r.Value)
+		}
+		emitted := false
+		for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+			if pr, ok := mkRule("user "+r.Value, fam); ok {
+				add(pr)
+				emitted = true
+			}
+		}
+		if !emitted {
+			return fmt.Errorf("profile %q: per-app include rule %q has no active VPN tunnel to route into", p.Name, r.Value)
+		}
+	}
+	return nil
 }
 
 func addRoute(seen map[string]bool, out *[]domain.ManagedRoute, rt domain.Route, profile string, now time.Time) bool {
@@ -278,6 +354,18 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 }
 
 func commandForRule(kind domain.OpKind, r domain.PolicyRule) []string {
+	// A macOS PF route-to rule (identified by its route-to target) renders as an
+	// anchor mutation for the plan preview; the provider applies the whole anchor.
+	if r.RouteToIface != "" {
+		target := r.RouteToIface
+		if r.RouteToGW != "" {
+			target = r.RouteToIface + " " + r.RouteToGW
+		}
+		if kind == domain.OpDelRule {
+			return []string{"pf", "anchor", "riftroute:", "remove", r.Selector}
+		}
+		return []string{"pf", "anchor", "riftroute:", "pass", "out", "route-to", "(" + target + ")", r.Selector}
+	}
 	verb := "add"
 	if kind == domain.OpDelRule {
 		verb = "del"
@@ -301,6 +389,13 @@ func humanForRoute(kind domain.OpKind, r domain.Route) string {
 }
 
 func humanForRule(kind domain.OpKind, r domain.PolicyRule) string {
+	if r.RouteToIface != "" { // macOS PF route-to
+		verb := "route-to"
+		if kind == domain.OpDelRule {
+			verb = "remove route-to"
+		}
+		return fmt.Sprintf("%s %s → %s (pf)", verb, r.Selector, r.RouteToIface)
+	}
 	verb := "add rule"
 	if kind == domain.OpDelRule {
 		verb = "del rule"
@@ -315,9 +410,19 @@ func RouteKey(r domain.Route) string {
 	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
 }
 
-// RuleKey identifies a policy rule: priority|selector|table|family.
+// RuleKey identifies a policy rule: priority|selector|table|family, plus the
+// FULL macOS route-to target (iface AND gateway) when present. The gateway must
+// be part of the identity: a VPN that re-handshakes on the same utun with a new
+// peer gateway yields a rule that differs ONLY in RouteToGW — if the key ignored
+// it, Reconcile would report "in sync" and the stale route-to would silently
+// blackhole matched traffic at the dead next-hop. The suffix is omitted on
+// Linux/fake, so their keys are unchanged.
 func RuleKey(r domain.PolicyRule) string {
-	return fmt.Sprintf("%d|%s|%s|%s", r.Priority, r.Selector, r.Table, r.Family)
+	k := fmt.Sprintf("%d|%s|%s|%s", r.Priority, r.Selector, r.Table, r.Family)
+	if r.RouteToIface != "" {
+		k += "|" + r.RouteToIface + "|" + r.RouteToGW
+	}
+	return k
 }
 
 func indexRoutes(rs []domain.ManagedRoute) map[string]domain.ManagedRoute {

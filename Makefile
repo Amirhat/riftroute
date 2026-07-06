@@ -8,7 +8,7 @@ GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
-.PHONY: all build daemon cli desktop dev test test-e2e vet fmt tidy cross clean run-daemon bindings \
+.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e vet fmt tidy cross clean run-daemon bindings \
         dist dist-binaries checksums package-deb package-dmg package-appimage tray
 
 all: build
@@ -25,6 +25,11 @@ cli:
 ## desktop: build the native GUI app (RiftRoute.app / binary) via Wails
 desktop:
 	cd desktop && $(WAILS) build -trimpath -ldflags "-X main.version=$(VERSION)"
+
+## desktop-universal: build the macOS GUI as a universal (arm64 + x86_64) app so
+## it runs on every Mac — Apple Silicon and Intel. Used by the release DMG.
+desktop-universal:
+	cd desktop && $(WAILS) build -platform darwin/universal -trimpath -ldflags "-X main.version=$(VERSION)"
 
 ## tray: build the menu-bar/system-tray companion (cgo + native tray libs).
 ## Linux also needs libayatana-appindicator3-dev (or libappindicator3-dev).

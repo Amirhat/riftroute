@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -113,6 +114,13 @@ func run() error {
 		logger.Info("reconciled ownership on startup", "re-added", added, "removed", removed)
 	}
 
+	// Auto-apply is a runtime toggle (Settings switch → PUT /autoapply). The
+	// persisted choice wins over the flag default so it survives restarts.
+	if v, ok, err := st.GetSetting("auto_apply"); err == nil && ok {
+		autoApply = v == "true"
+	}
+	var autoApplyOn atomic.Bool
+	autoApplyOn.Store(autoApply)
 	svc.SetAutoApply(autoApply)
 	// allowUID is the uid permitted to call mutating endpoints. It defaults to the
 	// daemon's own uid, but the installer passes -allow-uid <desktop user> so an
@@ -122,6 +130,11 @@ func run() error {
 		allowUID = uint32(allowUIDFlag)
 	}
 	srv := api.NewServer(svc, st, proto, allowUID, version, logger)
+	srv.SetAutoApplyControl(func(on bool) {
+		autoApplyOn.Store(on)
+		svc.SetAutoApply(on)
+		logger.Info("auto-apply toggled", "enabled", on)
+	})
 
 	// Fake-only debug hook so auto-apply can be demonstrated against a running
 	// daemon by toggling the simulated VPN (never wired for real providers).
@@ -138,6 +151,18 @@ func run() error {
 		on, _ := ks.Enabled(context.Background())
 		return on
 	})
+
+	// Re-apply the persisted split-DNS selection so per-domain resolvers survive
+	// a daemon restart (best-effort; an empty/unset selection is a no-op).
+	if routes, err := st.LoadSplitDNS(); err != nil {
+		logger.Warn("split-dns load on startup failed", "err", err)
+	} else if len(routes) > 0 {
+		if err := sdns.Apply(context.Background(), routes); err != nil {
+			logger.Warn("split-dns re-apply on startup failed", "err", err)
+		} else {
+			logger.Info("re-applied persisted split-DNS", "routes", len(routes))
+		}
+	}
 
 	ln, err := listen(socketPath, logger)
 	if err != nil {
@@ -163,17 +188,17 @@ func run() error {
 
 	// Auto-apply: watch for network changes and reconcile safely (guard kept,
 	// manual confirm skipped). Routing keeps working with no UI open (spec §3.1).
-	// Each loop is supervised: a panic is recovered + the loop restarted, so a
-	// single bad snapshot can never crash the daemon (which would kill an armed
-	// watchdog and strand the user).
-	if autoApply {
-		poller := netmon.NewPoller(prov, pollInterval)
-		rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, func() bool { return autoApply })
-		go supervise(ctx, logger, "poller", poller.Run)
-		go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
-		go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
-		logger.Info("auto-apply enabled", "poll", pollInterval)
-	}
+	// The loops ALWAYS run and gate each pass on the runtime toggle — so flipping
+	// auto-apply on from Settings takes effect immediately, without a daemon
+	// restart. Each loop is supervised: a panic is recovered + the loop restarted,
+	// so a single bad snapshot can never crash the daemon (which would kill an
+	// armed watchdog and strand the user).
+	poller := netmon.NewPoller(prov, pollInterval)
+	rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
+	go supervise(ctx, logger, "poller", poller.Run)
+	go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
+	go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
+	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
 
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version, "uid", allowUID)
 	serveErr := srv.Serve(ctx, ln)

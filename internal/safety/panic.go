@@ -21,7 +21,9 @@ func Panic(ctx context.Context, prov provider.RouteProvider, st Store) error {
 			}
 		}
 	}
-	_ = prov.FlushOwned(ctx) // Linux proto flush; macOS no-op (DB-driven above)
+	// Provider-level sweep: Linux flushes proto-tagged routes/rules; macOS empties
+	// the PF route-to anchor and restores pf.conf (routes stay DB-driven above).
+	_ = prov.FlushOwned(ctx)
 	if st != nil {
 		return st.ClearOwned()
 	}

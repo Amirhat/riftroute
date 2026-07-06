@@ -62,5 +62,6 @@ func (p *Provider) Capabilities() domain.Capabilities {
 		IPv6:          true,
 		KillSwitch:    true, // nftables
 		IfaceScoping:  false,
+		Backend:       "nftables",
 	}
 }

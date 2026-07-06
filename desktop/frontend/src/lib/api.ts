@@ -12,6 +12,7 @@ import {
   GetDoctor,
   GetLeaks,
   SetKillSwitch,
+  SetAutoApply,
   PlanPreview,
   Apply,
   Confirm,
@@ -26,6 +27,19 @@ import {
   StopDaemon,
   RestartDaemon,
   UninstallDaemon,
+  OpenConfigDialog,
+  ApplyConfigContent,
+  SaveProfile,
+  DeleteProfile,
+  GetFlows,
+  GetLists,
+  SaveList,
+  DeleteList,
+  RefreshList,
+  GetSplitDNS,
+  SetSplitDNS,
+  ExportConfigDialog,
+  CheckUpdate,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -40,6 +54,12 @@ import type {
   DoctorReport,
   Leak,
   DaemonInfo,
+  ConfigFile,
+  ConfigImportResult,
+  Flow,
+  List,
+  SplitDNSRoute,
+  UpdateResult,
 } from '../types'
 
 export const api = {
@@ -53,6 +73,7 @@ export const api = {
   doctor: () => GetDoctor() as unknown as Promise<DoctorReport>,
   leaks: () => GetLeaks() as unknown as Promise<Leak[]>,
   setKillSwitch: (enabled: boolean) => SetKillSwitch(enabled) as Promise<boolean>,
+  setAutoApply: (enabled: boolean) => SetAutoApply(enabled) as Promise<boolean>,
   plan: () => PlanPreview() as unknown as Promise<Plan>,
   apply: (yes: boolean, confirmTimeoutSec: number) => Apply(yes, confirmTimeoutSec) as unknown as Promise<ApplyResult>,
   confirm: (txID: string) => Confirm(txID) as unknown as Promise<string>,
@@ -60,8 +81,32 @@ export const api = {
   panic: () => PanicFlush() as Promise<void>,
   setProfileEnabled: (name: string, enable: boolean) =>
     SetProfileEnabled(name, enable) as unknown as Promise<ApplyResult>,
+  // Interactive builder: upsert one profile (dry-run previews the plan) / delete one.
+  // Plain objects are what Wails serializes; the casts adapt to whatever argument
+  // classes the binding generator emits (they're structurally identical).
+  saveProfile: (p: Profile, dryRun: boolean) =>
+    SaveProfile(p as unknown as Parameters<typeof SaveProfile>[0], dryRun) as unknown as Promise<ConfigImportResult>,
+  deleteProfile: (name: string) => DeleteProfile(name) as unknown as Promise<ConfigImportResult>,
   reachable: () => Reachable() as Promise<boolean>,
   version: () => Version() as Promise<string>,
+  // Declarative config import/export (native dialogs).
+  openConfigDialog: () => OpenConfigDialog() as unknown as Promise<ConfigFile>,
+  applyConfigContent: (content: string, format: string, dryRun: boolean, yes: boolean) =>
+    ApplyConfigContent(content, format, dryRun, yes) as unknown as Promise<ConfigImportResult>,
+  exportConfig: () => ExportConfigDialog() as Promise<string>,
+  // Observability: live flow monitor.
+  flows: () => GetFlows() as unknown as Promise<Flow[]>,
+  // Reusable lists (visual manager; staging only — drift drives the apply).
+  lists: () => GetLists() as unknown as Promise<List[]>,
+  saveList: (l: List) => SaveList(l as unknown as Parameters<typeof SaveList>[0]) as unknown as Promise<List>,
+  deleteList: (name: string) => DeleteList(name) as Promise<void>,
+  refreshList: (name: string) => RefreshList(name) as unknown as Promise<List>,
+  // Split-DNS (persisted per-domain resolver selection).
+  splitDNS: () => GetSplitDNS() as unknown as Promise<SplitDNSRoute[]>,
+  setSplitDNS: (routes: SplitDNSRoute[]) =>
+    SetSplitDNS(routes as unknown as Parameters<typeof SetSplitDNS>[0]) as unknown as Promise<SplitDNSRoute[]>,
+  // Update check (never self-installs).
+  checkUpdate: () => CheckUpdate() as unknown as Promise<UpdateResult>,
   // Daemon lifecycle (privileged ops prompt for admin via the OS).
   daemonInfo: () => GetDaemonInfo() as unknown as Promise<DaemonInfo>,
   installDaemon: () => InstallDaemon() as Promise<void>,

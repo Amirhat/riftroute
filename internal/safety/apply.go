@@ -594,7 +594,11 @@ func ruleAsRoute(r *domain.ManagedRule) domain.Route {
 	if r == nil {
 		return domain.Route{}
 	}
-	return domain.Route{DstCIDR: r.Selector, Iface: "→ table " + r.Table, Family: r.Family, Owner: domain.OwnerRiftRoute}
+	dest := "→ table " + r.Table
+	if r.RouteToIface != "" { // macOS PF route-to
+		dest = "→ " + r.RouteToIface
+	}
+	return domain.Route{DstCIDR: r.Selector, Iface: dest, Family: r.Family, Owner: domain.OwnerRiftRoute}
 }
 
 func violationSummary(vs []Violation) string {

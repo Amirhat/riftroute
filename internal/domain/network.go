@@ -43,14 +43,22 @@ type Route struct {
 	Profile string `json:"profile,omitempty"`
 }
 
-// PolicyRule is a Linux `ip rule` entry (Model B). Empty set on macOS, which
-// has no policy-routing tables.
+// PolicyRule is a policy-routing selector: a Linux `ip rule` entry (Model B) or
+// a macOS PF `route-to` rule (the Darwin equivalent — see RouteToIface). The
+// abstract shape is shared so the engine, plan/inverse, WAL, and reconciler are
+// platform-agnostic; each provider renders it into its native primitive.
 type PolicyRule struct {
 	Priority int    `json:"priority"`
-	Selector string `json:"selector"` // e.g. "to 10.0.0.0/8" / "from 192.0.2.0/24"
+	Selector string `json:"selector"` // e.g. "to 10.0.0.0/8" / "from 192.0.2.0/24" / "user 501"
 	Table    string `json:"table"`
 	Family   Family `json:"family"`
 	Proto    string `json:"proto,omitempty"`
+	// RouteToIface/RouteToGW carry the macOS PF `route-to` target — the tunnel the
+	// matched traffic is steered into (the Darwin analogue of Linux's Model B
+	// dedicated-table default). Empty on Linux, where the tunnel is reached via the
+	// table's own default route instead.
+	RouteToIface string `json:"route_to_iface,omitempty"`
+	RouteToGW    string `json:"route_to_gw,omitempty"`
 }
 
 // IfaceKind is a coarse classification of a network interface.
@@ -118,11 +126,16 @@ type RouteDecision struct {
 // proto tag; Linux has all of them.
 type Capabilities struct {
 	Platform      string `json:"platform"`       // "darwin" | "linux" | "fake" | "unsupported"
-	PolicyRouting bool   `json:"policy_routing"` // Model B (dedicated table + ip rule)
-	Fwmark        bool   `json:"fwmark"`
+	PolicyRouting bool   `json:"policy_routing"` // Linux Model B (table+ip rule) / macOS PF route-to
+	Fwmark        bool   `json:"fwmark"`         // Linux packet marking (Darwin uses PF match instead)
 	PerAppRouting bool   `json:"per_app_routing"`
-	ProtoTag      bool   `json:"proto_tag"` // ownership via route proto (Linux)
+	ProtoTag      bool   `json:"proto_tag"` // route ownership via proto tag (Linux only)
 	IPv6          bool   `json:"ipv6"`
 	KillSwitch    bool   `json:"kill_switch"`
 	IfaceScoping  bool   `json:"iface_scoping"` // macOS -ifscope
+	// Backend names the native mechanism this platform steers/marks traffic and
+	// owns its rules with: "pf" (macOS), "nftables" (Linux), "fake", or "". It lets
+	// the UI honestly credit the OS-native equivalent of the Linux-only flags above
+	// (fwmark/proto-tag), so macOS isn't shown as merely "missing" them.
+	Backend string `json:"backend,omitempty"`
 }

@@ -6,12 +6,32 @@ export function Apply(arg1, arg2) {
   return window['go']['main']['App']['Apply'](arg1, arg2);
 }
 
+export function ApplyConfigContent(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['ApplyConfigContent'](arg1, arg2, arg3, arg4);
+}
+
+export function CheckUpdate() {
+  return window['go']['main']['App']['CheckUpdate']();
+}
+
 export function Confirm(arg1) {
   return window['go']['main']['App']['Confirm'](arg1);
 }
 
+export function DeleteList(arg1) {
+  return window['go']['main']['App']['DeleteList'](arg1);
+}
+
+export function DeleteProfile(arg1) {
+  return window['go']['main']['App']['DeleteProfile'](arg1);
+}
+
 export function Explain(arg1) {
   return window['go']['main']['App']['Explain'](arg1);
+}
+
+export function ExportConfigDialog() {
+  return window['go']['main']['App']['ExportConfigDialog']();
 }
 
 export function GetAudit() {
@@ -26,12 +46,20 @@ export function GetDoctor() {
   return window['go']['main']['App']['GetDoctor']();
 }
 
+export function GetFlows() {
+  return window['go']['main']['App']['GetFlows']();
+}
+
 export function GetInterfaces() {
   return window['go']['main']['App']['GetInterfaces']();
 }
 
 export function GetLeaks() {
   return window['go']['main']['App']['GetLeaks']();
+}
+
+export function GetLists() {
+  return window['go']['main']['App']['GetLists']();
 }
 
 export function GetProfiles() {
@@ -46,12 +74,20 @@ export function GetSnapshots() {
   return window['go']['main']['App']['GetSnapshots']();
 }
 
+export function GetSplitDNS() {
+  return window['go']['main']['App']['GetSplitDNS']();
+}
+
 export function GetState() {
   return window['go']['main']['App']['GetState']();
 }
 
 export function InstallDaemon() {
   return window['go']['main']['App']['InstallDaemon']();
+}
+
+export function OpenConfigDialog() {
+  return window['go']['main']['App']['OpenConfigDialog']();
 }
 
 export function PanicFlush() {
@@ -66,6 +102,10 @@ export function Reachable() {
   return window['go']['main']['App']['Reachable']();
 }
 
+export function RefreshList(arg1) {
+  return window['go']['main']['App']['RefreshList'](arg1);
+}
+
 export function RestartDaemon() {
   return window['go']['main']['App']['RestartDaemon']();
 }
@@ -74,12 +114,28 @@ export function Rollback(arg1) {
   return window['go']['main']['App']['Rollback'](arg1);
 }
 
+export function SaveList(arg1) {
+  return window['go']['main']['App']['SaveList'](arg1);
+}
+
+export function SaveProfile(arg1, arg2) {
+  return window['go']['main']['App']['SaveProfile'](arg1, arg2);
+}
+
+export function SetAutoApply(arg1) {
+  return window['go']['main']['App']['SetAutoApply'](arg1);
+}
+
 export function SetKillSwitch(arg1) {
   return window['go']['main']['App']['SetKillSwitch'](arg1);
 }
 
 export function SetProfileEnabled(arg1, arg2) {
   return window['go']['main']['App']['SetProfileEnabled'](arg1, arg2);
+}
+
+export function SetSplitDNS(arg1) {
+  return window['go']['main']['App']['SetSplitDNS'](arg1);
 }
 
 export function StartDaemon() {

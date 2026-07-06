@@ -1,5 +1,5 @@
 import { useStateQuery } from '../lib/queries'
-import { Card, CardHeader, Label, Badge, Dot, Addr, Skeleton } from '../components/ui'
+import { Card, CardHeader, Label, Badge, Dot, Addr, Skeleton, CapBadge } from '../components/ui'
 import { DaemonSetup } from '../components/DaemonSetup'
 import { fmtUptime } from '../lib/format'
 import type { State } from '../types'
@@ -45,9 +45,15 @@ function DashboardContent({ state }: { state: State }) {
         />
         <HeadlineCard
           label="Drift"
-          value={state.drift.pending ? 'Pending' : 'None'}
+          value={state.drift.pending ? (state.drift.reason ? 'Attention' : 'Pending') : 'None'}
           tone={state.drift.pending ? 'warning' : 'success'}
-          sub={state.drift.pending ? `+${state.drift.adds} −${state.drift.dels} ~${state.drift.changes}` : 'desired = actual'}
+          sub={
+            state.drift.reason
+              ? state.drift.reason
+              : state.drift.pending
+                ? `+${state.drift.adds} −${state.drift.dels} ~${state.drift.changes}`
+                : 'desired = actual'
+          }
         />
       </div>
 
@@ -139,15 +145,25 @@ function DashboardContent({ state }: { state: State }) {
 
       {/* Capabilities */}
       <Card>
-        <CardHeader title="Capabilities" hint={`platform: ${state.capabilities.platform}`} />
+        <CardHeader
+          title="Capabilities"
+          hint={
+            <div className="flex items-center gap-2">
+              <Badge tone="muted">platform: {state.capabilities.platform}</Badge>
+              {state.capabilities.backend && <Badge tone="accent">backend: {state.capabilities.backend}</Badge>}
+            </div>
+          }
+        />
         <div className="flex flex-wrap gap-2 p-4">
           <CapBadge ok={state.capabilities.policy_routing} label="policy routing" />
-          <CapBadge ok={state.capabilities.fwmark} label="fwmark" />
           <CapBadge ok={state.capabilities.per_app_routing} label="per-app routing" />
-          <CapBadge ok={state.capabilities.proto_tag} label="proto tag" />
-          <CapBadge ok={state.capabilities.ipv6} label="IPv6" />
           <CapBadge ok={state.capabilities.kill_switch} label="kill switch" />
+          <CapBadge ok={state.capabilities.ipv6} label="IPv6" />
           <CapBadge ok={state.capabilities.iface_scoping} label="iface scoping" />
+          {/* fwmark + proto tag are Linux kernel primitives; CapBadge credits the
+              native backend (pf) instead of showing them as merely missing. */}
+          <CapBadge capKey="fwmark" ok={state.capabilities.fwmark} label="fwmark" backend={state.capabilities.backend} />
+          <CapBadge capKey="proto_tag" ok={state.capabilities.proto_tag} label="proto tag" backend={state.capabilities.backend} />
         </div>
       </Card>
     </div>
@@ -179,10 +195,6 @@ function Field({ label, value }: { label: string; value: string }) {
       <div className="mt-1 text-sm font-medium text-default">{value}</div>
     </div>
   )
-}
-
-function CapBadge({ ok, label }: { ok: boolean; label: string }) {
-  return <Badge tone={ok ? 'success' : 'muted'}>{ok ? '✓' : '—'} {label}</Badge>
 }
 
 function DashboardSkeleton() {

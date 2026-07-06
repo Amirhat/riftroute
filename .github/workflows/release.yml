@@ -87,7 +87,7 @@ jobs:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           V="${VERSION#v}"
-          make desktop VERSION="$V"
+          make desktop-universal VERSION="$V"
           VERSION="$V" packaging/macos/build-dmg.sh
       - uses: actions/upload-artifact@v4
         with:

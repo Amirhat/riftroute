@@ -41,6 +41,9 @@ type Server struct {
 	killSwitch killswitch.Manager
 	// splitDNS applies per-domain resolver selection (nil = no-op).
 	splitDNS splitdns.Manager
+	// setAutoApply flips the daemon's auto-apply gate at runtime (nil disables
+	// the endpoint; the daemon wires it to an atomic the reconciler reads).
+	setAutoApply func(on bool)
 }
 
 // SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
@@ -52,6 +55,9 @@ func (s *Server) SetKillSwitch(m killswitch.Manager) { s.killSwitch = m }
 
 // SetSplitDNS installs the split-DNS manager (daemon wiring).
 func (s *Server) SetSplitDNS(m splitdns.Manager) { s.splitDNS = m }
+
+// SetAutoApplyControl installs the runtime auto-apply setter (daemon wiring).
+func (s *Server) SetAutoApplyControl(fn func(on bool)) { s.setAutoApply = fn }
 
 // NewServer builds the API server. allowUID is the uid permitted to call
 // mutating endpoints (root is always permitted); reads are open to any local
@@ -108,6 +114,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /lists/{name}/refresh", s.requireWrite(s.handleListRefresh))
 	s.mux.HandleFunc("POST /profiles/{name}/enable", s.requireWrite(s.handleProfileToggle(true)))
 	s.mux.HandleFunc("POST /profiles/{name}/disable", s.requireWrite(s.handleProfileToggle(false)))
+	// Interactive GUI builder: upsert one profile (validate → apply) / delete one.
+	s.mux.HandleFunc("POST /profiles", s.requireWrite(s.handleProfileSave))
+	s.mux.HandleFunc("DELETE /profiles/{name}", s.requireWrite(s.handleProfileDelete))
+	// GUI lists manager: upsert/delete a reusable list (staging only; drift-driven apply).
+	s.mux.HandleFunc("POST /lists", s.requireWrite(s.handleListSave))
+	s.mux.HandleFunc("DELETE /lists/{name}", s.requireWrite(s.handleListDelete))
+	// Split-DNS: persisted per-domain resolver selection, editable from Settings.
+	s.mux.HandleFunc("GET /splitdns", s.handleSplitDNSGet)
+	s.mux.HandleFunc("PUT /splitdns", s.requireWrite(s.handleSplitDNSSet))
+	// Auto-apply: runtime toggle for reconcile-on-network-change (Settings).
+	s.mux.HandleFunc("PUT /autoapply", s.requireWrite(s.handleAutoApply))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
 	s.mux.HandleFunc("POST /debug/vpn", s.requireWrite(s.handleDebugVPN))
 }

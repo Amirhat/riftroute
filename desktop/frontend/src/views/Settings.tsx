@@ -2,21 +2,23 @@ import { useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
-import { Card, CardHeader, Badge, Stat, Skeleton } from '../components/ui'
+import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge, Toggle } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
-import { fmtUptime } from '../lib/format'
+import { fmtUptime, friendly } from '../lib/format'
+import type { UpdateResult } from '../types'
 
 type Theme = 'dark' | 'light'
 
 const CAP_LABELS: Record<string, string> = {
   policy_routing: 'policy routing',
-  fwmark: 'fwmark',
   per_app_routing: 'per-app routing',
-  proto_tag: 'proto tag',
-  ipv6: 'IPv6',
   kill_switch: 'kill switch',
+  ipv6: 'IPv6',
   iface_scoping: 'iface scoping',
+  fwmark: 'fwmark',
+  proto_tag: 'proto tag',
 }
 
 export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
@@ -35,6 +37,14 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
     }
   }
   const killOn = s?.kill_switch ?? false
+
+  async function setAutoApply(enabled: boolean) {
+    try {
+      await api.setAutoApply(enabled)
+    } finally {
+      qc.invalidateQueries({ queryKey: stateKey })
+    }
+  }
 
   return (
     <div className="max-w-3xl space-y-4">
@@ -67,9 +77,11 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
             <div className="flex items-center justify-between px-4 py-3">
               <div>
                 <div className="text-sm text-default">Auto-apply on network change</div>
-                <div className="text-xs text-muted">Reconcile automatically when the VPN/network changes (daemon flag / config).</div>
+                <div className="text-xs text-muted">
+                  Reconcile automatically when the VPN or network changes. The connectivity guard still protects every apply.
+                </div>
               </div>
-              <Badge tone={s.auto_apply ? 'success' : 'muted'}>{s.auto_apply ? 'on' : 'off'}</Badge>
+              <Toggle on={s.auto_apply} onClick={() => void setAutoApply(!s.auto_apply)} />
             </div>
             <div className="flex items-center justify-between px-4 py-3">
               <div>
@@ -153,35 +165,28 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
         )}
       </Card>
 
+      <SplitDNSEditor />
+
       {s && (
         <Card>
-          <CardHeader title="Platform capabilities" hint={`platform: ${s.capabilities.platform}`} />
-          <div className="flex flex-wrap gap-x-4 gap-y-2 p-4 text-sm">
-            {Object.entries(CAP_LABELS).map(([key, label]) => {
-              const on = (s.capabilities as unknown as Record<string, boolean>)[key]
-              return (
-                <span key={key} className={on ? 'text-success' : 'text-muted line-through'}>
-                  {on ? '✓' : '✗'} {label}
-                </span>
-              )
-            })}
+          <CardHeader title="Platform capabilities" hint={`platform: ${s.capabilities.platform}${s.capabilities.backend ? ` · backend: ${s.capabilities.backend}` : ''}`} />
+          <div className="flex flex-wrap gap-2 p-4">
+            {Object.entries(CAP_LABELS).map(([key, label]) => (
+              <CapBadge
+                key={key}
+                capKey={key}
+                ok={(s.capabilities as unknown as Record<string, boolean>)[key]}
+                label={label}
+                backend={s.capabilities.backend}
+              />
+            ))}
           </div>
         </Card>
       )}
 
-      <Card>
-        <CardHeader title="Configuration" hint="declarative" />
-        <div className="space-y-2 p-4 text-sm text-muted">
-          <p>
-            Profiles, lists, split-DNS, IP version, default mode, and the connectivity
-            guard are managed declaratively in the config file
-            (<span className="font-mono text-accent">riftroute.yaml</span>) and applied
-            with <span className="font-mono text-accent">riftroute apply</span> — so your
-            policy is reviewable and git-committable.
-          </p>
-          <p>GeoIP/ASN rules require a user-supplied MaxMind MMDB.</p>
-        </div>
-      </Card>
+      <ConfigCard />
+
+      <UpdateCard />
 
       <ConfirmModal
         open={confirmKill}
@@ -215,6 +220,102 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
         onCancel={() => setConfirmDaemon(null)}
       />
     </div>
+  )
+}
+
+// ConfigCard: everything is UI-configurable, and the whole policy exports to the
+// same git-committable YAML the CLI applies (round-trips through the importer).
+function ConfigCard() {
+  const [msg, setMsg] = useState<string | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  async function doExport() {
+    setMsg(null)
+    setErr(null)
+    setBusy(true)
+    try {
+      const path = await api.exportConfig()
+      if (path) setMsg(`Exported to ${path}`)
+    } catch (e) {
+      setErr(friendly(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Configuration"
+        hint={
+          <button onClick={doExport} disabled={busy} className="rounded-lg border border-accent/50 px-2.5 py-1 text-xs font-medium text-accent hover:bg-accent/10 disabled:opacity-50">
+            {busy ? 'Exporting…' : 'Export config…'}
+          </button>
+        }
+      />
+      <div className="space-y-2 p-4 text-sm text-muted">
+        <p>
+          Everything here is configurable in the app — profiles and lists on the
+          Profiles screen, split-DNS above. Export writes it all as declarative YAML
+          (<span className="font-mono text-accent">riftroute.yaml</span>) so your policy stays
+          reviewable and git-committable; the Profiles screen imports the same file back.
+        </p>
+        <p>GeoIP/ASN rules require a user-supplied MaxMind MMDB.</p>
+        {msg && <p className="ltr font-mono text-xs text-success">{msg}</p>}
+        {err && <p className="text-xs text-danger">{err}</p>}
+      </div>
+    </Card>
+  )
+}
+
+// UpdateCard checks GitHub Releases for a newer version. It never self-installs —
+// applying an update stays a deliberate, checksum-verified step.
+function UpdateCard() {
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState<UpdateResult | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function check() {
+    setBusy(true)
+    setErr(null)
+    setRes(null)
+    try {
+      setRes(await api.checkUpdate())
+    } catch (e) {
+      setErr(friendly(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="Updates"
+        hint={
+          <button onClick={check} disabled={busy} className="rounded-lg border border-line px-2.5 py-1 text-xs text-muted hover:text-default disabled:opacity-50">
+            {busy ? 'Checking…' : 'Check for updates'}
+          </button>
+        }
+      />
+      <div className="p-4 text-sm">
+        {!res && !err && <p className="text-muted">Checks GitHub Releases; nothing is installed automatically.</p>}
+        {err && <p className="text-danger">Update check failed: {err}</p>}
+        {res && !res.available && (
+          <p className="text-success">✓ Up to date ({res.current}{res.latest ? `; latest ${res.latest}` : ''})</p>
+        )}
+        {res && res.available && (
+          <div className="space-y-1">
+            <p className="text-default">
+              Update available: <span className="font-mono">{res.current}</span> → <span className="font-mono text-accent">{res.latest}</span>
+            </p>
+            {res.url && <p className="ltr break-all font-mono text-xs text-muted">{res.url}</p>}
+            <p className="text-xs text-muted">Download the asset for your platform, verify its SHA-256 against the release checksums, then reinstall.</p>
+          </div>
+        )}
+      </div>
+    </Card>
   )
 }
 

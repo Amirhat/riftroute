@@ -48,10 +48,10 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	return nil
 }
 
-// FlushOwned is a no-op on macOS: there is no route proto tag, so ownership is
-// tracked in the daemon's DB and the daemon's panic deletes routes from that map
-// (spec §2.3/§2.5). Kept to satisfy the interface.
-func (p *Provider) FlushOwned(_ context.Context) error { return nil }
+// FlushOwned removes RiftRoute-owned kernel state on macOS. Routes carry no proto
+// tag, so route ownership is DB-tracked and the panic path deletes those
+// individually (spec §2.3/§2.5); here we flush our PF policy-routing anchor and
+// restore pf.conf — see FlushOwned in pf.go.
 
 // macRouteArgs builds a validated arg-array for `route -n <action> ...`.
 func macRouteArgs(action string, mr domain.ManagedRoute) ([]string, error) {

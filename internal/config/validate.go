@@ -10,6 +10,8 @@ import (
 	"time"
 
 	yaml "gopkg.in/yaml.v3"
+
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 // Severity is the level of a validation Issue.
@@ -180,7 +182,16 @@ func validate(c *Config, lines lineIndex, platform string) Result {
 			add(SevError, base+".mode", "profiles.mode", fmt.Sprintf("invalid mode %q (expected exclude or include)", p.Mode))
 		}
 		if mode == "include" && platform == "darwin" {
-			add(SevWarning, base+".mode", "profiles.mode", fmt.Sprintf("profile %q uses include mode, which requires Linux policy routing (Model B); it is unavailable on macOS", p.Name))
+			// macOS supports include mode via PF route-to anchors. `app` rules there
+			// match on the socket owner (uid/username), not a process name — and the
+			// engine refuses non-uid values at apply time (they'd fail the pfctl
+			// load), so surface it as an ERROR here rather than a late apply failure.
+			for j, rule := range p.Rules {
+				if rule.Type == "app" && rule.Value != "" && !domain.IsUIDLike(rule.Value) {
+					add(SevError, fmt.Sprintf("%s.rules[%d].value", base, j), "rules.value",
+						fmt.Sprintf("on macOS, per-app rules match by uid/username (PF socket owner); %q is not a uid/username", rule.Value))
+				}
+			}
 		}
 		if g := p.Gateway; g != "" && g != "auto" {
 			if _, err := netip.ParseAddr(g); err != nil {
@@ -201,6 +212,56 @@ func validate(c *Config, lines lineIndex, platform string) Result {
 	}
 
 	sort.SliceStable(r.Issues, func(a, b int) bool { return r.Issues[a].Line < r.Issues[b].Line })
+	return r
+}
+
+// ValidateProfile runs the same semantic checks a config-file profile receives,
+// but against a single profile the GUI builder assembled (spec §10) — so the
+// interactive designer gets identical strict validation to `apply file.yaml`.
+// platform gates OS-specific notes (macOS per-app matches by uid/username);
+// knownLists is the set of defined list names for `lists:` references (nil skips
+// that check, e.g. when the builder only emits inline rules).
+func ValidateProfile(p domain.Profile, platform string, knownLists map[string]bool) Result {
+	var r Result
+	add := func(sev Severity, field, msg string) {
+		r.Issues = append(r.Issues, Issue{Severity: sev, Field: field, Msg: msg})
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		add(SevError, "name", "profile name is required")
+	}
+	mode := string(p.Mode)
+	if mode == "" {
+		mode = "exclude"
+	}
+	if mode != "exclude" && mode != "include" {
+		add(SevError, "mode", fmt.Sprintf("invalid mode %q (expected exclude or include)", p.Mode))
+	}
+	if mode == "include" && platform == "darwin" {
+		for _, rule := range p.Rules {
+			if rule.Type == domain.RuleApp && rule.Value != "" && !domain.IsUIDLike(rule.Value) {
+				add(SevError, "rules.value",
+					fmt.Sprintf("on macOS, per-app rules match by uid/username (PF socket owner); %q is not a uid/username", rule.Value))
+			}
+		}
+	}
+	if g := p.Gateway; g != "" && g != "auto" {
+		if _, err := netip.ParseAddr(g); err != nil {
+			add(SevError, "gateway", fmt.Sprintf("gateway must be \"auto\" or a valid IP, got %q", g))
+		}
+	}
+	for _, ref := range p.Lists {
+		if knownLists != nil && !knownLists[ref] {
+			add(SevError, "lists", fmt.Sprintf("references unknown list %q", ref))
+		}
+	}
+	if len(p.Rules) == 0 && len(p.Lists) == 0 {
+		add(SevWarning, "rules", "profile has no rules or lists; it will install nothing")
+	}
+	// Reuse the file-path per-rule validation (CIDR/IP/domain/asn/country/app).
+	radd := func(sev Severity, _, field, msg string) { add(sev, field, msg) }
+	for i, rule := range p.Rules {
+		validateRule(radd, fmt.Sprintf("rules[%d]", i), RuleConfig{Type: string(rule.Type), Value: rule.Value, Comment: rule.Comment})
+	}
 	return r
 }
 
@@ -248,6 +309,38 @@ func checkDuration(add func(Severity, string, string, string), path, field, v st
 	}
 }
 
+// ValidateList runs the same semantic checks a config-file list receives, against
+// a single list the GUI lists manager assembled: named, static-or-remote, valid
+// CIDR/IP entries, https-only source, parseable refresh interval.
+func ValidateList(l domain.List) Result {
+	var r Result
+	add := func(sev Severity, field, msg string) {
+		r.Issues = append(r.Issues, Issue{Severity: sev, Field: field, Msg: msg})
+	}
+	if strings.TrimSpace(l.Name) == "" {
+		add(SevError, "name", "list name is required")
+	}
+	if l.Source == "" && len(l.Static) == 0 {
+		add(SevError, "entries", "a list needs static entries or a remote source")
+	}
+	for _, e := range l.Static {
+		if !isCIDROrIP(e) {
+			add(SevError, "entries", fmt.Sprintf("invalid CIDR/IP %q", e))
+		}
+	}
+	if l.Source != "" {
+		if u, err := url.Parse(l.Source); err != nil || u.Scheme != "https" {
+			add(SevError, "source", fmt.Sprintf("remote list source must be an https URL, got %q", l.Source))
+		}
+		if l.Refresh != "" {
+			if _, err := time.ParseDuration(l.Refresh); err != nil {
+				add(SevError, "refresh", fmt.Sprintf("invalid refresh interval %q (e.g. 24h)", l.Refresh))
+			}
+		}
+	}
+	return r
+}
+
 func isCIDROrIP(s string) bool {
 	if _, err := netip.ParsePrefix(s); err == nil {
 		return true
@@ -255,6 +348,11 @@ func isCIDROrIP(s string) bool {
 	_, err := netip.ParseAddr(s)
 	return err == nil
 }
+
+// IsValidDomain reports whether s is a valid domain per the config schema
+// (≥2 labels, ≤253 chars, one optional leading "*." wildcard). Exported for the
+// API's split-DNS validation so every entry path shares one definition.
+func IsValidDomain(s string) bool { return isValidDomain(s) }
 
 func isValidDomain(s string) bool {
 	s = strings.TrimSuffix(s, ".")

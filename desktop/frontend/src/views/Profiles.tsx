@@ -2,12 +2,18 @@ import { useCallback, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
-import { Card, CardHeader, Badge, Addr, Skeleton } from '../components/ui'
+import { Card, CardHeader, Badge, Addr, Skeleton, Toggle } from '../components/ui'
 import { CommitConfirm } from '../components/CommitConfirm'
+import { ConfigImport } from '../components/ConfigImport'
+import { ProfileBuilder } from '../components/ProfileBuilder'
+import { ListsManager } from '../components/ListsManager'
+import { ConfirmModal } from '../components/ConfirmModal'
 import type { ApplyResult, Plan, Profile } from '../types'
 
 const CONFIRM_SECONDS = 15
 const DAEMON_BACKSTOP_SEC = 60
+
+type BuilderState = { mode: 'new' } | { mode: 'edit'; profile: Profile } | null
 
 export function Profiles() {
   const qc = useQueryClient()
@@ -17,6 +23,8 @@ export function Profiles() {
   const [preview, setPreview] = useState<Plan | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [builder, setBuilder] = useState<BuilderState>(null)
+  const [deleting, setDeleting] = useState<Profile | null>(null)
 
   const refresh = useCallback(() => {
     qc.invalidateQueries({ queryKey: ['profiles'] })
@@ -83,12 +91,46 @@ export function Profiles() {
     }
   }
 
+  async function doDelete() {
+    const p = deleting
+    setDeleting(null)
+    if (!p) return
+    setError(null)
+    try {
+      const res = await api.deleteProfile(p.name)
+      if (res.result?.needs_confirm && res.result.tx_id) setPending(res.result)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      // The profile may be deleted even when the follow-up reconcile errored —
+      // always re-read so the list never shows a ghost profile.
+      refresh()
+    }
+  }
+
   const drift = stateQ.data?.drift
   const hasDrift = !!drift?.pending
   const profiles = profilesQ.data ?? []
+  const platform = stateQ.data?.capabilities.platform
+  const profileNames = profiles.map((p) => p.name)
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted">
+          Build a profile visually, toggle one, or import a declarative <span className="font-mono text-default">.yaml</span> — no terminal needed.
+        </p>
+        <div className="flex items-center gap-2">
+          <ConfigImport onPending={setPending} onApplied={refresh} />
+          <button
+            onClick={() => setBuilder({ mode: 'new' })}
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90"
+          >
+            + New Profile
+          </button>
+        </div>
+      </div>
+
       {hasDrift && (
         <Card className="flex items-center justify-between border-warning/40 bg-warning/5 p-4">
           <div className="text-sm">
@@ -135,8 +177,15 @@ export function Profiles() {
         <Card className="p-8 text-center">
           <div className="text-base font-semibold text-default">No profiles yet</div>
           <p className="mt-2 text-sm text-muted">
-            Add profiles declaratively: <span className="font-mono text-accent">riftroute apply riftroute.yaml</span>
+            Click <span className="font-medium text-accent">+ New Profile</span> to build one visually, or import a{' '}
+            <span className="font-mono text-default">.yaml</span> config.
           </p>
+          <button
+            onClick={() => setBuilder({ mode: 'new' })}
+            className="mt-4 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-contrast hover:opacity-90"
+          >
+            + New Profile
+          </button>
         </Card>
       )}
 
@@ -144,13 +193,14 @@ export function Profiles() {
         {profiles.map((p) => (
           <Card key={p.id}>
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-default">{p.name}</span>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-semibold text-default">{p.name}</span>
                 <Badge tone={p.mode === 'include' ? 'vpn' : 'muted'}>{p.mode}</Badge>
               </div>
               <Toggle on={p.enabled} onClick={() => toggle(p)} />
             </div>
             <div className="space-y-1.5 p-4">
+              {p.description && <div className="text-sm text-default">{p.description}</div>}
               <div className="text-xs text-muted">
                 gateway {p.gateway} · priority {p.priority}
               </div>
@@ -166,26 +216,42 @@ export function Profiles() {
                 <div className="pt-1 text-xs text-muted">lists: {(p.lists ?? []).join(', ')}</div>
               )}
             </div>
+            <div className="flex justify-end gap-2 border-t border-line px-4 py-2.5">
+              <button onClick={() => setBuilder({ mode: 'edit', profile: p })} className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-default">
+                Edit
+              </button>
+              <button onClick={() => setDeleting(p)} className="rounded-lg border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10">
+                Delete
+              </button>
+            </div>
           </Card>
         ))}
       </div>
 
+      <ListsManager />
+
+      {builder && (
+        <ProfileBuilder
+          initial={builder.mode === 'edit' ? builder.profile : undefined}
+          existingNames={profileNames}
+          platform={platform}
+          onPending={setPending}
+          onApplied={refresh}
+          onClose={() => setBuilder(null)}
+        />
+      )}
+
+      <ConfirmModal
+        open={deleting !== null}
+        danger
+        title={`Delete profile "${deleting?.name ?? ''}"`}
+        message="This removes the profile and reconciles its routes out of the table (guarded by commit-confirm)."
+        confirmLabel="Delete profile"
+        onConfirm={doDelete}
+        onCancel={() => setDeleting(null)}
+      />
+
       {pending && <CommitConfirm result={pending} seconds={CONFIRM_SECONDS} onKeep={onKeep} onRevert={onRevert} />}
     </div>
-  )
-}
-
-function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      role="switch"
-      aria-checked={on}
-      className={`relative h-6 w-11 rounded-full transition-colors ${on ? 'bg-accent' : 'bg-elevated'}`}
-    >
-      <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow transition-transform ${on ? 'translate-x-[22px]' : 'translate-x-0.5'}`}
-      />
-    </button>
   )
 }

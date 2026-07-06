@@ -14,6 +14,15 @@ export function fmtUptime(seconds: number): string {
   return parts.join(' ')
 }
 
+// friendly turns a thrown value into a readable message. Wails rejects binding
+// calls with a string or an Error depending on the failure path — one unwrapper
+// for every component, so a fix for a new rejection shape lands everywhere.
+export function friendly(e: unknown, fallback = 'Something went wrong.'): string {
+  if (e instanceof Error) return e.message
+  if (typeof e === 'string') return e
+  return fallback
+}
+
 export function ownerTone(owner: Owner): 'accent' | 'vpn' | 'muted' {
   switch (owner) {
     case 'riftroute':
