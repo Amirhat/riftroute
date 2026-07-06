@@ -42,8 +42,11 @@ echo "==== live PF root test (TEST-NET-2 only; fully reversible) ===="
 echo "-- 0. preflight: stop stale daemons, snapshot pf state"
 pkill -f "riftrouted -socket $SOCK" 2>/dev/null; sleep 0.5
 PF_BEFORE=$(shasum -a 256 /etc/pf.conf | cut -d' ' -f1)
-PF_STATUS_BEFORE=$(pfctl -si 2>/dev/null | head -1)
-echo "  pf.conf sha256: ${PF_BEFORE:0:16}...  |  ${PF_STATUS_BEFORE}"
+# Compare only the Enabled/Disabled STATE word: the status line's uptime timer
+# legitimately resets when our enable token is released (PF flips back off one
+# second before the check), which is exactly the restore we're verifying.
+PF_STATE_BEFORE=$(pfctl -si 2>/dev/null | head -1 | grep -o "Enabled\|Disabled" | head -1)
+echo "  pf.conf sha256: ${PF_BEFORE:0:16}...  |  pf state: ${PF_STATE_BEFORE}"
 
 echo "-- 1. start root daemon (real provider, fresh state)"
 rm -f "$SOCK" "$DB"
@@ -102,8 +105,8 @@ ck "pf.conf hook removed" "$(grep -c riftroute /etc/pf.conf)" "0"
 PF_AFTER=$(shasum -a 256 /etc/pf.conf | cut -d' ' -f1)
 ck "pf.conf byte-identical to before" "$PF_AFTER" "$PF_BEFORE"
 ck "pf enable token released" "$([[ -f "$TOKEN" ]] && echo present || echo gone)" "gone"
-PF_STATUS_AFTER=$(pfctl -si 2>/dev/null | head -1)
-ck "pf status unchanged" "$PF_STATUS_AFTER" "$PF_STATUS_BEFORE"
+PF_STATE_AFTER=$(pfctl -si 2>/dev/null | head -1 | grep -o "Enabled\|Disabled" | head -1)
+ck "pf enabled/disabled state restored" "$PF_STATE_AFTER" "$PF_STATE_BEFORE"
 
 echo "-- 6. shutdown + log scan"
 kill -TERM "$DPID"

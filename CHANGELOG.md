@@ -191,11 +191,15 @@ verified against the real system where possible:
   follow-up reconcile fails.
 
 ### Notes
-- The agent never mutates the host: all route/firewall/DNS mutation — including the
-  new macOS PF `route-to` anchor and its `pf.conf` hook — is verified on the fake
-  provider, the Linux netns suite, pure round-trip/generator unit tests, and
-  parse-only (`pfctl -nf`) acceptance checks against the real pfctl grammar.
-  Live `route-to` steering on a real Mac is the operator's final check.
+- All route/firewall/DNS mutation logic is verified on the fake provider, the
+  Linux netns suite, pure round-trip/generator unit tests, and parse-only
+  (`pfctl -nf`) acceptance checks against the real pfctl grammar.
+- The macOS PF backend was additionally **verified live on real hardware**
+  (`scripts/live-pf-test.sh`, run as root by the operator): the `route-to`
+  anchor loads into `/dev/pf`, survives a daemon restart with zero drift, and
+  panic restores baseline exactly — anchor emptied, `pf.conf` byte-identical,
+  and the PF enable token released (PF returned to its prior disabled state).
+  The kernel's canonical rule echo matched the parser's test fixtures verbatim.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
 [Unreleased]: https://github.com/Amirhat/riftroute/commits/main
