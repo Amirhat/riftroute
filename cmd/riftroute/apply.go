@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -62,7 +63,15 @@ func applyFile(cmd *cobra.Command, file string, dryRun, yes bool) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s%s\n", is.Severity, loc, is.Msg)
 	}
 	if err != nil {
-		return fmt.Errorf("config rejected (%s)", file)
+		// Only an actual 4xx from the daemon means the CONFIG was rejected. A
+		// transport failure (daemon down, socket permission denied) must surface as
+		// itself — masking it as "config rejected" sends the user debugging a valid
+		// file instead of the connection.
+		var apiErr *apiclient.APIError
+		if errors.As(err, &apiErr) {
+			return fmt.Errorf("config rejected (%s)", file)
+		}
+		return err
 	}
 	if g.json {
 		return printJSON(cmd.OutOrStdout(), res)
