@@ -4,10 +4,19 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-07-06
 
-First release candidate — the complete M0–M7 product. Everything below is part of
-the initial release.
+The complete M0–M7 product, now with full macOS routing parity and a GUI that
+covers the entire configuration surface. Supersedes v0.1.0 (which shipped a
+subset of this list); everything below is part of this release.
+
+### Security
+- Dev-toolchain dependency upgrades resolving all open Dependabot advisories
+  (5: 1 critical, 1 high, 3 moderate — none shipped in release binaries):
+  vitest 2.x → 3.2.7 (critical: UI-server arbitrary file read/execute),
+  vite 5.x → 6.4.3 (`server.fs.deny` bypass, dep-map path traversal,
+  launch-editor NTLM hash disclosure), esbuild → 0.25.12 (dev-server CORS).
+  `npm audit`: 0 vulnerabilities.
 
 ### Added
 
@@ -206,4 +215,4 @@ verified against the real system where possible:
   The kernel's canonical rule echo matched the parser's test fixtures verbatim.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
-[Unreleased]: https://github.com/Amirhat/riftroute/commits/main
+[0.2.0]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.0
