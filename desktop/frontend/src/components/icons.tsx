@@ -68,6 +68,15 @@ export const DiagnosticsIcon = (p: IconProps) => (
   </svg>
 )
 
+export const FlowsIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M3 6h13M3 12h9M3 18h13" />
+    <path d="m16 3 3 3-3 3" />
+    <path d="m16 15 3 3-3 3" />
+    <circle cx="19" cy="12" r="1.5" />
+  </svg>
+)
+
 export const ShieldIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" />

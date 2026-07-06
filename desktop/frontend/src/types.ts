@@ -35,6 +35,7 @@ export interface Capabilities {
   ipv6: boolean
   kill_switch: boolean
   iface_scoping: boolean
+  backend?: string // native traffic-steering backend: pf | nftables | fake
 }
 
 export interface VPNStatus {
@@ -80,6 +81,7 @@ export interface DriftStatus {
   adds: number
   dels: number
   changes: number
+  reason?: string // set when desired state can't be computed (attention needed)
 }
 
 export interface State {
@@ -139,6 +141,7 @@ export interface Rule {
 export interface Profile {
   id: string
   name: string
+  description?: string
   enabled: boolean
   mode: string
   gateway: string
@@ -225,4 +228,67 @@ export interface Leak {
   kind: string
   severity: string
   detail: string
+}
+
+// Flow mirrors domain.Flow — an active connection correlated to the route that
+// carries it (the flow monitor).
+export interface Flow {
+  proto: string
+  local: string
+  remote: string
+  state?: string
+  process?: string
+  iface?: string
+  via_vpn: boolean
+}
+
+// List mirrors domain.List — a reusable static or remote (subscribable) rule set.
+export interface List {
+  name: string
+  static?: string[] | null
+  source?: string
+  refresh?: string
+  last_fetched?: string | null
+  checksum?: string
+  resolved?: string[] | null
+}
+
+// SplitDNSRoute mirrors domain.SplitDNSRoute — a per-domain resolver selection.
+export interface SplitDNSRoute {
+  domain: string
+  resolver: string
+}
+
+// UpdateResult mirrors update.Result — the GitHub Releases check.
+export interface UpdateResult {
+  current: string
+  latest: string
+  available: boolean
+  url?: string
+  notes?: string
+}
+
+// ConfigFile mirrors desktop/config.go — a config the user picked in the native
+// dialog. An empty path means the picker was cancelled.
+export interface ConfigFile {
+  path: string
+  name: string
+  format: string // yaml | toml
+  content: string
+}
+
+export interface ConfigIssue {
+  severity: string // error | warning
+  line?: number
+  field?: string
+  msg: string
+}
+
+// ConfigImportResult mirrors apiclient.ConfigResult: validation issues plus either
+// a dry-run plan/diff (preview) or an applied result (with a pending tx to confirm).
+export interface ConfigImportResult {
+  issues?: ConfigIssue[]
+  plan?: Plan
+  diff?: Diff
+  result?: ApplyResult
 }

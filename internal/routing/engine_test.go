@@ -166,6 +166,109 @@ func TestBuildDesiredAppRuleEmitsFwmark(t *testing.T) {
 	}
 }
 
+func TestBuildDesiredDarwinIncludePFRouteTo(t *testing.T) {
+	in := testInput(domain.Profile{
+		ID: "p2", Name: "only-tunnel", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "1.1.1.0/24"}},
+	})
+	in.Platform = "darwin"
+	in.PolicyRouting = true // macOS now supports policy routing via PF route-to
+	in.VPNGatewayV4 = netip.MustParseAddr("10.8.0.1")
+	in.VPNIfaceV4 = "utun3"
+
+	routes, rules, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// macOS emits NO routes for include mode (no dedicated table) — only PF rules.
+	if len(routes) != 0 {
+		t.Fatalf("darwin include should emit no routes, got %+v", routes)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("want 1 PF route-to rule, got %+v", rules)
+	}
+	r := rules[0].PolicyRule
+	if r.Selector != "to 1.1.1.0/24" || r.RouteToIface != "utun3" || r.RouteToGW != "10.8.0.1" || r.Proto != "riftroute" {
+		t.Fatalf("PF route-to rule wrong: %+v", r)
+	}
+	// The rendered plan command should be a pf anchor op, not `ip rule`.
+	op := makeRuleOp(domain.OpAddRule, rules[0], "darwin")
+	if !strings.Contains(strings.Join(op.Command, " "), "route-to") || strings.Contains(strings.Join(op.Command, " "), "ip rule") {
+		t.Fatalf("darwin rule command should be a pf route-to op: %v", op.Command)
+	}
+}
+
+func TestBuildDesiredDarwinPerAppUser(t *testing.T) {
+	in := testInput(domain.Profile{
+		ID: "p2", Name: "user-tunnel", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{{Type: domain.RuleApp, Value: "501"}},
+	})
+	in.Platform = "darwin"
+	in.PolicyRouting = true
+	in.VPNGatewayV4 = netip.MustParseAddr("10.8.0.1")
+	in.VPNIfaceV4 = "utun3"
+
+	_, rules, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 1 || rules[0].Selector != "user 501" || rules[0].RouteToIface != "utun3" {
+		t.Fatalf("per-app (uid) rule wrong: %+v", rules)
+	}
+}
+
+func TestRuleKeyIncludesRouteToGateway(t *testing.T) {
+	// A VPN re-handshake can keep the same utun but move the peer gateway. The
+	// rule identity MUST change with the gateway, or Reconcile would report
+	// "in sync" and leave a stale route-to steering traffic at a dead next-hop.
+	oldGW := domain.PolicyRule{Priority: 5252, Selector: "to 1.1.1.0/24", Family: domain.FamilyV4, RouteToIface: "utun4", RouteToGW: "10.8.0.1"}
+	newGW := oldGW
+	newGW.RouteToGW = "10.8.0.2"
+	if RuleKey(oldGW) == RuleKey(newGW) {
+		t.Fatal("RuleKey must distinguish route-to gateways")
+	}
+	// And Reconcile must therefore plan a replace (add new + del old).
+	plan := Reconcile(nil, nil,
+		[]domain.ManagedRule{{PolicyRule: newGW}}, []domain.ManagedRule{{PolicyRule: oldGW}}, "darwin")
+	if len(plan.Ops) != 2 {
+		t.Fatalf("gateway change should plan add+del, got %d ops: %+v", len(plan.Ops), plan.Ops)
+	}
+	// Linux/fake keys (no route-to) are unchanged in shape.
+	lin := domain.PolicyRule{Priority: 5252, Selector: "to 1.1.1.0/24", Table: "5252", Family: domain.FamilyV4}
+	if RuleKey(lin) != "5252|to 1.1.1.0/24|5252|v4" {
+		t.Fatalf("linux key perturbed: %q", RuleKey(lin))
+	}
+}
+
+func TestBuildDesiredDarwinAppValueValidated(t *testing.T) {
+	// App values are interpolated into pfctl rules — a non-uid value must be
+	// refused up front, not break the whole anchor at load time.
+	in := testInput(domain.Profile{
+		ID: "p2", Name: "apps", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{{Type: domain.RuleApp, Value: "alice bob"}},
+	})
+	in.Platform = "darwin"
+	in.PolicyRouting = true
+	in.VPNGatewayV4 = netip.MustParseAddr("10.8.0.1")
+	in.VPNIfaceV4 = "utun3"
+	if _, _, err := BuildDesired(in); err == nil {
+		t.Fatal("non-uid app value must be refused on darwin")
+	}
+}
+
+func TestBuildDesiredDarwinIncludeNeedsTunnel(t *testing.T) {
+	in := testInput(domain.Profile{
+		ID: "p2", Name: "only-tunnel", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "1.1.1.0/24"}},
+	})
+	in.Platform = "darwin"
+	in.PolicyRouting = true
+	// No VPN tunnel resolved → fail-safe refusal (never blackhole into a dead iface).
+	if _, _, err := BuildDesired(in); err == nil {
+		t.Fatal("darwin include with no active tunnel should error")
+	}
+}
+
 func TestBuildDesiredIncludeNeedsPolicyRouting(t *testing.T) {
 	in := testInput(domain.Profile{
 		ID: "p2", Name: "only-tunnel", Enabled: true, Mode: domain.ModeInclude,

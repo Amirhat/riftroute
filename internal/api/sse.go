@@ -58,8 +58,14 @@ func (h *Hub) Count() int {
 	return len(h.clients)
 }
 
-// BroadcastState builds a fresh State and pushes it to all clients.
+// BroadcastState builds a fresh State and pushes it to all clients. With no
+// client connected it does nothing: assembling State forks provider reads
+// (netstat/pfctl on macOS), and a headless daemon runs this every ~3s forever —
+// there is no reason to pay that for events nobody receives.
 func (s *Server) BroadcastState(ctx context.Context) {
+	if s.hub.Count() == 0 {
+		return
+	}
 	st, err := s.svc.State(ctx)
 	if err != nil {
 		return

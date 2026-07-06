@@ -260,6 +260,39 @@ func (s *Store) UpsertList(l domain.List) error {
 	return err
 }
 
+// DeleteList removes a list by name.
+func (s *Store) DeleteList(name string) error {
+	_, err := s.db.Exec(`DELETE FROM lists WHERE name=?`, name)
+	return err
+}
+
+// --- Split-DNS persistence (settings-backed) ---
+
+const splitDNSKey = "split_dns"
+
+// SaveSplitDNS persists the per-domain resolver routes so they survive daemon
+// restarts (the manager re-applies them on startup).
+func (s *Store) SaveSplitDNS(routes []domain.SplitDNSRoute) error {
+	doc, err := json.Marshal(routes)
+	if err != nil {
+		return err
+	}
+	return s.SetSetting(splitDNSKey, string(doc))
+}
+
+// LoadSplitDNS returns the persisted split-DNS routes (empty when unset).
+func (s *Store) LoadSplitDNS() ([]domain.SplitDNSRoute, error) {
+	v, ok, err := s.GetSetting(splitDNSKey)
+	if err != nil || !ok || v == "" {
+		return nil, err
+	}
+	var routes []domain.SplitDNSRoute
+	if err := json.Unmarshal([]byte(v), &routes); err != nil {
+		return nil, err
+	}
+	return routes, nil
+}
+
 // --- Audit ---
 
 // AppendAudit writes an audit event and returns its assigned id.

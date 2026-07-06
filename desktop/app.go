@@ -12,6 +12,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/update"
 )
 
 // App is the Wails-bound backend. Its exported methods become typed TypeScript
@@ -206,6 +207,109 @@ func (a *App) SetProfileEnabled(name string, enable bool) (safety.Result, error)
 	ctx, cancel := a.call()
 	defer cancel()
 	return a.client.SetProfileEnabled(ctx, name, enable, false)
+}
+
+// SaveProfile upserts a profile assembled by the visual builder and reconciles.
+// dryRun returns the plan preview without persisting; otherwise it persists then
+// applies interactively (the UI runs the commit-confirm on the returned tx).
+// Validation errors come back in the result's Issues, not as a thrown error.
+func (a *App) SaveProfile(p domain.Profile, dryRun bool) (apiclient.ConfigResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	res, err := a.client.SaveProfile(ctx, p, dryRun, false)
+	if err != nil && len(res.Issues) > 0 {
+		return res, nil // 400-with-issues is a UI-renderable result, not a transport error
+	}
+	return res, err
+}
+
+// DeleteProfile removes a profile by name and reconciles (interactive apply →
+// commit-confirm on the returned tx).
+func (a *App) DeleteProfile(name string) (apiclient.ConfigResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.DeleteProfile(ctx, name, false)
+}
+
+// GetFlows returns live connections correlated to the route that carries them
+// (the flow monitor — spec §7.4).
+func (a *App) GetFlows() ([]domain.Flow, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	fl, err := a.client.Flows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if fl == nil {
+		fl = []domain.Flow{}
+	}
+	return fl, nil
+}
+
+// GetLists returns the reusable lists with cache metadata.
+func (a *App) GetLists() ([]domain.List, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	ls, err := a.client.Lists(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if ls == nil {
+		ls = []domain.List{}
+	}
+	return ls, nil
+}
+
+// SaveList upserts a reusable list (visual lists manager). Staging only — the
+// change surfaces as drift and routes move on the next guarded Apply.
+func (a *App) SaveList(l domain.List) (domain.List, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SaveList(ctx, l)
+}
+
+// DeleteList removes a list (refused while a profile still references it).
+func (a *App) DeleteList(name string) error {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.DeleteList(ctx, name)
+}
+
+// RefreshList re-fetches a remote list's entries now.
+func (a *App) RefreshList(name string) (domain.List, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.RefreshList(ctx, name)
+}
+
+// GetSplitDNS returns the persisted per-domain resolver routes.
+func (a *App) GetSplitDNS() ([]domain.SplitDNSRoute, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	routes, err := a.client.SplitDNS(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if routes == nil {
+		routes = []domain.SplitDNSRoute{}
+	}
+	return routes, nil
+}
+
+// SetSplitDNS validates, persists, and applies the split-DNS selection (empty
+// clears it).
+func (a *App) SetSplitDNS(routes []domain.SplitDNSRoute) ([]domain.SplitDNSRoute, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SetSplitDNS(ctx, routes)
+}
+
+// CheckUpdate queries GitHub Releases for a newer version (never self-installs;
+// spec §7.9 — applying an update stays a documented, verified, manual step).
+func (a *App) CheckUpdate() (update.Result, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+	defer cancel()
+	return update.Check(ctx, nil, "", version)
 }
 
 // GetDoctor runs the diagnostics battery.

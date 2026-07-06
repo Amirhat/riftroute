@@ -21,18 +21,24 @@ func New() *Provider { return &Provider{} }
 
 func (p *Provider) Name() string { return "macos" }
 
-// Capabilities reflects macOS limits (spec §4.2): no policy-routing tables, no
-// fwmark / per-app routing, no route proto tag — ownership is DB-tracked and
-// interface scoping (-ifscope) is available.
+// Capabilities reflects macOS's feature set. Policy routing and per-app routing
+// are provided natively via PF `route-to` anchors (spec §4.2 / the Darwin
+// analogue of Linux Model B): include-mode CIDRs and per-user (uid) selectors
+// are steered into the tunnel through our dedicated `riftroute` anchor. Fwmark
+// and the route proto tag remain Linux-only kernel primitives — macOS has no
+// equivalent — but their JOB (traffic marking + clean rule ownership) is done by
+// the PF backend and the anchor's rule labels. Interface scoping (-ifscope) is
+// available; ownership of ROUTES stays DB-tracked (no route proto on macOS).
 func (p *Provider) Capabilities() domain.Capabilities {
 	return domain.Capabilities{
 		Platform:      "darwin",
-		PolicyRouting: false,
+		PolicyRouting: true, // PF route-to anchor
 		Fwmark:        false,
-		PerAppRouting: false,
+		PerAppRouting: true, // PF route-to matching user <uid>
 		ProtoTag:      false,
 		IPv6:          true,
 		KillSwitch:    true, // pf
 		IfaceScoping:  true,
+		Backend:       "pf",
 	}
 }

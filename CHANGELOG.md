@@ -22,10 +22,15 @@ the initial release.
 - Crash recovery via ownership reconcile on startup.
 
 **Routing**
-- Exclude mode (Model A: host/CIDR routes) and include mode (Linux **Model B**:
-  dedicated table `5252` + `ip rule … proto riftroute`).
+- Exclude mode (Model A: host/CIDR routes) and include mode — Linux **Model B**
+  (dedicated table `5252` + `ip rule … proto riftroute`) or macOS **PF
+  `route-to`** anchors (the Darwin analogue), bringing policy-routing and per-app
+  parity to macOS. The abstract policy rule flows through the same plan / inverse /
+  write-ahead journal / reconcile machinery; the provider renders it into its
+  native primitive.
 - Rule types: `cidr`, `ip`, `domain` (scheduled re-resolution), `asn`/`country`
-  (with a MaxMind MMDB), and `app` (Linux cgroup + fwmark per-app routing).
+  (with a MaxMind MMDB), and `app` — Linux cgroup + fwmark, or macOS PF matching
+  the socket owner (uid/username).
 - Safe CIDR aggregation, conflict/overlap detection, and an LPM route-explain
   simulator with drift detection.
 - Subscribable lists (HTTPS-only, size-capped, checksummed, never executed).
@@ -46,6 +51,44 @@ the initial release.
 - Dashboard, Routing Table, Route Explain, Profiles (staged changes +
   commit-confirm countdown), History (audit timeline + snapshots), Diagnostics,
   and a Settings screen (theme, behavior, daemon & capabilities).
+- **Interactive Profile Builder** on the Profiles screen — a fully visual
+  create/edit designer: name + description + enabled toggle, an Include/Exclude
+  mode selector, and dynamic add/remove managers for CIDR/IP targets, domain rules,
+  and per-app rules (a strategy dropdown: by uid/username on macOS, by application
+  on Linux). Every field validates inline as you type (a bad IP like `999.999.999`
+  shows an error next to the input, never freezing the window); a live banner shows
+  the staged changeset (`+N routes · +M domains · +K app rules`); **Preview**
+  dry-runs the real plan; **Apply Changes Safely** serializes to the backend model,
+  re-validates over IPC, journals (WAL), and commits atomically with commit-confirm.
+  Profiles can also be deleted (guarded). Backed by a single-profile save/delete API
+  (`POST`/`DELETE /profiles`) that shares the config file's strict validation but
+  touches only that one profile (lists and split-DNS untouched).
+- **Import / Apply Config File** on the Profiles screen — a native file picker
+  brings `riftroute apply file.yaml` into the window: pick a `.yaml`/`.yml`, get
+  daemon-side strict validation with line-referenced errors, a visual `+X / −Y`
+  preview, and an atomic commit-confirmed apply. No terminal required; corrupt or
+  invalid files render inline instead of crashing the UI.
+- **Visual lists manager** on the Profiles screen — create/edit/delete reusable
+  rule lists without YAML: static CIDR/IP entries with inline validation, or a
+  remote (subscribable) https source with a refresh interval and a "Refresh now"
+  action. Deleting a list a profile still references is refused with a friendly
+  message. The Profile Builder attaches lists as toggleable references. Backed by
+  `POST`/`DELETE /lists`.
+- **Split-DNS editor** in Settings — per-domain resolver routes are now edited
+  visually, persisted (they survive daemon restarts; startup re-applies them),
+  and applied live (`GET`/`PUT /splitdns`). The declarative `/config` path
+  persists the same selection, so file and UI stay in sync.
+- **Live Flows view** — the flow monitor joins the GUI: every active connection
+  with its process, remote, interface, and a via-VPN/direct verdict,
+  auto-refreshing, with an all/VPN/direct filter.
+- **Export config** in Settings — everything assembled visually (profiles, lists,
+  split-DNS) serializes back to the same git-committable `riftroute.yaml` via the
+  native save dialog; the export round-trips through the importer.
+- **Update check** in Settings — queries GitHub Releases and shows the newer
+  version + download URL; nothing is ever self-installed.
+- The Capabilities card credits each platform's native backend (`pf` on macOS,
+  `nftables` on Linux) and no longer shows macOS as merely "missing" the Linux-only
+  fwmark / proto-tag primitives.
 - In-app daemon setup — no terminal required: a first-run "Set up RiftRoute"
   screen installs + starts the privileged service via the native admin prompt,
   and Settings → Daemon service offers start / stop / restart / uninstall. The
@@ -57,6 +100,9 @@ the initial release.
 - Cross-compiled CLI/daemon tarballs + checksums; `.deb`, `.dmg`, AppImage, and
   Homebrew packaging; tag-driven release workflow (code signing/notarization
   gated on Apple secrets).
+- The macOS `.dmg` is now a **universal** build — the GUI (`wails -platform
+  darwin/universal`) and the bundled CLI + daemon (`lipo` of arm64 + x86_64) run
+  on every Mac, Apple Silicon and Intel.
 - CI: Go race tests, real end-to-end suite, Linux netns suite, cgo-free cross
   builds, native GUI builds, and frontend smoke tests.
 
@@ -105,9 +151,51 @@ the initial release.
 - Broken Settings gear icon (a mangled SVG arc path rendered as a tangle of
   loops); replaced with a correct gear.
 
+### Hardening (pre-ship production review)
+A multi-angle adversarial review of the whole change set, with every finding
+verified against the real system where possible:
+- **PF labels rewritten** — pfctl caps rule labels at 63 chars (verified:
+  "rule label too long"); the original base64 identity labels could never load.
+  Ownership is now a short constant label and rule identity is parsed from
+  pfctl's canonical rule text (normalizations captured from a real `pfctl -nvf`
+  run: appended `flags S/SA keep state`, bare host IPs, `user = 501`, parenless
+  gateway-less `route-to`). Every rendered rule form is accepted by the real
+  pfctl parser (parse-only; nothing loaded).
+- **Rule identity includes the route-to gateway** — a VPN re-handshake that keeps
+  the utun but moves the peer gateway now plans a replace instead of silently
+  keeping a stale (blackholing) rule.
+- **PF anchor read failures abort mutations** — a transient pfctl error can no
+  longer cause a read-modify-write to rewrite the anchor from an empty base and
+  drop every other owned rule.
+- **`/etc/pf.conf` is written atomically** (same-dir temp + fsync + rename,
+  original permissions preserved) — a crash mid-write can't truncate the system
+  firewall config. The `pfctl -E` enable reference is token-tracked and released
+  (`pfctl -X`) on teardown, so PF's enabled state is restored too.
+- **Per-app values are strictly validated on macOS** (uid/username charset) at
+  config validation AND in the engine — one bad value can no longer fail the
+  whole anchor load (or inject rule tokens).
+- **Data-loss guards**: editing a profile no longer drops asn/country rules the
+  builder doesn't display; a profiles-only YAML import no longer wipes the
+  persisted split-DNS selection; GUI-created profiles get collision-proof IDs
+  (rename + recreate could previously overwrite another profile); list renames
+  are locked (upsert-by-name would have created a duplicate).
+- **Honest status**: when desired state can't be computed (e.g. include mode
+  while the VPN is down — matched traffic fail-safes into the tunnel-less
+  blackhole rather than leaking), the dashboard now shows Drift "Attention" with
+  the reason instead of a false "in sync".
+- **Efficiency**: anchor reads are TTL-cached and state broadcasts skip entirely
+  when no client is connected (an idle headless daemon no longer forks
+  pfctl/netstat every 3 s); the Flows table caps its synchronous render.
+- **Error transparency**: daemon refusals now surface their real reason in the
+  GUI (not "request failed"), and delete/save flows refresh even when the
+  follow-up reconcile fails.
+
 ### Notes
-- The agent never mutates the host: all route/firewall/DNS mutation is verified on
-  the fake provider and the Linux netns suite only.
+- The agent never mutates the host: all route/firewall/DNS mutation — including the
+  new macOS PF `route-to` anchor and its `pf.conf` hook — is verified on the fake
+  provider, the Linux netns suite, pure round-trip/generator unit tests, and
+  parse-only (`pfctl -nf`) acceptance checks against the real pfctl grammar.
+  Live `route-to` steering on a real Mac is the operator's final check.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
 [Unreleased]: https://github.com/Amirhat/riftroute/commits/main

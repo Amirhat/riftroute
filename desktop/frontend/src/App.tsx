@@ -6,6 +6,7 @@ import { Dashboard } from './views/Dashboard'
 import { RoutesView } from './views/RoutesView'
 import { ExplainView } from './views/ExplainView'
 import { Profiles } from './views/Profiles'
+import { Flows } from './views/Flows'
 import { Diagnostics } from './views/Diagnostics'
 import { History } from './views/History'
 import { Settings } from './views/Settings'
@@ -23,6 +24,7 @@ const titles: Record<View, string> = {
   routes: 'Routing Table',
   explain: 'Route Explain',
   profiles: 'Profiles',
+  flows: 'Live Flows',
   diagnostics: 'Diagnostics',
   history: 'History',
   settings: 'Settings',
@@ -145,6 +147,8 @@ function ViewRouter({
       return <ExplainView />
     case 'profiles':
       return <Profiles />
+    case 'flows':
+      return <Flows />
     case 'diagnostics':
       return <Diagnostics />
     case 'history':

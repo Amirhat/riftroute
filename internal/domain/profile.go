@@ -33,17 +33,36 @@ type Rule struct {
 	Comment string   `json:"comment,omitempty"`
 }
 
+// IsUIDLike reports whether s is a valid macOS per-app selector: a numeric uid
+// or a POSIX-ish username. On Darwin, PF matches per-app traffic by socket owner
+// (`user <uid>`), and the value is interpolated into a pfctl rule — so the
+// charset is strictly limited (one bad value would fail the whole anchor load).
+// Shared by config validation and the routing engine so there is exactly one
+// definition of "acceptable app selector on macOS".
+func IsUIDLike(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 // Profile is the unit a user toggles (spec §5.1).
 type Profile struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Enabled   bool     `json:"enabled"`
-	Mode      Mode     `json:"mode"`
-	Gateway   string   `json:"gateway"` // "auto" or an explicit IP
-	Priority  int      `json:"priority"`
-	Rules     []Rule   `json:"rules"`
-	Lists     []string `json:"lists"`
-	IPVersion []Family `json:"ip_version,omitempty"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"` // free-text note (GUI builder metadata)
+	Enabled     bool     `json:"enabled"`
+	Mode        Mode     `json:"mode"`
+	Gateway     string   `json:"gateway"` // "auto" or an explicit IP
+	Priority    int      `json:"priority"`
+	Rules       []Rule   `json:"rules"`
+	Lists       []string `json:"lists"`
+	IPVersion   []Family `json:"ip_version,omitempty"`
 }
 
 // List is a named, reusable set of rules; static (inline) or remote (spec §5.1).

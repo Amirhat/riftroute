@@ -59,14 +59,15 @@ type ConnectivityGuard struct {
 
 // ProfileConfig is a profile entry in the config file.
 type ProfileConfig struct {
-	Name      string       `yaml:"name" toml:"name"`
-	Enabled   bool         `yaml:"enabled" toml:"enabled"`
-	Mode      string       `yaml:"mode" toml:"mode"`
-	Gateway   string       `yaml:"gateway" toml:"gateway"`
-	Priority  int          `yaml:"priority" toml:"priority"`
-	Rules     []RuleConfig `yaml:"rules" toml:"rules"`
-	Lists     []string     `yaml:"lists" toml:"lists"`
-	IPVersion []string     `yaml:"ip_version" toml:"ip_version"`
+	Name        string       `yaml:"name" toml:"name"`
+	Description string       `yaml:"description" toml:"description"`
+	Enabled     bool         `yaml:"enabled" toml:"enabled"`
+	Mode        string       `yaml:"mode" toml:"mode"`
+	Gateway     string       `yaml:"gateway" toml:"gateway"`
+	Priority    int          `yaml:"priority" toml:"priority"`
+	Rules       []RuleConfig `yaml:"rules" toml:"rules"`
+	Lists       []string     `yaml:"lists" toml:"lists"`
+	IPVersion   []string     `yaml:"ip_version" toml:"ip_version"`
 }
 
 // RuleConfig is a single rule entry.
@@ -138,13 +139,14 @@ func (c *Config) ToDomain() ([]domain.Profile, []domain.List, error) {
 	var profiles []domain.Profile
 	for _, pc := range c.Profiles {
 		p := domain.Profile{
-			ID:       "cfg:" + pc.Name,
-			Name:     pc.Name,
-			Enabled:  pc.Enabled,
-			Mode:     domain.Mode(orDefault(pc.Mode, string(domain.ModeExclude))),
-			Gateway:  orDefault(pc.Gateway, "auto"),
-			Priority: pc.Priority,
-			Lists:    pc.Lists,
+			ID:          "cfg:" + pc.Name,
+			Name:        pc.Name,
+			Description: pc.Description,
+			Enabled:     pc.Enabled,
+			Mode:        domain.Mode(orDefault(pc.Mode, string(domain.ModeExclude))),
+			Gateway:     orDefault(pc.Gateway, "auto"),
+			Priority:    pc.Priority,
+			Lists:       pc.Lists,
 		}
 		for _, fam := range pc.IPVersion {
 			p.IPVersion = append(p.IPVersion, domain.Family(fam))
@@ -160,6 +162,42 @@ func (c *Config) ToDomain() ([]domain.Profile, []domain.List, error) {
 	}
 	return profiles, lists, nil
 }
+
+// FromDomain builds a declarative Config from live domain entities — the inverse
+// of ToDomain, used by the GUI's "Export config" so anything assembled visually
+// round-trips into the same git-committable YAML the CLI applies.
+func FromDomain(profiles []domain.Profile, lists []domain.List, splitDNS []domain.SplitDNSRoute) *Config {
+	c := &Config{Version: 1}
+	for _, sd := range splitDNS {
+		c.Settings.SplitDNS = append(c.Settings.SplitDNS, SplitDNSConfig{Domain: sd.Domain, Resolver: sd.Resolver})
+	}
+	for _, p := range profiles {
+		pc := ProfileConfig{
+			Name:        p.Name,
+			Description: p.Description,
+			Enabled:     p.Enabled,
+			Mode:        string(p.Mode),
+			Gateway:     p.Gateway,
+			Priority:    p.Priority,
+			Lists:       p.Lists,
+		}
+		for _, f := range p.IPVersion {
+			pc.IPVersion = append(pc.IPVersion, string(f))
+		}
+		for _, r := range p.Rules {
+			pc.Rules = append(pc.Rules, RuleConfig{Type: string(r.Type), Value: r.Value, Comment: r.Comment})
+		}
+		c.Profiles = append(c.Profiles, pc)
+	}
+	for _, l := range lists {
+		c.Lists = append(c.Lists, ListConfig{Name: l.Name, Static: l.Static, Source: l.Source, Refresh: l.Refresh})
+	}
+	return c
+}
+
+// ToYAML renders the config as YAML bytes (export path). Named to avoid any
+// resemblance to yaml.v3's Marshaler interface.
+func (c *Config) ToYAML() ([]byte, error) { return yaml.Marshal(c) }
 
 // SplitDNSRoutes returns the configured split-DNS routes as domain entities.
 func (c *Config) SplitDNSRoutes() []domain.SplitDNSRoute {

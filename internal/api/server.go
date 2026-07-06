@@ -108,6 +108,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /lists/{name}/refresh", s.requireWrite(s.handleListRefresh))
 	s.mux.HandleFunc("POST /profiles/{name}/enable", s.requireWrite(s.handleProfileToggle(true)))
 	s.mux.HandleFunc("POST /profiles/{name}/disable", s.requireWrite(s.handleProfileToggle(false)))
+	// Interactive GUI builder: upsert one profile (validate → apply) / delete one.
+	s.mux.HandleFunc("POST /profiles", s.requireWrite(s.handleProfileSave))
+	s.mux.HandleFunc("DELETE /profiles/{name}", s.requireWrite(s.handleProfileDelete))
+	// GUI lists manager: upsert/delete a reusable list (staging only; drift-driven apply).
+	s.mux.HandleFunc("POST /lists", s.requireWrite(s.handleListSave))
+	s.mux.HandleFunc("DELETE /lists/{name}", s.requireWrite(s.handleListDelete))
+	// Split-DNS: persisted per-domain resolver selection, editable from Settings.
+	s.mux.HandleFunc("GET /splitdns", s.handleSplitDNSGet)
+	s.mux.HandleFunc("PUT /splitdns", s.requireWrite(s.handleSplitDNSSet))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
 	s.mux.HandleFunc("POST /debug/vpn", s.requireWrite(s.handleDebugVPN))
 }

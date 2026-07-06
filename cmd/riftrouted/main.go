@@ -139,6 +139,18 @@ func run() error {
 		return on
 	})
 
+	// Re-apply the persisted split-DNS selection so per-domain resolvers survive
+	// a daemon restart (best-effort; an empty/unset selection is a no-op).
+	if routes, err := st.LoadSplitDNS(); err != nil {
+		logger.Warn("split-dns load on startup failed", "err", err)
+	} else if len(routes) > 0 {
+		if err := sdns.Apply(context.Background(), routes); err != nil {
+			logger.Warn("split-dns re-apply on startup failed", "err", err)
+		} else {
+			logger.Info("re-applied persisted split-DNS", "routes", len(routes))
+		}
+	}
+
 	ln, err := listen(socketPath, logger)
 	if err != nil {
 		return err

@@ -239,6 +239,11 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 	}
 	dRoutes, dRules, _, err := s.DesiredFromProfiles(ctx, profs)
 	if err != nil {
+		// Desired state can't even be computed (e.g. include mode with no live
+		// tunnel). Report attention-needed instead of a false "in sync" — the
+		// installed rules keep fail-safing meanwhile.
+		d.Pending = true
+		d.Reason = err.Error()
 		return d
 	}
 	plan := routing.Reconcile(dRoutes, actualRoutes, dRules, s.actualManagedRules(ctx), s.Platform())

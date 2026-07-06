@@ -56,6 +56,7 @@ func New() *Provider {
 			IPv6:          true,
 			KillSwitch:    true,
 			IfaceScoping:  true,
+			Backend:       "fake",
 		},
 		dns: domain.DNSState{
 			Servers:       []string{"10.8.0.1"},
@@ -243,7 +244,11 @@ func (p *Provider) DelRule(_ context.Context, r domain.ManagedRule) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for i, pr := range p.rules {
-		if pr.Priority == r.Priority && pr.Selector == r.Selector && pr.Table == r.Table && pr.Family == r.Family {
+		// Full rule identity, including the route-to target: two rules steering the
+		// same selector into different tunnels (or gateways) must stay distinct, or
+		// a tunnel-switch reconcile could delete the freshly added rule.
+		if pr.Priority == r.Priority && pr.Selector == r.Selector && pr.Table == r.Table && pr.Family == r.Family &&
+			pr.RouteToIface == r.RouteToIface && pr.RouteToGW == r.RouteToGW {
 			p.rules = append(p.rules[:i], p.rules[i+1:]...)
 			return nil
 		}
@@ -307,9 +312,13 @@ func (p *Provider) SetVPN(up bool) {
 		}
 	}
 	if up {
-		if p.indexOfCIDR(domain.FamilyV4, "0.0.0.0/0") < 0 {
-			p.routesV4 = append([]domain.Route{{DstCIDR: "0.0.0.0/0", Gateway: "10.8.0.1", Iface: "utun3", Family: domain.FamilyV4, Owner: domain.OwnerVPN}}, p.routesV4...)
+		// A VPN coming up SEIZES the default route (as real clients do) — replace
+		// whatever default exists (e.g. the physical one installed on the way down),
+		// otherwise a down→up cycle would leave the tunnel default missing forever.
+		if idx := p.indexOfCIDR(domain.FamilyV4, "0.0.0.0/0"); idx >= 0 {
+			p.routesV4 = append(p.routesV4[:idx], p.routesV4[idx+1:]...)
 		}
+		p.routesV4 = append([]domain.Route{{DstCIDR: "0.0.0.0/0", Gateway: "10.8.0.1", Iface: "utun3", Family: domain.FamilyV4, Owner: domain.OwnerVPN}}, p.routesV4...)
 	} else {
 		if idx := p.indexOfCIDR(domain.FamilyV4, "0.0.0.0/0"); idx >= 0 {
 			p.routesV4 = append(p.routesV4[:idx], p.routesV4[idx+1:]...)

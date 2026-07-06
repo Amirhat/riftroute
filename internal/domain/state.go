@@ -44,6 +44,12 @@ type DriftStatus struct {
 	Adds    int  `json:"adds"`
 	Dels    int  `json:"dels"`
 	Changes int  `json:"changes"`
+	// Reason is set when the desired state itself cannot be computed (e.g. an
+	// include profile with no live tunnel). Pending is true in that case: the
+	// dashboard must show attention-needed, never a false "in sync", while the
+	// installed rules keep fail-safing (include traffic blackholes rather than
+	// leaking to the physical path).
+	Reason string `json:"reason,omitempty"`
 }
 
 // State is the aggregate returned by GET /state — the single source the UI and

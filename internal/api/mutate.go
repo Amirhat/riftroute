@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/config"
@@ -175,6 +177,134 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 	}
 }
 
+// handleProfileSave upserts a single profile assembled by the GUI builder and
+// reconciles, sharing the exact strict validation the config-file path uses. With
+// ?dry_run=1 it validates + previews the plan WITHOUT persisting; otherwise it
+// persists then applies (interactive by default → commit-confirm). Unlike the
+// declarative /config path it touches only this one profile, leaving lists and
+// split-DNS untouched. Validation errors come back as populated Issues (400).
+func (s *Server) handleProfileSave(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
+		return
+	}
+	var p domain.Profile
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&p); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	p.Name = strings.TrimSpace(p.Name)
+
+	known := map[string]bool{}
+	if ls, err := s.store.ListLists(); err == nil {
+		for _, l := range ls {
+			known[l.Name] = true
+		}
+	}
+	vres := config.ValidateProfile(p, s.svc.Platform(), known)
+	resp := ConfigResp{Issues: vres.Issues}
+	if vres.HasErrors() {
+		writeJSON(w, http.StatusBadRequest, resp)
+		return
+	}
+
+	// A brand-new GUI-built profile gets a UNIQUE id (name + timestamp): a plain
+	// "gui:<name>" id would collide after a rename — creating a new profile with
+	// the freed-up name would silently overwrite the renamed one on upsert.
+	if p.ID == "" {
+		p.ID = fmt.Sprintf("gui:%s-%x", p.Name, time.Now().UnixNano())
+	}
+	// Reject a name already owned by a DIFFERENT profile (the store keys by id with
+	// a UNIQUE name — surface it as a friendly issue rather than a 500).
+	existing, _ := s.store.ListProfiles()
+	for _, e := range existing {
+		if e.Name == p.Name && e.ID != p.ID {
+			resp.Issues = append(resp.Issues, config.Issue{
+				Severity: config.SevError, Field: "name",
+				Msg: fmt.Sprintf("a different profile already uses the name %q", p.Name),
+			})
+			writeJSON(w, http.StatusBadRequest, resp)
+			return
+		}
+	}
+
+	if isTrue(r.URL.Query().Get("dry_run")) {
+		desired, rules, _, derr := s.svc.DesiredFromProfiles(r.Context(), profilesWith(existing, p))
+		if derr != nil {
+			writeErr(w, http.StatusBadRequest, derr)
+			return
+		}
+		plan, diff := s.proto.Plan(r.Context(), desired, rules)
+		resp.Plan, resp.Diff = &plan, &diff
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	if err := s.store.UpsertProfile(p); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	if derr != nil {
+		// The profile IS saved; only the follow-up reconcile failed (e.g. include
+		// mode with no live tunnel). Broadcast so clients show the saved profile,
+		// then report why nothing was applied.
+		s.BroadcastState(r.Context())
+		writeErr(w, http.StatusBadRequest, derr)
+		return
+	}
+	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
+	resp.Result = &res
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleProfileDelete removes a profile and reconciles the remaining set. The
+// apply is interactive by default so removing a profile's routes is guarded by
+// commit-confirm like any other change.
+func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
+		return
+	}
+	name := r.PathValue("name")
+	if err := s.store.DeleteProfile(name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	if derr != nil {
+		// The profile IS deleted; only the follow-up reconcile failed. Broadcast so
+		// clients drop the stale profile before we report the reconcile error.
+		s.BroadcastState(r.Context())
+		writeErr(w, http.StatusBadRequest, derr)
+		return
+	}
+	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, ConfigResp{Result: &res})
+}
+
+// profilesWith returns profiles with p substituted in (matched by id or name), or
+// appended if new — the desired set for a dry-run preview without persisting.
+func profilesWith(profiles []domain.Profile, p domain.Profile) []domain.Profile {
+	out := make([]domain.Profile, len(profiles))
+	copy(out, profiles)
+	for i := range out {
+		if out[i].ID == p.ID || out[i].Name == p.Name {
+			out[i] = p
+			return out
+		}
+	}
+	return append(out, p)
+}
+
 // ConfigResp is the response to POST /config (declarative apply, spec §10).
 type ConfigResp struct {
 	Issues []config.Issue `json:"issues,omitempty"`
@@ -218,10 +348,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	if s.store != nil {
 		for _, p := range profiles {
-			_ = s.store.UpsertProfile(p)
+			if err := s.store.UpsertProfile(p); err != nil {
+				s.log.Warn("config apply: profile not persisted", "profile", p.Name, "err", err)
+			}
 		}
 		for _, l := range lists {
-			_ = s.store.UpsertList(l)
+			if err := s.store.UpsertList(l); err != nil {
+				s.log.Warn("config apply: list not persisted", "list", l.Name, "err", err)
+			}
 		}
 	}
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
@@ -231,16 +365,20 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
 	resp.Result = &res
-	// Apply per-domain resolver selection (split-DNS) alongside the routes.
-	if s.splitDNS != nil {
+	// Apply + persist per-domain resolver selection (split-DNS) alongside the
+	// routes, so a declarative apply and the Settings editor stay in sync and the
+	// selection survives daemon restarts. Only when the file actually HAS a
+	// split_dns section — a profiles-only YAML import must not silently wipe a
+	// selection the user configured in Settings (absent section = leave alone;
+	// explicit empty `split_dns: []` = clear).
+	if cfg.Settings.SplitDNS != nil {
 		routes := cfg.SplitDNSRoutes()
-		var serr error
-		if len(routes) == 0 {
-			serr = s.splitDNS.Clear(r.Context())
-		} else {
-			serr = s.splitDNS.Apply(r.Context(), routes)
+		if s.store != nil {
+			if serr := s.store.SaveSplitDNS(routes); serr != nil {
+				s.log.Warn("split-dns persist failed", "err", serr)
+			}
 		}
-		if serr != nil {
+		if serr := s.applySplitDNS(r.Context(), routes); serr != nil {
 			s.log.Warn("split-dns apply failed", "err", serr)
 		}
 	}
@@ -278,6 +416,147 @@ func (s *Server) handleListRefreshAll(w http.ResponseWriter, r *http.Request) {
 	}
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, map[string]int{"refreshed": n})
+}
+
+// handleListSave upserts a reusable list from the GUI lists manager, with the
+// same strict validation the config-file path applies. It only stages: changing a
+// list changes desired state, which surfaces as drift for the normal guarded
+// Apply — a list edit never mutates the kernel by itself. A remote list is
+// fetched immediately (best-effort) so its entries are usable right away.
+func (s *Server) handleListSave(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
+		return
+	}
+	var l domain.List
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&l); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	l.Name = strings.TrimSpace(l.Name)
+	vres := config.ValidateList(l)
+	if vres.HasErrors() {
+		writeJSON(w, http.StatusBadRequest, ConfigResp{Issues: vres.Issues})
+		return
+	}
+	// Preserve the fetched cache when editing an existing remote list, unless the
+	// source changed (then the old cache no longer describes the source).
+	if prev, err := s.store.GetList(l.Name); err == nil && prev.Source == l.Source {
+		l.Resolved, l.Checksum, l.LastFetched = prev.Resolved, prev.Checksum, prev.LastFetched
+	}
+	if err := s.store.UpsertList(l); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if l.Source != "" && l.LastFetched == nil {
+		if fetched, err := s.svc.RefreshList(r.Context(), l.Name); err == nil {
+			l = fetched
+		}
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, l)
+}
+
+// handleListDelete removes a list. Deletion is refused while any profile still
+// references it — friendlier than silently breaking those profiles.
+func (s *Server) handleListDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
+		return
+	}
+	name := r.PathValue("name")
+	if profiles, err := s.store.ListProfiles(); err == nil {
+		for _, p := range profiles {
+			for _, ref := range p.Lists {
+				if ref == name {
+					writeErr(w, http.StatusConflict,
+						fmt.Errorf("list %q is used by profile %q — remove it from the profile first", name, p.Name))
+					return
+				}
+			}
+		}
+	}
+	if err := s.store.DeleteList(name); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
+}
+
+// handleSplitDNSGet returns the persisted per-domain resolver routes.
+func (s *Server) handleSplitDNSGet(w http.ResponseWriter, _ *http.Request) {
+	routes := []domain.SplitDNSRoute{}
+	if s.store != nil {
+		if rs, err := s.store.LoadSplitDNS(); err == nil && rs != nil {
+			routes = rs
+		}
+	}
+	writeJSON(w, http.StatusOK, routes)
+}
+
+// handleSplitDNSSet validates, persists, and applies the split-DNS routes (empty
+// set clears them). Persisting means they survive daemon restarts — startup
+// re-applies whatever is stored.
+func (s *Server) handleSplitDNSSet(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	var routes []domain.SplitDNSRoute
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&routes); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	var issues []config.Issue
+	for _, rt := range routes {
+		res := validateSplitDNSRoute(rt)
+		issues = append(issues, res...)
+	}
+	if len(issues) > 0 {
+		writeJSON(w, http.StatusBadRequest, ConfigResp{Issues: issues})
+		return
+	}
+	if s.store != nil {
+		if err := s.store.SaveSplitDNS(routes); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
+	if err := s.applySplitDNS(r.Context(), routes); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, routes)
+}
+
+func validateSplitDNSRoute(rt domain.SplitDNSRoute) []config.Issue {
+	var out []config.Issue
+	if !config.IsValidDomain(rt.Domain) {
+		out = append(out, config.Issue{Severity: config.SevError, Field: "domain", Msg: fmt.Sprintf("invalid domain %q", rt.Domain)})
+	}
+	if _, err := netip.ParseAddr(rt.Resolver); err != nil {
+		out = append(out, config.Issue{Severity: config.SevError, Field: "resolver", Msg: fmt.Sprintf("resolver must be an IP, got %q", rt.Resolver)})
+	}
+	return out
+}
+
+// applySplitDNS pushes routes through the platform manager (nil manager = no-op;
+// empty set clears).
+func (s *Server) applySplitDNS(ctx context.Context, routes []domain.SplitDNSRoute) error {
+	if s.splitDNS == nil {
+		return nil
+	}
+	if len(routes) == 0 {
+		return s.splitDNS.Clear(ctx)
+	}
+	return s.splitDNS.Apply(ctx, routes)
 }
 
 func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {

@@ -90,10 +90,7 @@ func (p *Provider) ListRoutes(_ context.Context, family domain.Family) ([]domain
 	return out, nil
 }
 
-// ListRules is empty on macOS — there are no policy-routing tables (spec §4.2).
-func (p *Provider) ListRules(_ context.Context, _ domain.Family) ([]domain.PolicyRule, error) {
-	return []domain.PolicyRule{}, nil
-}
+// ListRules enumerates the PF route-to policy rules RiftRoute owns; see pf.go.
 
 // Interfaces enumerates interfaces via the stdlib and classifies each by name.
 func (p *Provider) Interfaces(_ context.Context) ([]domain.Iface, error) {

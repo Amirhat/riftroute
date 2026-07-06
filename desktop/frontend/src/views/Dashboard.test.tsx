@@ -9,8 +9,8 @@ import type { State } from '../types'
 const base: State = {
   health: { daemon: 'ok', version: '1.0.0', provider: 'macos', uptime_seconds: 42, pid: 1 },
   capabilities: {
-    platform: 'darwin', policy_routing: false, fwmark: false, per_app_routing: false,
-    proto_tag: false, ipv6: true, kill_switch: true, iface_scoping: true,
+    platform: 'darwin', policy_routing: true, fwmark: false, per_app_routing: true,
+    proto_tag: false, ipv6: true, kill_switch: true, iface_scoping: true, backend: 'pf',
   },
   vpn: { active: true, interfaces: ['utun8'] },
   interfaces: [

@@ -14,6 +14,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/config"
@@ -336,6 +338,71 @@ func (c *Client) ApplyConfig(ctx context.Context, data []byte, format string, dr
 	return out, nil
 }
 
+// SaveProfile upserts a single GUI-built profile and reconciles. dryRun previews
+// the plan without persisting; otherwise it persists then applies (interactive
+// unless yes). Validation failures return an APIError (400) with the
+// ConfigResult's Issues still populated (mirrors ApplyConfig).
+func (c *Client) SaveProfile(ctx context.Context, p domain.Profile, dryRun, yes bool) (ConfigResult, error) {
+	path := "/profiles"
+	sep := "?"
+	if dryRun {
+		path += sep + "dry_run=1"
+		sep = "&"
+	}
+	if yes {
+		path += sep + "yes=1"
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		return ConfigResult{}, err
+	}
+	return c.configRequest(ctx, http.MethodPost, path, data)
+}
+
+// DeleteProfile removes a profile by name and reconciles the remaining set
+// (interactive unless yes).
+func (c *Client) DeleteProfile(ctx context.Context, name string, yes bool) (ConfigResult, error) {
+	path := "/profiles/" + url.PathEscape(name)
+	if yes {
+		path += "?yes=1"
+	}
+	return c.configRequest(ctx, http.MethodDelete, path, nil)
+}
+
+// configRequest issues a mutation that returns a ConfigResult, keeping the body
+// (issues) even on a 4xx so the caller can render validation diagnostics.
+func (c *Client) configRequest(ctx context.Context, method, path string, body []byte) (ConfigResult, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.url(path), reader)
+	if err != nil {
+		return ConfigResult{}, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return ConfigResult{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
+	}
+	defer resp.Body.Close()
+	var out ConfigResult
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = json.Unmarshal(b, &out)
+	if resp.StatusCode >= 400 {
+		// Surface the daemon's actual reason ({"error": …} from writeErr) — a bare
+		// "request failed" hides why a save/delete was refused from the user.
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(b, &body)
+		return out, &APIError{StatusCode: resp.StatusCode, Message: body.Error}
+	}
+	return out, nil
+}
+
 // Doctor runs the diagnostics battery.
 func (c *Client) Doctor(ctx context.Context) (domain.DoctorReport, error) {
 	var r domain.DoctorReport
@@ -384,6 +451,90 @@ func (c *Client) RefreshAllLists(ctx context.Context) (int, error) {
 	}
 	err := c.do(ctx, http.MethodPost, "/lists/refresh", struct{}{}, &body)
 	return body.Refreshed, err
+}
+
+// SaveList upserts a reusable list (GUI lists manager). Staging only: the change
+// surfaces as drift; routes move on the next guarded Apply. On success the saved
+// list (with any freshly fetched remote cache) is returned; validation failures
+// return a *ValidationError with field-referenced issues.
+func (c *Client) SaveList(ctx context.Context, l domain.List) (domain.List, error) {
+	data, err := json.Marshal(l)
+	if err != nil {
+		return domain.List{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/lists"), bytes.NewReader(data))
+	if err != nil {
+		return domain.List{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return domain.List{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 400 {
+		var cr ConfigResult
+		if json.Unmarshal(body, &cr) == nil && len(cr.Issues) > 0 {
+			return domain.List{}, &ValidationError{Issues: cr.Issues}
+		}
+		return domain.List{}, &APIError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(body))}
+	}
+	var out domain.List
+	if err := json.Unmarshal(body, &out); err != nil {
+		return domain.List{}, err
+	}
+	return out, nil
+}
+
+// DeleteList removes a list by name (refused with 409 while a profile references it).
+func (c *Client) DeleteList(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/lists/"+url.PathEscape(name), nil, &struct{}{})
+}
+
+// SplitDNS returns the persisted per-domain resolver routes.
+func (c *Client) SplitDNS(ctx context.Context) ([]domain.SplitDNSRoute, error) {
+	var routes []domain.SplitDNSRoute
+	err := c.do(ctx, http.MethodGet, "/splitdns", nil, &routes)
+	return routes, err
+}
+
+// SetSplitDNS validates, persists, and applies the split-DNS selection (empty
+// clears it).
+func (c *Client) SetSplitDNS(ctx context.Context, routes []domain.SplitDNSRoute) ([]domain.SplitDNSRoute, error) {
+	if routes == nil {
+		routes = []domain.SplitDNSRoute{}
+	}
+	data, err := json.Marshal(routes)
+	if err != nil {
+		return nil, err
+	}
+	res, err := c.configRequest(ctx, http.MethodPut, "/splitdns", data)
+	if err != nil {
+		if len(res.Issues) > 0 {
+			return nil, &ValidationError{Issues: res.Issues}
+		}
+		return nil, err
+	}
+	return routes, nil
+}
+
+// ValidationError carries field-referenced validation issues from a rejected
+// list/split-DNS save, so UIs can render them inline.
+type ValidationError struct {
+	Issues []config.Issue
+}
+
+func (e *ValidationError) Error() string {
+	parts := make([]string, 0, len(e.Issues))
+	for _, i := range e.Issues {
+		if i.Field != "" {
+			parts = append(parts, i.Field+": "+i.Msg)
+			continue
+		}
+		parts = append(parts, i.Msg)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Snapshots lists snapshot metadata (route payloads omitted).
