@@ -86,6 +86,10 @@ the initial release.
   native save dialog; the export round-trips through the importer.
 - **Update check** in Settings — queries GitHub Releases and shows the newer
   version + download URL; nothing is ever self-installed.
+- **Auto-apply is now a live toggle** in Settings (was display-only): it flips
+  reconcile-on-network-change at runtime — no daemon restart — and the choice is
+  persisted, so it survives restarts. The reconcile loops always run and gate
+  each pass on the toggle; the connectivity guard still protects every apply.
 - The Capabilities card credits each platform's native backend (`pf` on macOS,
   `nftables` on Linux) and no longer shows macOS as merely "missing" the Linux-only
   fwmark / proto-tag primitives.

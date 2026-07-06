@@ -492,6 +492,16 @@ func (c *Client) DeleteList(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/lists/"+url.PathEscape(name), nil, &struct{}{})
 }
 
+// SetAutoApply toggles the daemon's reconcile-on-network-change behavior at
+// runtime (persisted across restarts).
+func (c *Client) SetAutoApply(ctx context.Context, enabled bool) (bool, error) {
+	var body struct {
+		AutoApply bool `json:"auto_apply"`
+	}
+	err := c.do(ctx, http.MethodPut, "/autoapply", map[string]bool{"enabled": enabled}, &body)
+	return body.AutoApply, err
+}
+
 // SplitDNS returns the persisted per-domain resolver routes.
 func (c *Client) SplitDNS(ctx context.Context) ([]domain.SplitDNSRoute, error) {
 	var routes []domain.SplitDNSRoute

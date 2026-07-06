@@ -242,7 +242,7 @@ export function ProfileBuilder({
               active={mode === 'include'}
               onClick={() => setMode('include')}
               title="Include"
-              desc="Only these targets go through the tunnel (everything else is direct)."
+              desc="Only these targets go through the tunnel (everything else is direct). Needs an active VPN."
             />
           </div>
         </div>

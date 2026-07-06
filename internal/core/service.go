@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/dns"
@@ -29,7 +30,7 @@ type Service struct {
 	version    string
 	started    time.Time
 	now        func() time.Time
-	autoApply  bool
+	autoApply  atomic.Bool
 	domains    *dns.Cache
 	killStatus func() bool
 }
@@ -41,9 +42,13 @@ func (s *Service) SetResolver(c *dns.Cache) { s.domains = c }
 // active, so State can surface it (the manager lives in the daemon).
 func (s *Service) SetKillSwitchStatus(fn func() bool) { s.killStatus = fn }
 
-// SetAutoApply records whether the daemon's auto-apply loop is active (surfaced
-// in State for the UI/CLI).
-func (s *Service) SetAutoApply(on bool) { s.autoApply = on }
+// SetAutoApply records whether auto-apply is active (surfaced in State for the
+// UI/CLI). Atomic: the Settings toggle flips it from an API handler while State
+// reads it concurrently.
+func (s *Service) SetAutoApply(on bool) { s.autoApply.Store(on) }
+
+// AutoApply reports whether auto-apply is currently active.
+func (s *Service) AutoApply() bool { return s.autoApply.Load() }
 
 // New builds a Service over a provider and store.
 func New(prov provider.RouteProvider, st *store.Store, version string) *Service {
@@ -380,7 +385,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Profiles:          profs,
 		Drift:             drift,
 		ManagedRouteCount: managed,
-		AutoApply:         s.autoApply,
+		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		GeneratedAt:       s.now(),
 	}, nil

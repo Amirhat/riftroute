@@ -122,6 +122,10 @@ export function SaveProfile(arg1, arg2) {
   return window['go']['main']['App']['SaveProfile'](arg1, arg2);
 }
 
+export function SetAutoApply(arg1) {
+  return window['go']['main']['App']['SetAutoApply'](arg1);
+}
+
 export function SetKillSwitch(arg1) {
   return window['go']['main']['App']['SetKillSwitch'](arg1);
 }

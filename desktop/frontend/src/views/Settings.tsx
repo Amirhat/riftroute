@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
-import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge } from '../components/ui'
+import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge, Toggle } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
@@ -38,6 +38,14 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
   }
   const killOn = s?.kill_switch ?? false
 
+  async function setAutoApply(enabled: boolean) {
+    try {
+      await api.setAutoApply(enabled)
+    } finally {
+      qc.invalidateQueries({ queryKey: stateKey })
+    }
+  }
+
   return (
     <div className="max-w-3xl space-y-4">
       <Card>
@@ -69,9 +77,11 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
             <div className="flex items-center justify-between px-4 py-3">
               <div>
                 <div className="text-sm text-default">Auto-apply on network change</div>
-                <div className="text-xs text-muted">Reconcile automatically when the VPN/network changes (daemon flag / config).</div>
+                <div className="text-xs text-muted">
+                  Reconcile automatically when the VPN or network changes. The connectivity guard still protects every apply.
+                </div>
               </div>
-              <Badge tone={s.auto_apply ? 'success' : 'muted'}>{s.auto_apply ? 'on' : 'off'}</Badge>
+              <Toggle on={s.auto_apply} onClick={() => void setAutoApply(!s.auto_apply)} />
             </div>
             <div className="flex items-center justify-between px-4 py-3">
               <div>

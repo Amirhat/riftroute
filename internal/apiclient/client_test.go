@@ -35,6 +35,7 @@ func serveTest(t *testing.T) (*Client, *api.Server, *store.Store) {
 	svc := core.New(prov, st, "test")
 	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, "fake", nil)
 	srv := api.NewServer(svc, st, proto, uint32(os.Getuid()), "test", nil)
+	srv.SetAutoApplyControl(svc.SetAutoApply) // mirrors the daemon wiring
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = srv.Serve(ctx, ln) }()
@@ -295,6 +296,32 @@ func TestClientSplitDNS(t *testing.T) {
 	}
 	if got, _ := c.SplitDNS(ctx); len(got) != 0 {
 		t.Fatalf("expected cleared, got %+v", got)
+	}
+}
+
+// TestClientAutoApplyToggle exercises the Settings switch's backend: runtime
+// toggle, reflected in State, persisted for the next daemon start.
+func TestClientAutoApplyToggle(t *testing.T) {
+	c, _, st := serveTest(t)
+	ctx := context.Background()
+
+	on, err := c.SetAutoApply(ctx, true)
+	if err != nil || !on {
+		t.Fatalf("enable: on=%v err=%v", on, err)
+	}
+	if s, _ := c.State(ctx); !s.AutoApply {
+		t.Fatal("state should report auto-apply on")
+	}
+	off, err := c.SetAutoApply(ctx, false)
+	if err != nil || off {
+		t.Fatalf("disable: on=%v err=%v", off, err)
+	}
+	if s, _ := c.State(ctx); s.AutoApply {
+		t.Fatal("state should report auto-apply off")
+	}
+	// persisted: the daemon reads this at startup (wins over the flag default).
+	if v, ok, _ := st.GetSetting("auto_apply"); !ok || v != "false" {
+		t.Fatalf("setting not persisted: %q ok=%v", v, ok)
 	}
 }
 

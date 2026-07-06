@@ -66,6 +66,8 @@ export function SaveList(arg1:domain.List):Promise<domain.List>;
 
 export function SaveProfile(arg1:domain.Profile,arg2:boolean):Promise<apiclient.ConfigResult>;
 
+export function SetAutoApply(arg1:boolean):Promise<boolean>;
+
 export function SetKillSwitch(arg1:boolean):Promise<boolean>;
 
 export function SetProfileEnabled(arg1:string,arg2:boolean):Promise<safety.Result>;

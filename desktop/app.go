@@ -340,6 +340,13 @@ func (a *App) SetKillSwitch(enabled bool) (bool, error) {
 	return a.client.SetKillSwitch(ctx, enabled)
 }
 
+// SetAutoApply toggles reconcile-on-network-change at runtime (persisted).
+func (a *App) SetAutoApply(enabled bool) (bool, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SetAutoApply(ctx, enabled)
+}
+
 // GetSnapshots lists snapshot metadata.
 func (a *App) GetSnapshots() ([]domain.Snapshot, error) {
 	ctx, cancel := a.call()

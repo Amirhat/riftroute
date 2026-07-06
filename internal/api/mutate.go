@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -557,6 +558,30 @@ func (s *Server) applySplitDNS(ctx context.Context, routes []domain.SplitDNSRout
 		return s.splitDNS.Clear(ctx)
 	}
 	return s.splitDNS.Apply(ctx, routes)
+}
+
+// handleAutoApply toggles automatic reconciliation on network change at runtime
+// (the Settings switch). Persisted, so the choice survives daemon restarts.
+func (s *Server) handleAutoApply(w http.ResponseWriter, r *http.Request) {
+	if s.setAutoApply == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("auto-apply control unavailable"))
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.setAutoApply(req.Enabled)
+	if s.store != nil {
+		if err := s.store.SetSetting("auto_apply", strconv.FormatBool(req.Enabled)); err != nil {
+			s.log.Warn("auto-apply setting not persisted", "err", err)
+		}
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, map[string]bool{"auto_apply": req.Enabled})
 }
 
 func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
