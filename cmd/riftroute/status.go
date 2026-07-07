@@ -97,11 +97,11 @@ func renderStatus(w io.Writer, st domain.State) {
 	fmt.Fprintf(w, "  Profiles:      %d enabled / %d total\n", enabled, len(st.Profiles))
 
 	if st.Drift.Pending {
-		fmt.Fprintf(w, "  Drift:         PENDING (+%d -%d ~%d) — run `riftroute diff`\n", st.Drift.Adds, st.Drift.Dels, st.Drift.Changes)
+		fmt.Fprintf(w, "  Drift:         PENDING (+%d -%d) — run `riftroute diff`\n", st.Drift.Adds, st.Drift.Dels)
 	} else {
 		fmt.Fprintln(w, "  Drift:         none")
 	}
-	fmt.Fprintf(w, "  Managed routes: %d\n", st.ManagedRouteCount)
+	fmt.Fprintf(w, "  Managed:       %d route(s), %d rule(s)\n", st.ManagedRouteCount, st.ManagedRuleCount)
 
 	c := st.Capabilities
 	fmt.Fprintf(w, "  Capabilities:  platform=%s policy-routing=%s per-app=%s proto-tag=%s ipv6=%s\n",

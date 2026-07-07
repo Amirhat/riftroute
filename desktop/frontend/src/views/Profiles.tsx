@@ -136,7 +136,7 @@ export function Profiles() {
           <div className="text-sm">
             <span className="font-semibold text-warning">Pending changes</span>
             <span className="ml-2 text-muted">
-              +{drift?.adds ?? 0} −{drift?.dels ?? 0} ~{drift?.changes ?? 0} managed route(s)
+              {drift?.adds ?? 0} to add · {drift?.dels ?? 0} to remove
             </span>
           </div>
           <div className="flex gap-2">

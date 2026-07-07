@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Mode is a profile's routing mode (spec §5.3).
 type Mode string
@@ -50,6 +53,14 @@ func IsUIDLike(s string) bool {
 	}
 	return true
 }
+
+// DomainRuleHost returns the resolvable hostname for a domain rule value.
+// DNS cannot enumerate a wildcard's subdomains, so "*.example.com" resolves
+// (and routes) its apex "example.com"; subdomain coverage comes from split-DNS,
+// whose per-domain resolvers match suffixes natively. Shared by the domain
+// resolver, the re-resolver, and split-DNS so a wildcard means the same thing
+// everywhere instead of leaking into a literal "*.example.com" DNS query.
+func DomainRuleHost(v string) string { return strings.TrimPrefix(v, "*.") }
 
 // Profile is the unit a user toggles (spec §5.1).
 type Profile struct {

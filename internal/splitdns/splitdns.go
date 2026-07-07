@@ -68,7 +68,10 @@ func (m *macResolverManager) Apply(_ context.Context, routes []domain.SplitDNSRo
 		return err
 	}
 	for _, r := range routes {
-		path := filepath.Join(resolverDir, r.Domain)
+		// macOS resolver files match the domain and all its subdomains, so a
+		// wildcard normalizes to its apex (a literal "*.example.com" filename
+		// would never match anything).
+		path := filepath.Join(resolverDir, domain.DomainRuleHost(r.Domain))
 		if err := os.WriteFile(path, []byte(ResolverFile(r.Resolver)), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
@@ -104,7 +107,7 @@ func (resolvectlManager) Apply(ctx context.Context, routes []domain.SplitDNSRout
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	for _, r := range routes {
-		out, err := exec.CommandContext(cctx, "resolvectl", "dns", r.Domain, r.Resolver).CombinedOutput()
+		out, err := exec.CommandContext(cctx, "resolvectl", "dns", domain.DomainRuleHost(r.Domain), r.Resolver).CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("resolvectl: %w: %s", err, strings.TrimSpace(string(out)))
 		}

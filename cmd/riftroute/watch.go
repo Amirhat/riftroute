@@ -127,7 +127,7 @@ func (m watchModel) View() string {
 	}
 	drift := stOK.Render("in sync")
 	if s.Drift.Pending {
-		drift = stWarn.Render(fmt.Sprintf("PENDING +%d -%d ~%d", s.Drift.Adds, s.Drift.Dels, s.Drift.Changes))
+		drift = stWarn.Render(fmt.Sprintf("PENDING +%d -%d", s.Drift.Adds, s.Drift.Dels))
 	}
 	ks := stDim.Render("off")
 	if s.KillSwitch {

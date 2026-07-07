@@ -43,7 +43,6 @@ type DriftStatus struct {
 	Pending bool `json:"pending"`
 	Adds    int  `json:"adds"`
 	Dels    int  `json:"dels"`
-	Changes int  `json:"changes"`
 	// Reason is set when the desired state itself cannot be computed (e.g. an
 	// include profile with no live tunnel). Pending is true in that case: the
 	// dashboard must show attention-needed, never a false "in sync", while the
@@ -65,6 +64,10 @@ type State struct {
 	Profiles          []ProfileStatus `json:"profiles"`
 	Drift             DriftStatus     `json:"drift"`
 	ManagedRouteCount int             `json:"managed_route_count"`
+	// ManagedRuleCount counts owned policy rules (Linux ip rules / macOS PF
+	// route-to rules) — the other half of "what RiftRoute installed", so a
+	// per-app-only profile doesn't read as "0 managed".
+	ManagedRuleCount int `json:"managed_rule_count"`
 	// AutoApply reports whether the daemon reconciles automatically on network
 	// changes (spec §6 v1 / §10 settings.auto_apply_on_change).
 	AutoApply bool `json:"auto_apply"`

@@ -80,7 +80,6 @@ export interface DriftStatus {
   pending: boolean
   adds: number
   dels: number
-  changes: number
   reason?: string // set when desired state can't be computed (attention needed)
 }
 
@@ -94,6 +93,7 @@ export interface State {
   profiles: ProfileStatus[]
   drift: DriftStatus
   managed_route_count: number
+  managed_rule_count: number
   auto_apply: boolean
   kill_switch: boolean
   generated_at: string

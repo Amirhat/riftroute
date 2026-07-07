@@ -123,7 +123,9 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 				continue
 			}
 			var ss []string
-			for _, a := range s.domains.Lookup(ctx, r.Value) {
+			// Wildcards resolve their apex (DNS can't enumerate subdomains);
+			// the map stays keyed by the raw rule value the engine looks up.
+			for _, a := range s.domains.Lookup(ctx, domain.DomainRuleHost(r.Value)) {
 				ss = append(ss, a.String())
 			}
 			m[r.Value] = ss
@@ -146,9 +148,12 @@ func (s *Service) DomainHosts() []string {
 			continue
 		}
 		for _, r := range p.Rules {
-			if r.Type == domain.RuleDomain && !seen[r.Value] {
-				seen[r.Value] = true
-				out = append(out, r.Value)
+			if r.Type != domain.RuleDomain {
+				continue
+			}
+			if h := domain.DomainRuleHost(r.Value); !seen[h] {
+				seen[h] = true
+				out = append(out, h)
 			}
 		}
 	}
@@ -264,8 +269,18 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 	return d
 }
 
-// actualManagedRoutes returns the kernel routes RiftRoute owns.
+// actualManagedRoutes returns the routes RiftRoute owns. The persistent
+// ownership map is the source of truth — the same one the apply protocol
+// reconciles against — because kernel owner tags only exist on Linux (proto
+// riftroute); a provider tag-scan on macOS sees nothing and would report
+// "0 managed / drift pending" forever. Falls back to the tag-scan when there
+// is no store (tests) or the read fails.
 func (s *Service) actualManagedRoutes(ctx context.Context) []domain.ManagedRoute {
+	if s.store != nil {
+		if owned, err := s.store.ListOwned(); err == nil {
+			return owned
+		}
+	}
 	var out []domain.ManagedRoute
 	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
 		rs, err := s.prov.ListRoutes(ctx, fam)
@@ -346,13 +361,9 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		defaultFor(v6, domain.FamilyV6, "::/0", vpnByIface),
 	}
 
-	var actualManaged []domain.ManagedRoute
-	for _, r := range append(append([]domain.Route{}, v4...), v6...) {
-		if r.Owner == domain.OwnerRiftRoute {
-			actualManaged = append(actualManaged, domain.ManagedRoute{Route: r, ProfileID: r.Profile})
-		}
-	}
+	actualManaged := s.actualManagedRoutes(ctx)
 	managed := len(actualManaged)
+	managedRules := len(s.actualManagedRules(ctx))
 
 	// Live drift: desired (enabled profiles) vs actual managed. Skipped when no
 	// profiles exist to avoid resolving the gateway on every state push.
@@ -385,6 +396,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Profiles:          profs,
 		Drift:             drift,
 		ManagedRouteCount: managed,
+		ManagedRuleCount:  managedRules,
 		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		GeneratedAt:       s.now(),
