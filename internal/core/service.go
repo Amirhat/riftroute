@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -403,8 +404,10 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 	}, nil
 }
 
-// Routes returns the routing table, optionally filtered by family and owner.
-// An empty family returns both v4 and v6.
+// Routes returns the routing table in kernel lookup-precedence order,
+// optionally filtered by family and owner. Ownership is enriched from the
+// persistent map before filtering — macOS kernel routes carry no owner tag,
+// so without the join every managed route would render as "system" there.
 func (s *Service) Routes(ctx context.Context, family domain.Family, owner domain.Owner) ([]domain.Route, error) {
 	var out []domain.Route
 	fams := []domain.Family{family}
@@ -416,22 +419,98 @@ func (s *Service) Routes(ctx context.Context, family domain.Family, owner domain
 		if err != nil {
 			return nil, err
 		}
-		for _, r := range rs {
-			if owner != "" && r.Owner != owner {
-				continue
-			}
-			out = append(out, r)
-		}
+		out = append(out, rs...)
 	}
+	s.tagOwnedRoutes(out)
+	if owner != "" {
+		filtered := out[:0]
+		for _, r := range out {
+			if r.Owner == owner {
+				filtered = append(filtered, r)
+			}
+		}
+		out = filtered
+	}
+	sortLookupOrder(out)
 	return out, nil
 }
 
-// Rules returns Linux policy rules for a family (empty on macOS).
-func (s *Service) Rules(ctx context.Context, family domain.Family) ([]domain.PolicyRule, error) {
-	if family == "" {
-		family = domain.FamilyV4
+// tagOwnedRoutes stamps Owner/Profile onto listed routes that appear in the
+// ownership map (matched by full route identity).
+func (s *Service) tagOwnedRoutes(rs []domain.Route) {
+	if s.store == nil {
+		return
 	}
-	return s.prov.ListRules(ctx, family)
+	owned, err := s.store.ListOwned()
+	if err != nil || len(owned) == 0 {
+		return
+	}
+	byKey := make(map[string]domain.ManagedRoute, len(owned))
+	for _, mr := range owned {
+		byKey[routing.RouteKey(mr.Route)] = mr
+	}
+	for i := range rs {
+		if mr, ok := byKey[routing.RouteKey(rs[i])]; ok {
+			rs[i].Owner = domain.OwnerRiftRoute
+			if rs[i].Profile == "" {
+				rs[i].Profile = mr.ProfileID
+			}
+		}
+	}
+}
+
+// sortLookupOrder orders routes the way the kernel evaluates a destination:
+// v4 before v6, longest (most specific) prefix first, then lowest metric,
+// then destination for a stable tiebreak. Unparseable destinations sort last.
+func sortLookupOrder(rs []domain.Route) {
+	sort.SliceStable(rs, func(i, j int) bool {
+		a, b := rs[i], rs[j]
+		if a.Family != b.Family {
+			return a.Family == domain.FamilyV4
+		}
+		if pa, pb := prefixBits(a.DstCIDR), prefixBits(b.DstCIDR); pa != pb {
+			return pa > pb
+		}
+		if a.Metric != b.Metric {
+			return a.Metric < b.Metric
+		}
+		return a.DstCIDR < b.DstCIDR
+	})
+}
+
+func prefixBits(cidr string) int {
+	if p, err := netip.ParsePrefix(cidr); err == nil {
+		return p.Bits()
+	}
+	if a, err := netip.ParseAddr(cidr); err == nil { // bare host address
+		return a.BitLen()
+	}
+	return -1
+}
+
+// Rules returns policy rules (Linux ip rules / macOS PF anchor rules). An
+// empty family returns both v4 and v6.
+func (s *Service) Rules(ctx context.Context, family domain.Family) ([]domain.PolicyRule, error) {
+	fams := []domain.Family{family}
+	if family == "" {
+		fams = []domain.Family{domain.FamilyV4, domain.FamilyV6}
+	}
+	var out []domain.PolicyRule
+	seen := map[string]bool{}
+	for _, f := range fams {
+		rs, err := s.prov.ListRules(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rs {
+			// PF anchor reads are family-agnostic on macOS; dedupe across passes.
+			if k := routing.RuleKey(r); !seen[k] {
+				seen[k] = true
+				out = append(out, r)
+			}
+		}
+	}
+	return out, nil
 }
 
 // Interfaces returns the interface list.

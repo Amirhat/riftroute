@@ -70,6 +70,10 @@ export function GetRoutes(arg1, arg2) {
   return window['go']['main']['App']['GetRoutes'](arg1, arg2);
 }
 
+export function GetRules() {
+  return window['go']['main']['App']['GetRules']();
+}
+
 export function GetSnapshots() {
   return window['go']['main']['App']['GetSnapshots']();
 }

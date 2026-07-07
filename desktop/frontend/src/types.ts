@@ -99,6 +99,17 @@ export interface State {
   generated_at: string
 }
 
+export interface PolicyRule {
+  priority: number
+  selector: string
+  table: string
+  family: Family
+  proto?: string
+  // macOS PF route-to target (the Darwin analogue of a Linux table default).
+  route_to_iface?: string
+  route_to_gw?: string
+}
+
 export interface Route {
   dst_cidr: string
   gateway?: string
@@ -107,6 +118,7 @@ export interface Route {
   family: Family
   owner: Owner
   proto?: string
+  table?: string // non-main Linux routing table (Model B); absent on macOS
   profile?: string
 }
 

@@ -14,22 +14,54 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // ListRoutes reads the routing table for one family via `ip -j route show`,
-// falling back to text parsing on old iproute2 without `-j`.
+// falling back to text parsing on old iproute2 without `-j`. The Model B
+// include-mode table is read too — its routes are as real as main-table ones,
+// and hiding them made include-mode state invisible to the table view, the
+// ownership tag-scan, and crash repair.
 func (p *Provider) ListRoutes(ctx context.Context, family domain.Family) ([]domain.Route, error) {
+	routes, err := p.listTable(ctx, family, "")
+	if err != nil {
+		return nil, err
+	}
+	// Best-effort: an absent/empty dedicated table is normal (exclude-only use).
+	if extra, err := p.listTable(ctx, family, routing.ModelBTable); err == nil {
+		routes = append(routes, extra...)
+	}
+	return routes, nil
+}
+
+// listTable lists one routing table ("" = main); non-main routes are stamped
+// with their table so consumers can tell them apart from main-table routes.
+func (p *Provider) listTable(ctx context.Context, family domain.Family, table string) ([]domain.Route, error) {
 	fam := famFlag(family)
-	if out, err := run(ctx, "ip", "-j", fam, "route", "show"); err == nil {
+	args := []string{"-j", fam, "route", "show"}
+	textArgs := []string{fam, "route", "show"}
+	if table != "" {
+		args = append(args, "table", table)
+		textArgs = append(textArgs, "table", table)
+	}
+	stamp := func(rs []domain.Route) []domain.Route {
+		if table != "" {
+			for i := range rs {
+				rs[i].Table = table
+			}
+		}
+		return rs
+	}
+	if out, err := run(ctx, "ip", args...); err == nil {
 		if routes, perr := parseRoutesJSON([]byte(out), family); perr == nil {
-			return routes, nil
+			return stamp(routes), nil
 		}
 	}
-	out, err := run(ctx, "ip", fam, "route", "show")
+	out, err := run(ctx, "ip", textArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("linux: ip route show: %w", err)
 	}
-	return parseRoutesText(out, family), nil
+	return stamp(parseRoutesText(out, family)), nil
 }
 
 // ListRules reads policy rules for one family via `ip -j rule show`.

@@ -40,6 +40,8 @@ export function GetProfiles():Promise<Array<domain.Profile>>;
 
 export function GetRoutes(arg1:string,arg2:string):Promise<Array<domain.Route>>;
 
+export function GetRules():Promise<Array<Record<string, unknown>>>;
+
 export function GetSnapshots():Promise<Array<domain.Snapshot>>;
 
 export function GetSplitDNS():Promise<Array<domain.SplitDNSRoute>>;

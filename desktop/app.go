@@ -111,6 +111,21 @@ func (a *App) GetRoutes(family string, owner string) ([]domain.Route, error) {
 	return rs, nil
 }
 
+// GetRules returns policy rules — Linux `ip rule` entries or macOS PF
+// route-to anchor rules (both families).
+func (a *App) GetRules() ([]domain.PolicyRule, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	rules, err := a.client.Rules(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	if rules == nil {
+		rules = []domain.PolicyRule{}
+	}
+	return rules, nil
+}
+
 // GetInterfaces returns the interface list.
 func (a *App) GetInterfaces() ([]domain.Iface, error) {
 	ctx, cancel := a.call()
