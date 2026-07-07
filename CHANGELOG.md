@@ -4,7 +4,7 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.1] — 2026-07-07
 
 A comprehensive UX and functionality overhaul across every screen.
 
@@ -276,4 +276,5 @@ verified against the real system where possible:
   The kernel's canonical rule echo matched the parser's test fixtures verbatim.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
+[0.2.1]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.0
