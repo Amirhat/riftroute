@@ -150,6 +150,7 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			writeErr(w, http.StatusNotImplemented, errors.New("no store"))
 			return
 		}
+		prior := s.priorProfiles()
 		if err := s.store.SetProfileEnabled(name, enable); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				writeErr(w, http.StatusNotFound, err)
@@ -158,6 +159,7 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		s.notifyProfilesChanged(r.Context())
 		// apply=false just stages the desired flag (GUI then previews + applies
 		// with commit-confirm). Default true reconciles immediately (CLI quick
 		// toggle, non-interactive with the guard kept).
@@ -172,10 +174,27 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: true}, physGW))
+		opts := s.buildOptions(applyReq{Yes: true}, physGW)
+		opts.SnapshotProfiles = prior
+		res, _ := s.proto.Apply(r.Context(), desired, rules, opts)
 		s.BroadcastState(r.Context())
 		writeJSON(w, http.StatusOK, res)
 	}
+}
+
+// priorProfiles returns the CURRENT profile set as a non-nil slice — captured
+// by mutating handlers before they touch the store, so the pre-apply snapshot
+// records the policy a restore should bring back (not the policy including the
+// change being made).
+func (s *Server) priorProfiles() []domain.Profile {
+	profs, err := s.store.ListProfiles()
+	if err != nil {
+		return []domain.Profile{}
+	}
+	if profs == nil {
+		profs = []domain.Profile{}
+	}
+	return profs
 }
 
 // handleProfileSave upserts a single profile assembled by the GUI builder and
@@ -244,20 +263,26 @@ func (s *Server) handleProfileSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prior := s.priorProfiles()
 	if err := s.store.UpsertProfile(p); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
 		// The profile IS saved; only the follow-up reconcile failed (e.g. include
 		// mode with no live tunnel). Broadcast so clients show the saved profile,
-		// then report why nothing was applied.
+		// and report the partial success as such — a bare error would read as
+		// "the save failed".
 		s.BroadcastState(r.Context())
-		writeErr(w, http.StatusBadRequest, derr)
+		resp.ApplyError = derr.Error()
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
+	opts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
+	opts.SnapshotProfiles = prior
+	res, _ := s.proto.Apply(r.Context(), desired, rules, opts)
 	resp.Result = &res
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, resp)
@@ -275,19 +300,23 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	prior := s.priorProfiles()
 	if err := s.store.DeleteProfile(name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
 		// The profile IS deleted; only the follow-up reconcile failed. Broadcast so
-		// clients drop the stale profile before we report the reconcile error.
+		// clients drop the stale profile, and report the partial success as such.
 		s.BroadcastState(r.Context())
-		writeErr(w, http.StatusBadRequest, derr)
+		writeJSON(w, http.StatusOK, ConfigResp{ApplyError: derr.Error()})
 		return
 	}
-	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
+	opts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
+	opts.SnapshotProfiles = prior
+	res, _ := s.proto.Apply(r.Context(), desired, rules, opts)
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, ConfigResp{Result: &res})
 }
@@ -312,6 +341,10 @@ type ConfigResp struct {
 	Plan   *domain.Plan   `json:"plan,omitempty"`
 	Diff   *domain.Diff   `json:"diff,omitempty"`
 	Result *safety.Result `json:"result,omitempty"`
+	// ApplyError reports a partial success: the profile change persisted but the
+	// follow-up reconcile failed (e.g. include mode with no live tunnel). A bare
+	// error here would read as "the save failed" — it didn't.
+	ApplyError string `json:"apply_error,omitempty"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +380,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var prior []domain.Profile
 	if s.store != nil {
+		prior = s.priorProfiles()
 		for _, p := range profiles {
 			if err := s.store.UpsertProfile(p); err != nil {
 				s.log.Warn("config apply: profile not persisted", "profile", p.Name, "err", err)
@@ -359,12 +394,19 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
-		writeErr(w, http.StatusBadRequest, derr)
+		// The config IS persisted; only the follow-up reconcile failed. Report the
+		// partial success as such instead of a bare error.
+		s.BroadcastState(r.Context())
+		resp.ApplyError = derr.Error()
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
+	cfgOpts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
+	cfgOpts.SnapshotProfiles = prior
+	res, _ := s.proto.Apply(r.Context(), desired, rules, cfgOpts)
 	resp.Result = &res
 	// Apply + persist per-domain resolver selection (split-DNS) alongside the
 	// routes, so a declarative apply and the Settings editor stay in sync and the
@@ -654,10 +696,79 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 		snaps = []domain.Snapshot{}
 	}
 	// Trim heavy route payloads for the list view; details fetched on demand.
+	// Restorable is derived from the (stripped) profile capture.
 	for i := range snaps {
+		snaps[i].Restorable = snaps[i].Profiles != nil
 		snaps[i].RoutesV4 = nil
 		snaps[i].RoutesV6 = nil
 		snaps[i].Rules = nil
+		snaps[i].Profiles = nil
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"snapshots": snaps})
+}
+
+// handleSnapshotRestore restores the POLICY captured in a snapshot: the profile
+// set is put back exactly as it was, then the normal apply path converges
+// routes to it (guardrails, WAL, commit-confirm — a restore is as revertible
+// as any other change). Snapshots that predate profile capture are refused.
+func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
+		return
+	}
+	snap, err := s.store.GetSnapshot(r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if snap.Profiles == nil {
+		writeErr(w, http.StatusBadRequest,
+			errors.New("this snapshot predates policy capture and cannot be restored"))
+		return
+	}
+
+	// Replace the profile set with the snapshot's (exact restore, including
+	// removals of profiles created after the snapshot). The pre-restore set is
+	// snapshotted in turn, so a restore is itself undoable.
+	prior := s.priorProfiles()
+	inSnap := map[string]bool{}
+	for _, p := range snap.Profiles {
+		inSnap[p.ID] = true
+	}
+	current := prior
+	for _, p := range current {
+		if !inSnap[p.ID] {
+			if derr := s.store.DeleteProfile(p.Name); derr != nil {
+				s.log.Warn("restore: could not remove profile", "profile", p.Name, "err", derr)
+			}
+		}
+	}
+	for _, p := range snap.Profiles {
+		if uerr := s.store.UpsertProfile(p); uerr != nil {
+			s.log.Warn("restore: could not restore profile", "profile", p.Name, "err", uerr)
+		}
+	}
+	s.notifyProfilesChanged(r.Context())
+
+	resp := ConfigResp{}
+	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	if derr != nil {
+		s.BroadcastState(r.Context())
+		resp.ApplyError = derr.Error()
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	restoreOpts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
+	restoreOpts.SnapshotProfiles = prior
+	res, _ := s.proto.Apply(r.Context(), desired, rules, restoreOpts)
+	resp.Result = &res
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, resp)
 }

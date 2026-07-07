@@ -23,6 +23,7 @@ export function Profiles() {
   const [preview, setPreview] = useState<Plan | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [builder, setBuilder] = useState<BuilderState>(null)
   const [deleting, setDeleting] = useState<Profile | null>(null)
 
@@ -136,7 +137,7 @@ export function Profiles() {
           <div className="text-sm">
             <span className="font-semibold text-warning">Pending changes</span>
             <span className="ml-2 text-muted">
-              +{drift?.adds ?? 0} −{drift?.dels ?? 0} ~{drift?.changes ?? 0} managed route(s)
+              {drift?.adds ?? 0} to add · {drift?.dels ?? 0} to remove
             </span>
           </div>
           <div className="flex gap-2">
@@ -155,6 +156,14 @@ export function Profiles() {
       )}
 
       {error && <Card className="border-danger/40 p-3 text-sm text-danger">{error}</Card>}
+      {notice && (
+        <Card className="flex items-center justify-between border-warning/40 bg-warning/5 p-3 text-sm">
+          <span className="text-warning">{notice}</span>
+          <button onClick={() => setNotice(null)} aria-label="Dismiss" className="text-muted hover:text-default">
+            ✕
+          </button>
+        </Card>
+      )}
 
       {preview && (
         <Card>
@@ -232,11 +241,13 @@ export function Profiles() {
 
       {builder && (
         <ProfileBuilder
+          key={builder.mode === 'edit' ? builder.profile.id : 'new'}
           initial={builder.mode === 'edit' ? builder.profile : undefined}
           existingNames={profileNames}
           platform={platform}
           onPending={setPending}
           onApplied={refresh}
+          onWarning={setNotice}
           onClose={() => setBuilder(null)}
         />
       )}

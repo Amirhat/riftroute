@@ -4,11 +4,13 @@
 import {
   GetState,
   GetRoutes,
+  GetRules,
   GetInterfaces,
   Explain,
   GetProfiles,
   GetAudit,
   GetSnapshots,
+  RestoreSnapshot,
   GetDoctor,
   GetLeaks,
   SetKillSwitch,
@@ -38,12 +40,15 @@ import {
   RefreshList,
   GetSplitDNS,
   SetSplitDNS,
+  GetSystemApps,
+  GetSystemUsers,
   ExportConfigDialog,
   CheckUpdate,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
   Route,
+  PolicyRule,
   Iface,
   RouteExplain,
   Profile,
@@ -59,17 +64,21 @@ import type {
   Flow,
   List,
   SplitDNSRoute,
+  SystemApp,
+  SystemUser,
   UpdateResult,
 } from '../types'
 
 export const api = {
   state: () => GetState() as unknown as Promise<State>,
   routes: (family = '', owner = '') => GetRoutes(family, owner) as unknown as Promise<Route[]>,
+  rules: () => GetRules() as unknown as Promise<PolicyRule[]>,
   interfaces: () => GetInterfaces() as unknown as Promise<Iface[]>,
   explain: (target: string) => Explain(target) as unknown as Promise<RouteExplain>,
   profiles: () => GetProfiles() as unknown as Promise<Profile[]>,
   audit: () => GetAudit() as unknown as Promise<AuditEvent[]>,
   snapshots: () => GetSnapshots() as unknown as Promise<Snapshot[]>,
+  restoreSnapshot: (id: string) => RestoreSnapshot(id) as unknown as Promise<ConfigImportResult>,
   doctor: () => GetDoctor() as unknown as Promise<DoctorReport>,
   leaks: () => GetLeaks() as unknown as Promise<Leak[]>,
   setKillSwitch: (enabled: boolean) => SetKillSwitch(enabled) as Promise<boolean>,
@@ -105,6 +114,9 @@ export const api = {
   splitDNS: () => GetSplitDNS() as unknown as Promise<SplitDNSRoute[]>,
   setSplitDNS: (routes: SplitDNSRoute[]) =>
     SetSplitDNS(routes as unknown as Parameters<typeof SetSplitDNS>[0]) as unknown as Promise<SplitDNSRoute[]>,
+  // Local catalogs feeding the per-app searchable pickers.
+  systemUsers: () => GetSystemUsers() as unknown as Promise<SystemUser[]>,
+  systemApps: () => GetSystemApps() as unknown as Promise<SystemApp[]>,
   // Update check (never self-installs).
   checkUpdate: () => CheckUpdate() as unknown as Promise<UpdateResult>,
   // Daemon lifecycle (privileged ops prompt for admin via the OS).

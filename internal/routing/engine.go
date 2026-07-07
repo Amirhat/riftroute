@@ -132,9 +132,26 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 				}
 			}
 		default: // exclude / Model A
+			skipped, families := 0, 0
+			var skipErr error
 			for fam, prefixes := range byFamily {
+				families++
 				gw, iface, err := resolveGateway(p.Gateway, fam, in)
 				if err != nil {
+					// No usable physical path for this family: auto-resolution
+					// found no gateway (v6 prefixes on a v4-only network — every
+					// AAAA answer of a domain rule lands here), or the explicit
+					// gateway belongs to the other family. Skipping is fail-safe
+					// for exclude mode: those destinations simply stay on the
+					// tunnel instead of the whole profile becoming unappliable.
+					// A malformed gateway — or NO buildable family at all (checked
+					// below) — remains a hard error, so drift still shows
+					// attention-needed instead of a false "in sync".
+					if _, perr := netip.ParseAddr(p.Gateway); perr == nil || p.Gateway == "" || p.Gateway == "auto" {
+						skipped++
+						skipErr = err
+						continue
+					}
 					return nil, nil, fmt.Errorf("profile %q: %w", p.Name, err)
 				}
 				for _, pfx := range Aggregate(prefixes) {
@@ -146,6 +163,9 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 						continue
 					}
 				}
+			}
+			if families > 0 && skipped == families {
+				return nil, nil, fmt.Errorf("profile %q: %w", p.Name, skipErr)
 			}
 		}
 	}

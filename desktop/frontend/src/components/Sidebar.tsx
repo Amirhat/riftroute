@@ -2,7 +2,6 @@ import type { ComponentType, SVGProps } from 'react'
 import {
   DashboardIcon,
   TableIcon,
-  ExplainIcon,
   ProfilesIcon,
   FlowsIcon,
   HistoryIcon,
@@ -11,7 +10,7 @@ import {
   ShieldIcon,
 } from './icons'
 
-export type View = 'dashboard' | 'routes' | 'explain' | 'profiles' | 'flows' | 'diagnostics' | 'history' | 'settings'
+export type View = 'dashboard' | 'routes' | 'profiles' | 'flows' | 'diagnostics' | 'history' | 'settings'
 
 type Item = {
   view: View
@@ -23,7 +22,6 @@ type Item = {
 const items: Item[] = [
   { view: 'dashboard', label: 'Dashboard', icon: DashboardIcon },
   { view: 'routes', label: 'Routing Table', icon: TableIcon },
-  { view: 'explain', label: 'Explain', icon: ExplainIcon },
   { view: 'profiles', label: 'Profiles', icon: ProfilesIcon },
   { view: 'flows', label: 'Flows', icon: FlowsIcon },
   { view: 'diagnostics', label: 'Diagnostics', icon: DiagnosticsIcon },

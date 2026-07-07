@@ -38,10 +38,10 @@ function DashboardContent({ state }: { state: State }) {
           sub={v4?.present ? `${v4.gateway || 'on-link'} · ${v4.iface}` : 'no default'}
         />
         <HeadlineCard
-          label="Managed routes"
-          value={String(state.managed_route_count)}
-          tone={state.managed_route_count > 0 ? 'accent' : 'muted'}
-          sub="installed by RiftRoute"
+          label="Managed by RiftRoute"
+          value={String(state.managed_route_count + (state.managed_rule_count ?? 0))}
+          tone={state.managed_route_count + (state.managed_rule_count ?? 0) > 0 ? 'accent' : 'muted'}
+          sub={`${state.managed_route_count} route${state.managed_route_count === 1 ? '' : 's'} · ${state.managed_rule_count ?? 0} rule${state.managed_rule_count === 1 ? '' : 's'}`}
         />
         <HeadlineCard
           label="Drift"
@@ -51,7 +51,7 @@ function DashboardContent({ state }: { state: State }) {
             state.drift.reason
               ? state.drift.reason
               : state.drift.pending
-                ? `+${state.drift.adds} −${state.drift.dels} ~${state.drift.changes}`
+                ? `+${state.drift.adds} to add · −${state.drift.dels} to remove`
                 : 'desired = actual'
           }
         />

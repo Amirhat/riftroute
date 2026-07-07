@@ -4,6 +4,67 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-07-07
+
+A comprehensive UX and functionality overhaul across every screen.
+
+### Added
+- **Routing Table overhaul**: free-text filtering with owner chips; a "Where
+  does traffic go?" lookup answering which gateway/route an IP *or domain*
+  takes (kernel + simulated decision, matched row highlighted); routes sorted
+  by real kernel lookup precedence (most-specific first, then metric); a
+  policy-rules card showing how include-mode/per-app traffic is steered; and
+  **manual routes** — add/delete single destinations (via VPN or bypass)
+  backed by well-known profiles so they ride the full Apply Protocol
+  (validation → guardrails → WAL → commit-confirm) and survive restarts.
+- **Searchable pickers for per-app rules**: new `/system/users` and
+  `/system/apps` catalogs (macOS Directory Services users; Linux cgroup-v2
+  units) feed a keyboard-navigable Combobox in the Profile Builder — no more
+  free-text-only uid entry (free text remains valid).
+- **Snapshot restore**: snapshots now capture the pre-change profile set and
+  `POST /snapshots/{id}/restore` puts the policy back exactly (including
+  removing later profiles), reconciling through the protocol with
+  commit-confirm. Retention keeps the newest 50. The History panel refreshes
+  live and offers Restore per snapshot.
+- **Flows filters**: free-text (process/pid/address/state), protocol chips,
+  and interface chips derived from live data; process PIDs now captured from
+  `ss`/`lsof` and displayed.
+- **Diagnostics troubleshooting card**: kill switch, panic flush, daemon
+  restart, and copy-report-as-JSON in one place; checks carry plain-language
+  names and explanations, with report freshness shown and 10s auto-refresh.
+
+### Fixed
+- **Managed count / drift on macOS**: the dashboard derived "managed" from
+  kernel owner tags that only exist on Linux — macOS showed 0 managed routes
+  and permanent drift, and the doctor false-warned. The core service now reads
+  the same ownership map the apply protocol uses; state additionally reports
+  `managed_rule_count` so PF/per-app-only policies don't read as "0 managed".
+- **Wildcard domains**: `*.example.com` passed validation but resolved as a
+  literal DNS query, silently installing nothing. Wildcards now resolve their
+  apex consistently across the resolver, the re-resolver, and split-DNS.
+- **Domain rules on v4-only networks**: AAAA answers no longer make a whole
+  exclude-mode profile unappliable — the family without a physical path
+  degrades fail-safe (destinations stay tunneled) as long as the other family
+  applies; no path at all is still an error so drift shows attention.
+- **Linux visibility gaps**: `ip route` listing now includes the Model B
+  table (5252) — include-mode routes were invisible to the table view, the
+  ownership tag-scan, and crash repair. The per-app cgroup→fwmark nft marker
+  is now actually wired (it previously had no callers), synced with enabled
+  include-profiles on startup and every profile change.
+- **Profile Builder**: the dry-run Review now renders the +adds/−removes diff
+  (previously fetched and discarded), clears when the form changes, and
+  scrolls into view; partial success ("saved but reconcile failed", e.g.
+  include mode with the VPN down) is reported as `apply_error` with the save
+  acknowledged instead of a bare failure; per-app rules in exclude mode are
+  rejected with a clear message instead of silently ignored; the decorative
+  never-persisted strategy dropdown was removed; the priority field can be
+  blanked while retyping.
+- **Toggles**: the dark-mode knob was surface-on-surface (invisible). New
+  knob/track tokens contrast in both themes, plus a focus ring, disabled
+  state, and a danger tone; the kill switch is the same Toggle everywhere.
+- The standalone Explain page merged into the Routing Table; deep views
+  (rules, snapshots, audit) refresh on live state events.
+
 ## [0.2.0] — 2026-07-06
 
 The complete M0–M7 product, now with full macOS routing parity and a GUI that
@@ -215,4 +276,5 @@ verified against the real system where possible:
   The kernel's canonical rule echo matched the parser's test fixtures verbatim.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
+[0.2.1]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.0

@@ -21,6 +21,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/sysinfo"
 )
 
 // ConfigResult is the response to a declarative config apply.
@@ -29,6 +30,10 @@ type ConfigResult struct {
 	Plan   *domain.Plan   `json:"plan,omitempty"`
 	Diff   *domain.Diff   `json:"diff,omitempty"`
 	Result *safety.Result `json:"result,omitempty"`
+	// ApplyError is set when the change itself persisted but the follow-up
+	// reconcile failed (e.g. include mode with no live tunnel) — a partial
+	// success the UI must distinguish from "nothing happened".
+	ApplyError string `json:"apply_error,omitempty"`
 }
 
 // ApplyOptions are the wire options for an apply request.
@@ -179,6 +184,24 @@ func (c *Client) Rules(ctx context.Context, family domain.Family) ([]domain.Poli
 	}
 	err := c.do(ctx, http.MethodGet, path, nil, &body)
 	return body.Rules, err
+}
+
+// SystemUsers fetches the local user catalog (per-app picker source).
+func (c *Client) SystemUsers(ctx context.Context) ([]sysinfo.User, error) {
+	var body struct {
+		Users []sysinfo.User `json:"users"`
+	}
+	err := c.do(ctx, http.MethodGet, "/system/users", nil, &body)
+	return body.Users, err
+}
+
+// SystemApps fetches the per-app routing targets (Linux cgroup units).
+func (c *Client) SystemApps(ctx context.Context) ([]sysinfo.App, error) {
+	var body struct {
+		Apps []sysinfo.App `json:"apps"`
+	}
+	err := c.do(ctx, http.MethodGet, "/system/apps", nil, &body)
+	return body.Apps, err
 }
 
 // Interfaces fetches the interface list.
@@ -554,6 +577,12 @@ func (c *Client) Snapshots(ctx context.Context) ([]domain.Snapshot, error) {
 	}
 	err := c.do(ctx, http.MethodGet, "/snapshots", nil, &body)
 	return body.Snapshots, err
+}
+
+// RestoreSnapshot restores a snapshot's captured profile set and reconciles
+// (interactive by default — commit-confirm guards the change).
+func (c *Client) RestoreSnapshot(ctx context.Context, id string) (ConfigResult, error) {
+	return c.configRequest(ctx, http.MethodPost, "/snapshots/"+url.PathEscape(id)+"/restore", nil)
 }
 
 // Events streams server-sent events, invoking handle for each, until ctx is

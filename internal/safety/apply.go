@@ -22,6 +22,9 @@ var (
 	ErrNoSuchTx        = errors.New("no such transaction")
 )
 
+// snapshotRetention caps stored pre-apply snapshots (newest kept).
+const snapshotRetention = 50
+
 // Store is the slice of persistence the Apply Protocol needs (satisfied by
 // *store.Store). Keeping it an interface keeps safety decoupled and testable.
 type Store interface {
@@ -30,6 +33,8 @@ type Store interface {
 	ListOwned() ([]domain.ManagedRoute, error)
 	ClearOwned() error
 	SaveSnapshot(domain.Snapshot) error
+	PruneSnapshots(keep int) error
+	ListProfiles() ([]domain.Profile, error)
 	AppendAudit(domain.AuditEvent) (int64, error)
 	PutPendingTx(id string, plan domain.Plan) error
 	ClearPendingTx(id string) error
@@ -47,6 +52,12 @@ type Options struct {
 	GuardWindow    time.Duration // non-interactive guard window
 	Actor          domain.Actor
 	PhysGW         netip.Addr // physical gateway, for guardrails
+	// SnapshotProfiles is the PRE-change profile set to record in the pre-apply
+	// snapshot. Handlers that mutate profiles before calling Apply must pass
+	// the set they saw first — otherwise the snapshot would capture the policy
+	// including the very change a restore is meant to undo. nil = read the
+	// store at snapshot time (correct for applies that don't touch profiles).
+	SnapshotProfiles []domain.Profile
 }
 
 func (o Options) window() time.Duration {
@@ -181,12 +192,25 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 		<-pt.done
 	}
 
-	// Snapshot (restore point of last resort behind the inverse).
+	// Snapshot (restore point of last resort behind the inverse). The profile
+	// set rides along: that is what a user-facing "restore" brings back — the
+	// reconciler then converges routes to it. Retention-pruned so years of
+	// applies can't grow the DB unboundedly.
 	if p.store != nil {
 		if snap, err := Capture(ctx, p.prov, p.nextSnapID(), "pre-apply", func() domain.Snapshot {
 			return domain.Snapshot{CreatedAt: p.clock.Now()}
 		}); err == nil {
+			snap.Profiles = opts.SnapshotProfiles
+			if snap.Profiles == nil {
+				if profs, perr := p.store.ListProfiles(); perr == nil {
+					if profs == nil {
+						profs = []domain.Profile{} // empty ≠ uncaptured
+					}
+					snap.Profiles = profs
+				}
+			}
 			_ = p.store.SaveSnapshot(snap)
+			_ = p.store.PruneSnapshots(snapshotRetention)
 		}
 	}
 

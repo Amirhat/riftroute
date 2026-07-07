@@ -12,6 +12,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/sysinfo"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -109,6 +110,50 @@ func (a *App) GetRoutes(family string, owner string) ([]domain.Route, error) {
 		rs = []domain.Route{}
 	}
 	return rs, nil
+}
+
+// GetRules returns policy rules — Linux `ip rule` entries or macOS PF
+// route-to anchor rules (both families).
+func (a *App) GetRules() ([]domain.PolicyRule, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	rules, err := a.client.Rules(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	if rules == nil {
+		rules = []domain.PolicyRule{}
+	}
+	return rules, nil
+}
+
+// GetSystemUsers lists local accounts for the per-app picker (macOS PF
+// matches by socket owner).
+func (a *App) GetSystemUsers() ([]sysinfo.User, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	us, err := a.client.SystemUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if us == nil {
+		us = []sysinfo.User{}
+	}
+	return us, nil
+}
+
+// GetSystemApps lists per-app routing targets (Linux cgroup units).
+func (a *App) GetSystemApps() ([]sysinfo.App, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	as, err := a.client.SystemApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if as == nil {
+		as = []sysinfo.App{}
+	}
+	return as, nil
 }
 
 // GetInterfaces returns the interface list.
@@ -359,6 +404,14 @@ func (a *App) GetSnapshots() ([]domain.Snapshot, error) {
 		snaps = []domain.Snapshot{}
 	}
 	return snaps, nil
+}
+
+// RestoreSnapshot restores a snapshot's captured profile set and reconciles
+// (interactive — the returned pending tx feeds commit-confirm).
+func (a *App) RestoreSnapshot(id string) (apiclient.ConfigResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.RestoreSnapshot(ctx, id)
 }
 
 // Reachable reports whether the daemon is currently answering.

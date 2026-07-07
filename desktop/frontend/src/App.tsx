@@ -4,7 +4,6 @@ import { Sidebar } from './components/Sidebar'
 import type { View } from './components/Sidebar'
 import { Dashboard } from './views/Dashboard'
 import { RoutesView } from './views/RoutesView'
-import { ExplainView } from './views/ExplainView'
 import { Profiles } from './views/Profiles'
 import { Flows } from './views/Flows'
 import { Diagnostics } from './views/Diagnostics'
@@ -22,7 +21,6 @@ type Theme = 'dark' | 'light'
 const titles: Record<View, string> = {
   dashboard: 'Dashboard',
   routes: 'Routing Table',
-  explain: 'Route Explain',
   profiles: 'Profiles',
   flows: 'Live Flows',
   diagnostics: 'Diagnostics',
@@ -57,7 +55,12 @@ export default function App() {
       // Keep secondary views in sync whether the change came from this GUI, the
       // CLI, or the daemon's auto-apply.
       qc.invalidateQueries({ queryKey: ['routes'] })
+      qc.invalidateQueries({ queryKey: ['rules'] })
       qc.invalidateQueries({ queryKey: ['profiles'] })
+      // History reflects every apply as it happens (a new snapshot + audit row
+      // accompany each state push).
+      qc.invalidateQueries({ queryKey: ['snapshots'] })
+      qc.invalidateQueries({ queryKey: ['audit'] })
       setReachable(true)
     })
     const offConn = onConnection((r) => {
@@ -143,8 +146,6 @@ function ViewRouter({
       return <Dashboard />
     case 'routes':
       return <RoutesView />
-    case 'explain':
-      return <ExplainView />
     case 'profiles':
       return <Profiles />
     case 'flows':

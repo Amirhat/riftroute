@@ -4,8 +4,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ProfileBuilder } from './ProfileBuilder'
 import { api } from '../lib/api'
 
-vi.mock('../lib/api', () => ({ api: { saveProfile: vi.fn(), lists: vi.fn() } }))
-const mockApi = api as unknown as { saveProfile: ReturnType<typeof vi.fn>; lists: ReturnType<typeof vi.fn> }
+vi.mock('../lib/api', () => ({
+  api: { saveProfile: vi.fn(), lists: vi.fn(), systemUsers: vi.fn(), systemApps: vi.fn() },
+}))
+const mockApi = api as unknown as {
+  saveProfile: ReturnType<typeof vi.fn>
+  lists: ReturnType<typeof vi.fn>
+  systemUsers: ReturnType<typeof vi.fn>
+  systemApps: ReturnType<typeof vi.fn>
+}
 
 const ROUTE_PH = '10.0.0.0/8 or 1.1.1.1'
 const NAME_PH = 'e.g. work-vpn'
@@ -37,6 +44,8 @@ describe('ProfileBuilder', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockApi.lists.mockResolvedValue([])
+    mockApi.systemUsers.mockResolvedValue([{ uid: '501', username: 'amir', full_name: 'Amir H' }])
+    mockApi.systemApps.mockResolvedValue([{ value: 'system.slice/nginx.service', name: 'nginx' }])
   })
 
   it('offers known lists as toggleable references and serializes the selection', async () => {
@@ -88,15 +97,71 @@ describe('ProfileBuilder', () => {
     expect(banner.textContent).toContain('+1 domain')
   })
 
-  it('validates a per-app uid rule and its strategy', () => {
+  it('validates a per-app uid rule on macOS via the user picker', async () => {
     renderBuilder()
     fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'work' } })
+    fireEvent.click(screen.getByText('Include')) // app rules need include mode
     fireEvent.click(screen.getByText('+ Add app rule'))
-    const input = screen.getByPlaceholderText('501 or alice')
+    const input = screen.getByLabelText('App rule value')
     fireEvent.change(input, { target: { value: '/Applications/Firefox.app' } })
     expect(screen.getByText(/uid or username/)).toBeInTheDocument()
     fireEvent.change(input, { target: { value: '501' } })
     expect(screen.queryByText(/uid or username/)).not.toBeInTheDocument()
+  })
+
+  it('suggests local users in the macOS per-app picker and selects one', async () => {
+    renderBuilder()
+    fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'work' } })
+    fireEvent.click(screen.getByText('Include'))
+    fireEvent.click(screen.getByText('+ Add app rule'))
+    const input = screen.getByLabelText('App rule value')
+    fireEvent.focus(input)
+    fireEvent.mouseDown(await screen.findByText('amir (uid 501)'))
+    expect((input as HTMLInputElement).value).toBe('amir')
+  })
+
+  it('blocks apply when app rules are used in exclude mode', () => {
+    renderBuilder()
+    fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'work' } })
+    fireEvent.click(screen.getByText('Include'))
+    fireEvent.click(screen.getByText('+ Add app rule'))
+    fireEvent.change(screen.getByLabelText('App rule value'), { target: { value: '501' } })
+    expect(applyBtn().disabled).toBe(false)
+    fireEvent.click(screen.getByText('Exclude'))
+    expect(screen.getByText(/only take effect in Include mode/)).toBeInTheDocument()
+    expect(applyBtn().disabled).toBe(true)
+  })
+
+  it('shows the review diff after preview and clears it when the form changes', async () => {
+    mockApi.saveProfile.mockResolvedValue({
+      plan: { ops: [{ kind: 'add_route', command: ['route', 'add', '1.1.1.1'] }], inverse: [] },
+      diff: { adds: 1, dels: 0, entries: [], in_sync: false },
+    })
+    renderBuilder()
+    fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'work' } })
+    fireEvent.click(screen.getByText('+ Add route target'))
+    fireEvent.change(screen.getByPlaceholderText(ROUTE_PH), { target: { value: '1.1.1.1' } })
+    fireEvent.click(screen.getByText('Preview'))
+    expect(await screen.findByText(/what applying will change/)).toBeInTheDocument()
+    expect(screen.getByText('+1 to add')).toBeInTheDocument()
+    // editing any field invalidates the shown preview
+    fireEvent.change(screen.getByPlaceholderText(ROUTE_PH), { target: { value: '2.2.2.2' } })
+    expect(screen.queryByText(/what applying will change/)).not.toBeInTheDocument()
+  })
+
+  it('reports a partial success (saved but not applied) as a warning and closes', async () => {
+    mockApi.saveProfile.mockResolvedValue({ apply_error: 'include mode: no active VPN tunnel for v4 to route into' })
+    const onWarning = vi.fn()
+    const { onApplied, onClose, onPending } = renderBuilder({ onWarning })
+    fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'work' } })
+    fireEvent.click(screen.getByText('+ Add route target'))
+    fireEvent.change(screen.getByPlaceholderText(ROUTE_PH), { target: { value: '1.1.1.1' } })
+    fireEvent.click(applyBtn())
+    await vi.waitFor(() => expect(onWarning).toHaveBeenCalled())
+    expect(onWarning.mock.calls[0][0]).toMatch(/saved — not applied yet/i)
+    expect(onApplied).toHaveBeenCalled()
+    expect(onClose).toHaveBeenCalled()
+    expect(onPending).not.toHaveBeenCalled()
   })
 
   it('serializes the form and hands a pending tx to commit-confirm on apply', async () => {

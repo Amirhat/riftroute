@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -22,10 +23,12 @@ import (
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/netmon"
+	"github.com/Amirhat/riftroute/internal/perapp"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/provider/fake"
 	"github.com/Amirhat/riftroute/internal/reconcile"
+	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
@@ -151,6 +154,41 @@ func run() error {
 		on, _ := ks.Enabled(context.Background())
 		return on
 	})
+
+	// Per-app classification (Linux cgroup→fwmark): keep the nft marker in sync
+	// with the enabled include-mode profiles' app rules. The engine emits the
+	// `ip rule fwmark → table` half; without this half a per-app rule matched
+	// nothing. Change-detected so repeat notifications don't re-exec nft.
+	var marker perapp.Marker = perapp.New()
+	if _, ok := prov.(*fake.Provider); ok {
+		marker = &perapp.FakeMarker{} // never touch real nftables under -provider fake
+	}
+	var lastMarked atomic.Value
+	lastMarked.Store("")
+	syncPerApp := func(ctx context.Context) {
+		if !prov.Capabilities().PerAppRouting {
+			return
+		}
+		cgs := svc.AppCgroups()
+		key := strings.Join(cgs, "\n")
+		if lastMarked.Load() == key {
+			return
+		}
+		var err error
+		if len(cgs) == 0 {
+			err = marker.Unmark(ctx)
+		} else {
+			err = marker.Mark(ctx, cgs, routing.ModelBMark)
+		}
+		if err != nil {
+			logger.Warn("per-app marker sync failed", "err", err, "cgroups", len(cgs))
+			return
+		}
+		lastMarked.Store(key)
+		logger.Info("per-app marker synced", "cgroups", len(cgs), "backend", marker.Backend())
+	}
+	syncPerApp(context.Background()) // startup: re-assert after restart
+	srv.SetOnProfilesChanged(syncPerApp)
 
 	// Re-apply the persisted split-DNS selection so per-domain resolvers survive
 	// a daemon restart (best-effort; an empty/unset selection is a no-op).

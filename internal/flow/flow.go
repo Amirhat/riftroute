@@ -19,6 +19,7 @@ type Conn struct {
 	Remote  string
 	State   string
 	Process string
+	PID     string
 }
 
 // Collect lists active connections on the current OS.
@@ -63,7 +64,7 @@ func ParseSS(out string) []Conn {
 		}
 		for _, tok := range f[6:] {
 			if strings.HasPrefix(tok, "users:") {
-				c.Process = procFromUsers(tok)
+				c.Process, c.PID = procFromUsers(tok)
 			}
 		}
 		conns = append(conns, c)
@@ -71,18 +72,26 @@ func ParseSS(out string) []Conn {
 	return conns
 }
 
-func procFromUsers(s string) string {
+func procFromUsers(s string) (name, pid string) {
 	// users:(("firefox",pid=1,fd=4))
 	i := strings.Index(s, "\"")
 	if i < 0 {
-		return ""
+		return "", ""
 	}
 	rest := s[i+1:]
 	j := strings.Index(rest, "\"")
 	if j < 0 {
-		return ""
+		return "", ""
 	}
-	return rest[:j]
+	name = rest[:j]
+	if k := strings.Index(rest, "pid="); k >= 0 {
+		p := rest[k+4:]
+		if e := strings.IndexAny(p, ",)"); e >= 0 {
+			p = p[:e]
+		}
+		pid = p
+	}
+	return name, pid
 }
 
 // ParseLsof parses `lsof -nP -iTCP -iUDP` output (macOS).
@@ -107,7 +116,7 @@ func ParseLsof(out string) []Conn {
 		if remote == "" {
 			continue // listening socket, nothing to correlate
 		}
-		conns = append(conns, Conn{Proto: proto, Local: local, Remote: remote, State: state, Process: f[0]})
+		conns = append(conns, Conn{Proto: proto, Local: local, Remote: remote, State: state, Process: f[0], PID: f[1]})
 	}
 	return conns
 }

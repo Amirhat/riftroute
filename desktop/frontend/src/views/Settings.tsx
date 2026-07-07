@@ -28,20 +28,26 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
   const [confirmKill, setConfirmKill] = useState(false)
   const d = useDaemon()
   const [confirmDaemon, setConfirmDaemon] = useState<null | 'stop' | 'uninstall'>(null)
+  // Guards the switches while a mutation is in flight (double-click race).
+  const [busyToggle, setBusyToggle] = useState(false)
 
   async function setKill(enabled: boolean) {
+    setBusyToggle(true)
     try {
       await api.setKillSwitch(enabled)
     } finally {
+      setBusyToggle(false)
       qc.invalidateQueries({ queryKey: stateKey })
     }
   }
   const killOn = s?.kill_switch ?? false
 
   async function setAutoApply(enabled: boolean) {
+    setBusyToggle(true)
     try {
       await api.setAutoApply(enabled)
     } finally {
+      setBusyToggle(false)
       qc.invalidateQueries({ queryKey: stateKey })
     }
   }
@@ -81,21 +87,25 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
                   Reconcile automatically when the VPN or network changes. The connectivity guard still protects every apply.
                 </div>
               </div>
-              <Toggle on={s.auto_apply} onClick={() => void setAutoApply(!s.auto_apply)} />
+              <Toggle
+                on={s.auto_apply}
+                disabled={busyToggle}
+                ariaLabel="Auto-apply on network change"
+                onClick={() => void setAutoApply(!s.auto_apply)}
+              />
             </div>
             <div className="flex items-center justify-between px-4 py-3">
               <div>
                 <div className="text-sm text-default">Kill switch</div>
                 <div className="text-xs text-muted">Fence all egress to the tunnel; a reconnect path stays open.</div>
               </div>
-              <button
+              <Toggle
+                on={killOn}
+                tone="danger"
+                disabled={busyToggle}
+                ariaLabel="Kill switch"
                 onClick={() => (killOn ? void setKill(false) : setConfirmKill(true))}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
-                  killOn ? 'bg-danger/15 text-danger' : 'border border-line text-muted hover:text-default'
-                }`}
-              >
-                {killOn ? 'ON' : 'off'}
-              </button>
+              />
             </div>
           </div>
         )}

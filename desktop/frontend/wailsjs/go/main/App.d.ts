@@ -5,6 +5,7 @@ import {apiclient} from '../models';
 import {update} from '../models';
 import {domain} from '../models';
 import {main} from '../models';
+import {sysinfo} from '../models';
 
 export function Apply(arg1:boolean,arg2:number):Promise<safety.Result>;
 
@@ -40,11 +41,17 @@ export function GetProfiles():Promise<Array<domain.Profile>>;
 
 export function GetRoutes(arg1:string,arg2:string):Promise<Array<domain.Route>>;
 
+export function GetRules():Promise<Array<domain.PolicyRule>>;
+
 export function GetSnapshots():Promise<Array<domain.Snapshot>>;
 
 export function GetSplitDNS():Promise<Array<domain.SplitDNSRoute>>;
 
 export function GetState():Promise<domain.State>;
+
+export function GetSystemApps():Promise<Array<sysinfo.App>>;
+
+export function GetSystemUsers():Promise<Array<sysinfo.User>>;
 
 export function InstallDaemon():Promise<void>;
 
@@ -59,6 +66,8 @@ export function Reachable():Promise<boolean>;
 export function RefreshList(arg1:string):Promise<domain.List>;
 
 export function RestartDaemon():Promise<void>;
+
+export function RestoreSnapshot(arg1:string):Promise<apiclient.ConfigResult>;
 
 export function Rollback(arg1:string):Promise<domain.TxResult>;
 

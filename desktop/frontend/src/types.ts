@@ -80,7 +80,6 @@ export interface DriftStatus {
   pending: boolean
   adds: number
   dels: number
-  changes: number
   reason?: string // set when desired state can't be computed (attention needed)
 }
 
@@ -94,9 +93,32 @@ export interface State {
   profiles: ProfileStatus[]
   drift: DriftStatus
   managed_route_count: number
+  managed_rule_count: number
   auto_apply: boolean
   kill_switch: boolean
   generated_at: string
+}
+
+export interface SystemUser {
+  uid: string
+  username: string
+  full_name?: string
+}
+
+export interface SystemApp {
+  value: string // the rule value (Linux cgroup v2 path)
+  name: string
+}
+
+export interface PolicyRule {
+  priority: number
+  selector: string
+  table: string
+  family: Family
+  proto?: string
+  // macOS PF route-to target (the Darwin analogue of a Linux table default).
+  route_to_iface?: string
+  route_to_gw?: string
 }
 
 export interface Route {
@@ -107,6 +129,7 @@ export interface Route {
   family: Family
   owner: Owner
   proto?: string
+  table?: string // non-main Linux routing table (Model B); absent on macOS
   profile?: string
 }
 
@@ -206,6 +229,9 @@ export interface Snapshot {
   id: string
   created_at: string
   reason: string
+  // Whether the snapshot captured the profile set (older ones didn't) — only
+  // those can be restored.
+  restorable?: boolean
 }
 
 export interface DoctorCheck {
@@ -238,6 +264,7 @@ export interface Flow {
   remote: string
   state?: string
   process?: string
+  pid?: string
   iface?: string
   via_vpn: boolean
 }
@@ -287,6 +314,9 @@ export interface ConfigIssue {
 // ConfigImportResult mirrors apiclient.ConfigResult: validation issues plus either
 // a dry-run plan/diff (preview) or an applied result (with a pending tx to confirm).
 export interface ConfigImportResult {
+  // apply_error = partial success: the change persisted but the follow-up
+  // reconcile failed (e.g. include mode with no live tunnel).
+  apply_error?: string
   issues?: ConfigIssue[]
   plan?: Plan
   diff?: Diff

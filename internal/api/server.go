@@ -20,6 +20,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
+	"github.com/Amirhat/riftroute/internal/sysinfo"
 )
 
 // Server exposes the daemon's core over a UDS.
@@ -44,6 +45,10 @@ type Server struct {
 	// setAutoApply flips the daemon's auto-apply gate at runtime (nil disables
 	// the endpoint; the daemon wires it to an atomic the reconciler reads).
 	setAutoApply func(on bool)
+	// onProfilesChanged fires after any mutation that alters the profile set, so
+	// the daemon can sync profile-derived side state (the Linux per-app cgroup
+	// marker). nil = no-op.
+	onProfilesChanged func(context.Context)
 }
 
 // SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
@@ -58,6 +63,16 @@ func (s *Server) SetSplitDNS(m splitdns.Manager) { s.splitDNS = m }
 
 // SetAutoApplyControl installs the runtime auto-apply setter (daemon wiring).
 func (s *Server) SetAutoApplyControl(fn func(on bool)) { s.setAutoApply = fn }
+
+// SetOnProfilesChanged installs the post-profile-mutation hook (daemon wiring).
+func (s *Server) SetOnProfilesChanged(fn func(context.Context)) { s.onProfilesChanged = fn }
+
+// notifyProfilesChanged fires the profile-mutation hook, if wired.
+func (s *Server) notifyProfilesChanged(ctx context.Context) {
+	if s.onProfilesChanged != nil {
+		s.onProfilesChanged(ctx)
+	}
+}
 
 // NewServer builds the API server. allowUID is the uid permitted to call
 // mutating endpoints (root is always permitted); reads are open to any local
@@ -100,6 +115,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /audit", s.handleAudit)
 	s.mux.HandleFunc("GET /snapshots", s.handleSnapshots)
 	s.mux.HandleFunc("GET /events", s.handleEvents)
+	// Local catalogs for the GUI's per-app pickers (users / cgroup units).
+	s.mux.HandleFunc("GET /system/users", s.handleSystemUsers)
+	s.mux.HandleFunc("GET /system/apps", s.handleSystemApps)
 
 	// Mutating endpoints — peer-credential gated (spec §12). /plan is a dry-run
 	// preview and does not mutate, but lives with its siblings for clarity.
@@ -123,6 +141,8 @@ func (s *Server) routes() {
 	// Split-DNS: persisted per-domain resolver selection, editable from Settings.
 	s.mux.HandleFunc("GET /splitdns", s.handleSplitDNSGet)
 	s.mux.HandleFunc("PUT /splitdns", s.requireWrite(s.handleSplitDNSSet))
+	// Snapshot restore: put the captured profile set back, then reconcile.
+	s.mux.HandleFunc("POST /snapshots/{id}/restore", s.requireWrite(s.handleSnapshotRestore))
 	// Auto-apply: runtime toggle for reconcile-on-network-change (Settings).
 	s.mux.HandleFunc("PUT /autoapply", s.requireWrite(s.handleAutoApply))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
@@ -290,6 +310,30 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.svc.Doctor(r.Context()))
+}
+
+func (s *Server) handleSystemUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := sysinfo.Users(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if users == nil {
+		users = []sysinfo.User{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+}
+
+func (s *Server) handleSystemApps(w http.ResponseWriter, r *http.Request) {
+	apps, err := sysinfo.Apps(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if apps == nil {
+		apps = []sysinfo.App{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"apps": apps})
 }
 
 func (s *Server) handleLeaks(w http.ResponseWriter, r *http.Request) {

@@ -70,6 +70,10 @@ export function GetRoutes(arg1, arg2) {
   return window['go']['main']['App']['GetRoutes'](arg1, arg2);
 }
 
+export function GetRules() {
+  return window['go']['main']['App']['GetRules']();
+}
+
 export function GetSnapshots() {
   return window['go']['main']['App']['GetSnapshots']();
 }
@@ -80,6 +84,14 @@ export function GetSplitDNS() {
 
 export function GetState() {
   return window['go']['main']['App']['GetState']();
+}
+
+export function GetSystemApps() {
+  return window['go']['main']['App']['GetSystemApps']();
+}
+
+export function GetSystemUsers() {
+  return window['go']['main']['App']['GetSystemUsers']();
 }
 
 export function InstallDaemon() {
@@ -108,6 +120,10 @@ export function RefreshList(arg1) {
 
 export function RestartDaemon() {
   return window['go']['main']['App']['RestartDaemon']();
+}
+
+export function RestoreSnapshot(arg1) {
+  return window['go']['main']['App']['RestoreSnapshot'](arg1);
 }
 
 export function Rollback(arg1) {

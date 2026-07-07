@@ -18,7 +18,7 @@ func (s *Service) Flows(ctx context.Context) ([]domain.Flow, error) {
 	out := make([]domain.Flow, 0, len(conns))
 	cache := map[string]domain.RouteDecision{}
 	for _, c := range conns {
-		f := domain.Flow{Proto: c.Proto, Local: c.Local, Remote: c.Remote, State: c.State, Process: c.Process}
+		f := domain.Flow{Proto: c.Proto, Local: c.Local, Remote: c.Remote, State: c.State, Process: c.Process, PID: c.PID}
 		ipStr := flow.RemoteIP(c.Remote)
 		if addr, perr := netip.ParseAddr(ipStr); perr == nil {
 			dec, ok := cache[ipStr]

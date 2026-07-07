@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -123,7 +124,9 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 				continue
 			}
 			var ss []string
-			for _, a := range s.domains.Lookup(ctx, r.Value) {
+			// Wildcards resolve their apex (DNS can't enumerate subdomains);
+			// the map stays keyed by the raw rule value the engine looks up.
+			for _, a := range s.domains.Lookup(ctx, domain.DomainRuleHost(r.Value)) {
 				ss = append(ss, a.String())
 			}
 			m[r.Value] = ss
@@ -146,9 +149,12 @@ func (s *Service) DomainHosts() []string {
 			continue
 		}
 		for _, r := range p.Rules {
-			if r.Type == domain.RuleDomain && !seen[r.Value] {
-				seen[r.Value] = true
-				out = append(out, r.Value)
+			if r.Type != domain.RuleDomain {
+				continue
+			}
+			if h := domain.DomainRuleHost(r.Value); !seen[h] {
+				seen[h] = true
+				out = append(out, h)
 			}
 		}
 	}
@@ -162,6 +168,32 @@ func (s *Service) RefreshDomains(ctx context.Context) bool {
 		return false
 	}
 	return s.domains.Refresh(ctx, s.DomainHosts())
+}
+
+// AppCgroups returns the distinct per-app rule values across enabled
+// include-mode profiles — on Linux these are cgroup v2 paths, the
+// classification set the nft marker installs (spec §6). Sorted for stable
+// change detection.
+func (s *Service) AppCgroups() []string {
+	if s.store == nil {
+		return nil
+	}
+	profs, _ := s.store.ListProfiles()
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range profs {
+		if !p.Enabled || p.Mode != domain.ModeInclude {
+			continue
+		}
+		for _, r := range p.Rules {
+			if r.Type == domain.RuleApp && r.Value != "" && !seen[r.Value] {
+				seen[r.Value] = true
+				out = append(out, r.Value)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // listsMap returns each list's effective entries (static + fetched) for the
@@ -264,8 +296,18 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 	return d
 }
 
-// actualManagedRoutes returns the kernel routes RiftRoute owns.
+// actualManagedRoutes returns the routes RiftRoute owns. The persistent
+// ownership map is the source of truth — the same one the apply protocol
+// reconciles against — because kernel owner tags only exist on Linux (proto
+// riftroute); a provider tag-scan on macOS sees nothing and would report
+// "0 managed / drift pending" forever. Falls back to the tag-scan when there
+// is no store (tests) or the read fails.
 func (s *Service) actualManagedRoutes(ctx context.Context) []domain.ManagedRoute {
+	if s.store != nil {
+		if owned, err := s.store.ListOwned(); err == nil {
+			return owned
+		}
+	}
 	var out []domain.ManagedRoute
 	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
 		rs, err := s.prov.ListRoutes(ctx, fam)
@@ -346,13 +388,9 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		defaultFor(v6, domain.FamilyV6, "::/0", vpnByIface),
 	}
 
-	var actualManaged []domain.ManagedRoute
-	for _, r := range append(append([]domain.Route{}, v4...), v6...) {
-		if r.Owner == domain.OwnerRiftRoute {
-			actualManaged = append(actualManaged, domain.ManagedRoute{Route: r, ProfileID: r.Profile})
-		}
-	}
+	actualManaged := s.actualManagedRoutes(ctx)
 	managed := len(actualManaged)
+	managedRules := len(s.actualManagedRules(ctx))
 
 	// Live drift: desired (enabled profiles) vs actual managed. Skipped when no
 	// profiles exist to avoid resolving the gateway on every state push.
@@ -385,14 +423,17 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Profiles:          profs,
 		Drift:             drift,
 		ManagedRouteCount: managed,
+		ManagedRuleCount:  managedRules,
 		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		GeneratedAt:       s.now(),
 	}, nil
 }
 
-// Routes returns the routing table, optionally filtered by family and owner.
-// An empty family returns both v4 and v6.
+// Routes returns the routing table in kernel lookup-precedence order,
+// optionally filtered by family and owner. Ownership is enriched from the
+// persistent map before filtering — macOS kernel routes carry no owner tag,
+// so without the join every managed route would render as "system" there.
 func (s *Service) Routes(ctx context.Context, family domain.Family, owner domain.Owner) ([]domain.Route, error) {
 	var out []domain.Route
 	fams := []domain.Family{family}
@@ -404,22 +445,98 @@ func (s *Service) Routes(ctx context.Context, family domain.Family, owner domain
 		if err != nil {
 			return nil, err
 		}
-		for _, r := range rs {
-			if owner != "" && r.Owner != owner {
-				continue
-			}
-			out = append(out, r)
-		}
+		out = append(out, rs...)
 	}
+	s.tagOwnedRoutes(out)
+	if owner != "" {
+		filtered := out[:0]
+		for _, r := range out {
+			if r.Owner == owner {
+				filtered = append(filtered, r)
+			}
+		}
+		out = filtered
+	}
+	sortLookupOrder(out)
 	return out, nil
 }
 
-// Rules returns Linux policy rules for a family (empty on macOS).
-func (s *Service) Rules(ctx context.Context, family domain.Family) ([]domain.PolicyRule, error) {
-	if family == "" {
-		family = domain.FamilyV4
+// tagOwnedRoutes stamps Owner/Profile onto listed routes that appear in the
+// ownership map (matched by full route identity).
+func (s *Service) tagOwnedRoutes(rs []domain.Route) {
+	if s.store == nil {
+		return
 	}
-	return s.prov.ListRules(ctx, family)
+	owned, err := s.store.ListOwned()
+	if err != nil || len(owned) == 0 {
+		return
+	}
+	byKey := make(map[string]domain.ManagedRoute, len(owned))
+	for _, mr := range owned {
+		byKey[routing.RouteKey(mr.Route)] = mr
+	}
+	for i := range rs {
+		if mr, ok := byKey[routing.RouteKey(rs[i])]; ok {
+			rs[i].Owner = domain.OwnerRiftRoute
+			if rs[i].Profile == "" {
+				rs[i].Profile = mr.ProfileID
+			}
+		}
+	}
+}
+
+// sortLookupOrder orders routes the way the kernel evaluates a destination:
+// v4 before v6, longest (most specific) prefix first, then lowest metric,
+// then destination for a stable tiebreak. Unparseable destinations sort last.
+func sortLookupOrder(rs []domain.Route) {
+	sort.SliceStable(rs, func(i, j int) bool {
+		a, b := rs[i], rs[j]
+		if a.Family != b.Family {
+			return a.Family == domain.FamilyV4
+		}
+		if pa, pb := prefixBits(a.DstCIDR), prefixBits(b.DstCIDR); pa != pb {
+			return pa > pb
+		}
+		if a.Metric != b.Metric {
+			return a.Metric < b.Metric
+		}
+		return a.DstCIDR < b.DstCIDR
+	})
+}
+
+func prefixBits(cidr string) int {
+	if p, err := netip.ParsePrefix(cidr); err == nil {
+		return p.Bits()
+	}
+	if a, err := netip.ParseAddr(cidr); err == nil { // bare host address
+		return a.BitLen()
+	}
+	return -1
+}
+
+// Rules returns policy rules (Linux ip rules / macOS PF anchor rules). An
+// empty family returns both v4 and v6.
+func (s *Service) Rules(ctx context.Context, family domain.Family) ([]domain.PolicyRule, error) {
+	fams := []domain.Family{family}
+	if family == "" {
+		fams = []domain.Family{domain.FamilyV4, domain.FamilyV6}
+	}
+	var out []domain.PolicyRule
+	seen := map[string]bool{}
+	for _, f := range fams {
+		rs, err := s.prov.ListRules(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rs {
+			// PF anchor reads are family-agnostic on macOS; dedupe across passes.
+			if k := routing.RuleKey(r); !seen[k] {
+				seen[k] = true
+				out = append(out, r)
+			}
+		}
+	}
+	return out, nil
 }
 
 // Interfaces returns the interface list.
