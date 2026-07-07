@@ -698,7 +698,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	// Trim heavy route payloads for the list view; details fetched on demand.
 	// Restorable is derived from the (stripped) profile capture.
 	for i := range snaps {
-		snaps[i].Restorable = len(snaps[i].Profiles) > 0
+		snaps[i].Restorable = snaps[i].Profiles != nil
 		snaps[i].RoutesV4 = nil
 		snaps[i].RoutesV6 = nil
 		snaps[i].Rules = nil
@@ -728,7 +728,7 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(snap.Profiles) == 0 {
+	if snap.Profiles == nil {
 		writeErr(w, http.StatusBadRequest,
 			errors.New("this snapshot predates policy capture and cannot be restored"))
 		return

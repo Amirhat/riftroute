@@ -5,6 +5,7 @@ export namespace apiclient {
 	    plan?: domain.Plan;
 	    diff?: domain.Diff;
 	    result?: safety.Result;
+	    apply_error?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConfigResult(source);
@@ -16,6 +17,7 @@ export namespace apiclient {
 	        this.plan = this.convertValues(source["plan"], domain.Plan);
 	        this.diff = this.convertValues(source["diff"], domain.Diff);
 	        this.result = this.convertValues(source["result"], safety.Result);
+	        this.apply_error = source["apply_error"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -507,7 +509,6 @@ export namespace domain {
 	    pending: boolean;
 	    adds: number;
 	    dels: number;
-	    changes: number;
 	    reason?: string;
 	
 	    static createFrom(source: any = {}) {
@@ -519,7 +520,6 @@ export namespace domain {
 	        this.pending = source["pending"];
 	        this.adds = source["adds"];
 	        this.dels = source["dels"];
-	        this.changes = source["changes"];
 	        this.reason = source["reason"];
 	    }
 	}
@@ -529,6 +529,7 @@ export namespace domain {
 	    remote: string;
 	    state?: string;
 	    process?: string;
+	    pid?: string;
 	    iface?: string;
 	    via_vpn: boolean;
 	
@@ -543,6 +544,7 @@ export namespace domain {
 	        this.remote = source["remote"];
 	        this.state = source["state"];
 	        this.process = source["process"];
+	        this.pid = source["pid"];
 	        this.iface = source["iface"];
 	        this.via_vpn = source["via_vpn"];
 	    }
@@ -846,6 +848,8 @@ export namespace domain {
 	    rules?: PolicyRule[];
 	    defaults: DefaultRoute[];
 	    dns: DNSState;
+	    profiles: Profile[];
+	    restorable?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Snapshot(source);
@@ -861,6 +865,8 @@ export namespace domain {
 	        this.rules = this.convertValues(source["rules"], PolicyRule);
 	        this.defaults = this.convertValues(source["defaults"], DefaultRoute);
 	        this.dns = this.convertValues(source["dns"], DNSState);
+	        this.profiles = this.convertValues(source["profiles"], Profile);
+	        this.restorable = source["restorable"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -919,6 +925,7 @@ export namespace domain {
 	    profiles: ProfileStatus[];
 	    drift: DriftStatus;
 	    managed_route_count: number;
+	    managed_rule_count: number;
 	    auto_apply: boolean;
 	    kill_switch: boolean;
 	    // Go type: time
@@ -939,6 +946,7 @@ export namespace domain {
 	        this.profiles = this.convertValues(source["profiles"], ProfileStatus);
 	        this.drift = this.convertValues(source["drift"], DriftStatus);
 	        this.managed_route_count = source["managed_route_count"];
+	        this.managed_rule_count = source["managed_rule_count"];
 	        this.auto_apply = source["auto_apply"];
 	        this.kill_switch = source["kill_switch"];
 	        this.generated_at = this.convertValues(source["generated_at"], null);
@@ -1067,6 +1075,41 @@ export namespace safety {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace sysinfo {
+	
+	export class App {
+	    value: string;
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new App(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.value = source["value"];
+	        this.name = source["name"];
+	    }
+	}
+	export class User {
+	    uid: string;
+	    username: string;
+	    full_name?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new User(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.uid = source["uid"];
+	        this.username = source["username"];
+	        this.full_name = source["full_name"];
+	    }
 	}
 
 }

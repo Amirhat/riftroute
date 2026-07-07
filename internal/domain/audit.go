@@ -13,9 +13,11 @@ type Snapshot struct {
 	Defaults  []DefaultRoute `json:"defaults"`
 	DNS       DNSState       `json:"dns"`
 	// Profiles is the policy set at capture time — what "restore" actually
-	// restores (the reconciler then converges routes to it). Snapshots from
-	// before this field existed cannot be restored.
-	Profiles []Profile `json:"profiles,omitempty"`
+	// restores (the reconciler then converges routes to it). Deliberately NOT
+	// omitempty: an empty set ("no profiles yet") is a legitimate restore
+	// target and must stay distinguishable from legacy snapshots (null) that
+	// predate policy capture and cannot be restored.
+	Profiles []Profile `json:"profiles"`
 	// Restorable is computed for list responses (payloads are stripped there).
 	Restorable bool `json:"restorable,omitempty"`
 }

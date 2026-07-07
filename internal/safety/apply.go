@@ -203,6 +203,9 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 			snap.Profiles = opts.SnapshotProfiles
 			if snap.Profiles == nil {
 				if profs, perr := p.store.ListProfiles(); perr == nil {
+					if profs == nil {
+						profs = []domain.Profile{} // empty ≠ uncaptured
+					}
 					snap.Profiles = profs
 				}
 			}

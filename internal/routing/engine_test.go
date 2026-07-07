@@ -379,3 +379,55 @@ func TestSimulateAndDrift(t *testing.T) {
 		t.Fatal("expected drift between kernel(VPN) and simulated(direct)")
 	}
 }
+
+// On a v4-only network, a domain rule's AAAA answers must not make the whole
+// profile unappliable — the v6 side degrades fail-safe (those destinations
+// simply stay on the tunnel) while v4 bypass routes still install.
+func TestBuildDesiredExcludeSkipsFamilyWithoutGateway(t *testing.T) {
+	p := domain.Profile{
+		ID: "p1", Name: "cdn", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "cdn.example.com"}},
+	}
+	in := testInput(p) // v4 gateway only — no GatewayV6
+	in.Domains = map[string][]string{"cdn.example.com": {"1.2.3.4", "2001:db8::7"}}
+	routes, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatalf("v6 answers on a v4-only network must degrade, not fail: %v", err)
+	}
+	var sawV4, sawV6 bool
+	for _, r := range routes {
+		if r.DstCIDR == "1.2.3.4/32" {
+			sawV4 = true
+		}
+		if strings.Contains(r.DstCIDR, "2001:db8") {
+			sawV6 = true
+		}
+	}
+	if !sawV4 || sawV6 {
+		t.Fatalf("want the v4 bypass installed and the v6 one skipped, got %+v", routes)
+	}
+}
+
+// An explicit v4 gateway with v6 prefixes skips the v6 side (the gateway can
+// only ever serve one family); a malformed gateway is still a hard error.
+func TestBuildDesiredExcludeExplicitGatewayFamilies(t *testing.T) {
+	p := domain.Profile{
+		ID: "p1", Name: "gw", Enabled: true, Mode: domain.ModeExclude, Gateway: "192.168.1.254",
+		Rules: []domain.Rule{
+			{Type: domain.RuleCIDR, Value: "10.0.0.0/8"},
+			{Type: domain.RuleCIDR, Value: "2001:db8::/32"},
+		},
+	}
+	routes, _, err := BuildDesired(testInput(p))
+	if err != nil {
+		t.Fatalf("family-mismatched prefixes must be skipped, not fatal: %v", err)
+	}
+	if len(routes) != 1 || routes[0].DstCIDR != "10.0.0.0/8" {
+		t.Fatalf("want only the v4 route via the explicit gateway, got %+v", routes)
+	}
+
+	p.Gateway = "not-an-ip"
+	if _, _, err := BuildDesired(testInput(p)); err == nil {
+		t.Fatal("malformed explicit gateway must remain a hard error")
+	}
+}
