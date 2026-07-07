@@ -66,6 +66,8 @@ export function RefreshList(arg1:string):Promise<domain.List>;
 
 export function RestartDaemon():Promise<void>;
 
+export function RestoreSnapshot(arg1:string):Promise<apiclient.ConfigResult>;
+
 export function Rollback(arg1:string):Promise<domain.TxResult>;
 
 export function SaveList(arg1:domain.List):Promise<domain.List>;

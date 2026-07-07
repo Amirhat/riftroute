@@ -12,6 +12,12 @@ type Snapshot struct {
 	Rules     []PolicyRule   `json:"rules,omitempty"`
 	Defaults  []DefaultRoute `json:"defaults"`
 	DNS       DNSState       `json:"dns"`
+	// Profiles is the policy set at capture time — what "restore" actually
+	// restores (the reconciler then converges routes to it). Snapshots from
+	// before this field existed cannot be restored.
+	Profiles []Profile `json:"profiles,omitempty"`
+	// Restorable is computed for list responses (payloads are stripped there).
+	Restorable bool `json:"restorable,omitempty"`
 }
 
 // OpKind is the kind of a single plan operation.

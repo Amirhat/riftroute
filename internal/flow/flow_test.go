@@ -13,6 +13,9 @@ tcp ESTAB 0 0 [2001:db8::1]:22 [2001:db8::2]:5555 users:(("sshd",pid=9,fd=3))`
 	if conns[0].Proto != "tcp" || conns[0].Remote != "1.2.3.4:443" || conns[0].Process != "firefox" {
 		t.Fatalf("conn0 = %+v", conns[0])
 	}
+	if conns[0].PID != "1" || conns[2].PID != "9" {
+		t.Fatalf("pids not parsed: conn0=%+v conn2=%+v", conns[0], conns[2])
+	}
 	if conns[2].Process != "sshd" || conns[2].Remote != "[2001:db8::2]:5555" {
 		t.Fatalf("conn2 = %+v", conns[2])
 	}
@@ -29,6 +32,9 @@ sshd      9 amir   3u  IPv4 0x3      0t0  TCP *:22 (LISTEN)`
 	}
 	if conns[0].Process != "firefox" || conns[0].Remote != "1.2.3.4:443" || conns[0].State != "ESTABLISHED" {
 		t.Fatalf("conn0 = %+v", conns[0])
+	}
+	if conns[0].PID != "1" || conns[1].PID != "2" {
+		t.Fatalf("pids not parsed: conn0=%+v conn1=%+v", conns[0], conns[1])
 	}
 	if conns[1].Proto != "udp" || conns[1].Remote != "8.8.8.8:53" {
 		t.Fatalf("conn1 = %+v", conns[1])

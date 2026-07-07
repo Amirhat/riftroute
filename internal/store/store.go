@@ -386,6 +386,17 @@ func (s *Store) ListSnapshots() ([]domain.Snapshot, error) {
 	return out, rows.Err()
 }
 
+// PruneSnapshots deletes all but the newest keep snapshots.
+func (s *Store) PruneSnapshots(keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`DELETE FROM snapshots WHERE id NOT IN
+		 (SELECT id FROM snapshots ORDER BY created_at DESC LIMIT ?)`, keep)
+	return err
+}
+
 // GetSnapshot returns a snapshot by id.
 func (s *Store) GetSnapshot(id string) (domain.Snapshot, error) {
 	var doc string

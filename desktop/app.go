@@ -406,6 +406,14 @@ func (a *App) GetSnapshots() ([]domain.Snapshot, error) {
 	return snaps, nil
 }
 
+// RestoreSnapshot restores a snapshot's captured profile set and reconciles
+// (interactive — the returned pending tx feeds commit-confirm).
+func (a *App) RestoreSnapshot(id string) (apiclient.ConfigResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.RestoreSnapshot(ctx, id)
+}
+
 // Reachable reports whether the daemon is currently answering.
 func (a *App) Reachable() bool {
 	ctx, cancel := a.call()

@@ -141,6 +141,8 @@ func (s *Server) routes() {
 	// Split-DNS: persisted per-domain resolver selection, editable from Settings.
 	s.mux.HandleFunc("GET /splitdns", s.handleSplitDNSGet)
 	s.mux.HandleFunc("PUT /splitdns", s.requireWrite(s.handleSplitDNSSet))
+	// Snapshot restore: put the captured profile set back, then reconcile.
+	s.mux.HandleFunc("POST /snapshots/{id}/restore", s.requireWrite(s.handleSnapshotRestore))
 	// Auto-apply: runtime toggle for reconcile-on-network-change (Settings).
 	s.mux.HandleFunc("PUT /autoapply", s.requireWrite(s.handleAutoApply))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).

@@ -579,6 +579,12 @@ func (c *Client) Snapshots(ctx context.Context) ([]domain.Snapshot, error) {
 	return body.Snapshots, err
 }
 
+// RestoreSnapshot restores a snapshot's captured profile set and reconciles
+// (interactive by default — commit-confirm guards the change).
+func (c *Client) RestoreSnapshot(ctx context.Context, id string) (ConfigResult, error) {
+	return c.configRequest(ctx, http.MethodPost, "/snapshots/"+url.PathEscape(id)+"/restore", nil)
+}
+
 // Events streams server-sent events, invoking handle for each, until ctx is
 // canceled or the stream errors. The desktop Go side uses this to re-emit Wails
 // runtime events to React.

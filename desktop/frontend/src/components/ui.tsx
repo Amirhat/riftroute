@@ -78,17 +78,34 @@ export function Addr({ children }: { children: ReactNode }) {
   return <span className="ltr font-mono text-sm">{children}</span>
 }
 
-/** Toggle is the app-wide on/off switch (profiles, builder status, settings). */
-export function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+/** Toggle is the app-wide on/off switch (profiles, builder status, settings).
+ * tone="danger" marks destructive switches (kill switch); disabled guards
+ * in-flight mutations against double-clicks. */
+export function Toggle({
+  on,
+  onClick,
+  disabled,
+  tone = 'accent',
+  ariaLabel,
+}: {
+  on: boolean
+  onClick: () => void
+  disabled?: boolean
+  tone?: 'accent' | 'danger'
+  ariaLabel?: string
+}) {
+  const track = on ? (tone === 'danger' ? 'bg-danger' : 'bg-accent') : 'bg-toggle-off'
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       role="switch"
       aria-checked={on}
-      className={`relative h-6 w-11 rounded-full transition-colors ${on ? 'bg-accent' : 'bg-elevated'}`}
+      aria-label={ariaLabel}
+      className={`relative h-6 w-11 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50 ${track}`}
     >
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow transition-transform ${on ? 'translate-x-[22px]' : 'translate-x-0.5'}`}
+        className={`absolute top-0.5 h-5 w-5 rounded-full bg-knob shadow transition-transform ${on ? 'translate-x-[22px]' : 'translate-x-0.5'}`}
       />
     </button>
   )

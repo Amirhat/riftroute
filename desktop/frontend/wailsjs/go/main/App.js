@@ -122,6 +122,10 @@ export function RestartDaemon() {
   return window['go']['main']['App']['RestartDaemon']();
 }
 
+export function RestoreSnapshot(arg1) {
+  return window['go']['main']['App']['RestoreSnapshot'](arg1);
+}
+
 export function Rollback(arg1) {
   return window['go']['main']['App']['Rollback'](arg1);
 }

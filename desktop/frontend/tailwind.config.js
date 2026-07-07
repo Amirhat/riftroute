@@ -23,6 +23,8 @@ export default {
         'owner-system': 'var(--owner-system)',
         'owner-riftroute': 'var(--owner-riftroute)',
         'owner-vpn': 'var(--owner-vpn)',
+        knob: 'var(--knob)',
+        'toggle-off': 'var(--toggle-off)',
       },
       zIndex: {
         base: '0',

@@ -9,7 +9,7 @@ vi.mock('../lib/api', () => ({ api: { flows: vi.fn() } }))
 const mockApi = api as unknown as { flows: ReturnType<typeof vi.fn> }
 
 const sample: Flow[] = [
-  { proto: 'tcp', local: '10.8.0.2:50000', remote: '1.1.1.1:443', state: 'ESTABLISHED', process: 'firefox', iface: 'utun3', via_vpn: true },
+  { proto: 'tcp', local: '10.8.0.2:50000', remote: '1.1.1.1:443', state: 'ESTABLISHED', process: 'firefox', pid: '2211', iface: 'utun3', via_vpn: true },
   { proto: 'udp', local: '192.168.1.50:5353', remote: '224.0.0.251:5353', process: 'mDNSResponder', iface: 'en0', via_vpn: false },
 ]
 
@@ -48,5 +48,32 @@ describe('Flows view', () => {
     mockApi.flows.mockResolvedValue([])
     renderFlows()
     expect(await screen.findByText('No matching connections right now.')).toBeInTheDocument()
+  })
+
+  it('filters by free text (process or pid) and shows the match count', async () => {
+    renderFlows()
+    await screen.findByText('firefox')
+    fireEvent.change(screen.getByLabelText('Filter flows'), { target: { value: '2211' } })
+    expect(screen.getByText('firefox')).toBeInTheDocument()
+    expect(screen.queryByText('mDNSResponder')).not.toBeInTheDocument()
+    expect(screen.getByText('1 of 2 connections match the filter.')).toBeInTheDocument()
+  })
+
+  it('filters by protocol and interface chips', async () => {
+    renderFlows()
+    await screen.findByText('firefox')
+    fireEvent.click(screen.getByRole('button', { name: 'udp' }))
+    expect(screen.queryByText('firefox')).not.toBeInTheDocument()
+    expect(screen.getByText('mDNSResponder')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'any proto' }))
+    fireEvent.click(screen.getByRole('button', { name: 'utun3' }))
+    expect(screen.getByText('firefox')).toBeInTheDocument()
+    expect(screen.queryByText('mDNSResponder')).not.toBeInTheDocument()
+  })
+
+  it('shows the pid next to the process name', async () => {
+    renderFlows()
+    await screen.findByText('firefox')
+    expect(screen.getByText('(2211)')).toBeInTheDocument()
   })
 })

@@ -229,6 +229,9 @@ export interface Snapshot {
   id: string
   created_at: string
   reason: string
+  // Whether the snapshot captured the profile set (older ones didn't) — only
+  // those can be restored.
+  restorable?: boolean
 }
 
 export interface DoctorCheck {
@@ -261,6 +264,7 @@ export interface Flow {
   remote: string
   state?: string
   process?: string
+  pid?: string
   iface?: string
   via_vpn: boolean
 }

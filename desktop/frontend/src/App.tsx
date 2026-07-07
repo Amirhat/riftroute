@@ -57,6 +57,10 @@ export default function App() {
       qc.invalidateQueries({ queryKey: ['routes'] })
       qc.invalidateQueries({ queryKey: ['rules'] })
       qc.invalidateQueries({ queryKey: ['profiles'] })
+      // History reflects every apply as it happens (a new snapshot + audit row
+      // accompany each state push).
+      qc.invalidateQueries({ queryKey: ['snapshots'] })
+      qc.invalidateQueries({ queryKey: ['audit'] })
       setReachable(true)
     })
     const offConn = onConnection((r) => {

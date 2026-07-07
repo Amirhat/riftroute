@@ -8,6 +8,7 @@ type Flow struct {
 	Remote  string `json:"remote"`
 	State   string `json:"state,omitempty"`
 	Process string `json:"process,omitempty"`
+	PID     string `json:"pid,omitempty"`
 	Iface   string `json:"iface,omitempty"`
 	ViaVPN  bool   `json:"via_vpn"`
 }

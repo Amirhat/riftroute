@@ -28,6 +28,10 @@
   --owner-system: #8b98a9;
   --owner-riftroute: #4f9cf9;
   --owner-vpn: #a371f7;
+  /* Toggle knob: must contrast with BOTH track states in BOTH themes (a
+     surface-colored knob was invisible on the dark OFF track). */
+  --knob: #ffffff;
+  --toggle-off: #3a4656;
   color-scheme: dark;
 }
 
@@ -48,6 +52,8 @@
   --owner-system: #59636e;
   --owner-riftroute: #0969da;
   --owner-vpn: #8250df;
+  --knob: #ffffff;
+  --toggle-off: #aeb8c2;
   color-scheme: light;
 }
 
