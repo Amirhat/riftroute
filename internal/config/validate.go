@@ -193,6 +193,17 @@ func validate(c *Config, lines lineIndex, platform string) Result {
 				}
 			}
 		}
+		if mode == "exclude" {
+			// The engine only consumes app rules in include mode (they steer traffic
+			// INTO the tunnel); in exclude mode they'd be silently ignored — surface
+			// that instead of letting the user believe the rule does something.
+			for j, rule := range p.Rules {
+				if rule.Type == "app" {
+					add(SevError, fmt.Sprintf("%s.rules[%d]", base, j), "rules.type",
+						"per-app rules only take effect in include mode — switch the profile to include, or remove the app rule")
+				}
+			}
+		}
 		if g := p.Gateway; g != "" && g != "auto" {
 			if _, err := netip.ParseAddr(g); err != nil {
 				add(SevError, base+".gateway", "profiles.gateway", fmt.Sprintf("gateway must be \"auto\" or a valid IP, got %q", g))
@@ -241,6 +252,14 @@ func ValidateProfile(p domain.Profile, platform string, knownLists map[string]bo
 			if rule.Type == domain.RuleApp && rule.Value != "" && !domain.IsUIDLike(rule.Value) {
 				add(SevError, "rules.value",
 					fmt.Sprintf("on macOS, per-app rules match by uid/username (PF socket owner); %q is not a uid/username", rule.Value))
+			}
+		}
+	}
+	if mode == "exclude" {
+		for _, rule := range p.Rules {
+			if rule.Type == domain.RuleApp {
+				add(SevError, "rules.type",
+					"per-app rules only take effect in include mode — switch the profile to include, or remove the app rule")
 			}
 		}
 	}

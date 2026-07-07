@@ -46,6 +46,10 @@ export function GetSnapshots():Promise<Array<domain.Snapshot>>;
 
 export function GetSplitDNS():Promise<Array<domain.SplitDNSRoute>>;
 
+export function GetSystemApps():Promise<Array<Record<string, unknown>>>;
+
+export function GetSystemUsers():Promise<Array<Record<string, unknown>>>;
+
 export function GetState():Promise<domain.State>;
 
 export function InstallDaemon():Promise<void>;

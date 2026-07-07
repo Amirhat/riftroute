@@ -158,6 +158,7 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			writeErr(w, http.StatusInternalServerError, err)
 			return
 		}
+		s.notifyProfilesChanged(r.Context())
 		// apply=false just stages the desired flag (GUI then previews + applies
 		// with commit-confirm). Default true reconciles immediately (CLI quick
 		// toggle, non-interactive with the guard kept).
@@ -248,13 +249,16 @@ func (s *Server) handleProfileSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
 		// The profile IS saved; only the follow-up reconcile failed (e.g. include
 		// mode with no live tunnel). Broadcast so clients show the saved profile,
-		// then report why nothing was applied.
+		// and report the partial success as such — a bare error would read as
+		// "the save failed".
 		s.BroadcastState(r.Context())
-		writeErr(w, http.StatusBadRequest, derr)
+		resp.ApplyError = derr.Error()
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
@@ -279,12 +283,13 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
 		// The profile IS deleted; only the follow-up reconcile failed. Broadcast so
-		// clients drop the stale profile before we report the reconcile error.
+		// clients drop the stale profile, and report the partial success as such.
 		s.BroadcastState(r.Context())
-		writeErr(w, http.StatusBadRequest, derr)
+		writeJSON(w, http.StatusOK, ConfigResp{ApplyError: derr.Error()})
 		return
 	}
 	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))
@@ -312,6 +317,10 @@ type ConfigResp struct {
 	Plan   *domain.Plan   `json:"plan,omitempty"`
 	Diff   *domain.Diff   `json:"diff,omitempty"`
 	Result *safety.Result `json:"result,omitempty"`
+	// ApplyError reports a partial success: the profile change persisted but the
+	// follow-up reconcile failed (e.g. include mode with no live tunnel). A bare
+	// error here would read as "the save failed" — it didn't.
+	ApplyError string `json:"apply_error,omitempty"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -359,9 +368,14 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
 	if derr != nil {
-		writeErr(w, http.StatusBadRequest, derr)
+		// The config IS persisted; only the follow-up reconcile failed. Report the
+		// partial success as such instead of a bare error.
+		s.BroadcastState(r.Context())
+		resp.ApplyError = derr.Error()
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW))

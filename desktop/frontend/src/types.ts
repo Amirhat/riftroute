@@ -99,6 +99,17 @@ export interface State {
   generated_at: string
 }
 
+export interface SystemUser {
+  uid: string
+  username: string
+  full_name?: string
+}
+
+export interface SystemApp {
+  value: string // the rule value (Linux cgroup v2 path)
+  name: string
+}
+
 export interface PolicyRule {
   priority: number
   selector: string
@@ -299,6 +310,9 @@ export interface ConfigIssue {
 // ConfigImportResult mirrors apiclient.ConfigResult: validation issues plus either
 // a dry-run plan/diff (preview) or an applied result (with a pending tx to confirm).
 export interface ConfigImportResult {
+  // apply_error = partial success: the change persisted but the follow-up
+  // reconcile failed (e.g. include mode with no live tunnel).
+  apply_error?: string
   issues?: ConfigIssue[]
   plan?: Plan
   diff?: Diff

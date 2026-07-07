@@ -170,6 +170,32 @@ func (s *Service) RefreshDomains(ctx context.Context) bool {
 	return s.domains.Refresh(ctx, s.DomainHosts())
 }
 
+// AppCgroups returns the distinct per-app rule values across enabled
+// include-mode profiles — on Linux these are cgroup v2 paths, the
+// classification set the nft marker installs (spec §6). Sorted for stable
+// change detection.
+func (s *Service) AppCgroups() []string {
+	if s.store == nil {
+		return nil
+	}
+	profs, _ := s.store.ListProfiles()
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range profs {
+		if !p.Enabled || p.Mode != domain.ModeInclude {
+			continue
+		}
+		for _, r := range p.Rules {
+			if r.Type == domain.RuleApp && r.Value != "" && !seen[r.Value] {
+				seen[r.Value] = true
+				out = append(out, r.Value)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // listsMap returns each list's effective entries (static + fetched) for the
 // engine to expand profile list references.
 func (s *Service) listsMap() map[string][]string {

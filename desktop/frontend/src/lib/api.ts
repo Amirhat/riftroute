@@ -39,6 +39,8 @@ import {
   RefreshList,
   GetSplitDNS,
   SetSplitDNS,
+  GetSystemApps,
+  GetSystemUsers,
   ExportConfigDialog,
   CheckUpdate,
 } from '../../wailsjs/go/main/App'
@@ -61,6 +63,8 @@ import type {
   Flow,
   List,
   SplitDNSRoute,
+  SystemApp,
+  SystemUser,
   UpdateResult,
 } from '../types'
 
@@ -108,6 +112,9 @@ export const api = {
   splitDNS: () => GetSplitDNS() as unknown as Promise<SplitDNSRoute[]>,
   setSplitDNS: (routes: SplitDNSRoute[]) =>
     SetSplitDNS(routes as unknown as Parameters<typeof SetSplitDNS>[0]) as unknown as Promise<SplitDNSRoute[]>,
+  // Local catalogs feeding the per-app searchable pickers.
+  systemUsers: () => GetSystemUsers() as unknown as Promise<SystemUser[]>,
+  systemApps: () => GetSystemApps() as unknown as Promise<SystemApp[]>,
   // Update check (never self-installs).
   checkUpdate: () => CheckUpdate() as unknown as Promise<UpdateResult>,
   // Daemon lifecycle (privileged ops prompt for admin via the OS).

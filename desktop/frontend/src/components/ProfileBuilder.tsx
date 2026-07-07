@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Modal } from './Modal'
+import { Combobox } from './Combobox'
 import { Label, Toggle, fieldCls } from './ui'
 import { friendly } from '../lib/format'
 import { api } from '../lib/api'
@@ -12,7 +13,7 @@ import {
   validateGateway,
   type AppStrategy,
 } from '../lib/validate'
-import type { ApplyResult, ConfigImportResult, Plan, Profile, Rule } from '../types'
+import type { ApplyResult, ConfigImportResult, Diff, Plan, Profile, Rule } from '../types'
 
 // ProfileBuilder is the visual, interactive split-tunneling designer: metadata,
 // a routing-mode selector, and dynamic managers for CIDR/IP, domain, and per-app
@@ -54,6 +55,7 @@ export function ProfileBuilder({
   platform,
   onPending,
   onApplied,
+  onWarning,
   onClose,
 }: {
   initial?: Profile
@@ -61,6 +63,7 @@ export function ProfileBuilder({
   platform?: string
   onPending: (r: ApplyResult) => void
   onApplied: () => void
+  onWarning?: (msg: string) => void
   onClose: () => void
 }) {
   const defStrategy: AppStrategy = platform === 'linux' ? 'app' : 'uid'
@@ -71,7 +74,9 @@ export function ProfileBuilder({
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
   const [mode, setMode] = useState<'include' | 'exclude'>((initial?.mode as 'include' | 'exclude') || 'exclude')
   const [gateway, setGateway] = useState(initial?.gateway ?? 'auto')
-  const [priority, setPriority] = useState<number>(initial?.priority ?? 0)
+  // Kept as raw text so the field can be blanked while retyping (a number
+  // state snapped an emptied input straight back to 0).
+  const [priority, setPriority] = useState(String(initial?.priority ?? 0))
   const [routes, setRoutes] = useState<Row[]>(decomposed.routes)
   const [domains, setDomains] = useState<Row[]>(decomposed.domains)
   const [apps, setApps] = useState<Row[]>(decomposed.apps)
@@ -86,6 +91,21 @@ export function ProfileBuilder({
   const [error, setError] = useState<string | null>(null)
   const [issues, setIssues] = useState<ConfigImportResult['issues']>(undefined)
   const [previewPlan, setPreviewPlan] = useState<Plan | null>(null)
+  const [previewDiff, setPreviewDiff] = useState<Diff | null>(null)
+  const previewRef = useRef<HTMLDivElement>(null)
+
+  // Any edit invalidates a shown preview — a stale plan next to changed inputs
+  // reads as "the Preview button is broken".
+  useEffect(() => {
+    setPreviewPlan(null)
+    setPreviewDiff(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, enabled, mode, gateway, priority, routes, domains, apps, listRefs])
+
+  // A fresh preview renders at the bottom of a tall modal — bring it into view.
+  useEffect(() => {
+    if (previewPlan) previewRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
+  }, [previewPlan])
 
   // Names other profiles already use (exclude the one being edited).
   const takenNames = useMemo(
@@ -106,7 +126,14 @@ export function ProfileBuilder({
     domains.some((r) => r.value.trim() && domainErr(r)) ||
     apps.some((r) => r.value.trim() && appErr(r))
 
-  const hasErrors = nameErr !== null || gatewayErr !== null || anyRowInvalid
+  // Per-app rules only take effect in include mode (the daemon rejects them in
+  // exclude) — block apply with the same message instead of a late failure.
+  const appModeErr =
+    mode === 'exclude' && apps.some((r) => r.value.trim())
+      ? 'Per-app rules only take effect in Include mode — switch the mode or remove them.'
+      : null
+
+  const hasErrors = nameErr !== null || gatewayErr !== null || anyRowInvalid || appModeErr !== null
 
   // Live staged-changes counts (valid, non-empty rows only).
   const staged = {
@@ -137,7 +164,7 @@ export function ProfileBuilder({
       enabled,
       mode,
       gateway: gateway.trim() || 'auto',
-      priority: Number.isFinite(priority) ? priority : 0,
+      priority: parseInt(priority, 10) || 0,
       rules,
       lists: listRefs.length > 0 ? listRefs : undefined,
     }
@@ -153,6 +180,7 @@ export function ProfileBuilder({
       const res = await api.saveProfile(serialize(), true)
       if ((res.issues ?? []).length > 0) setIssues(res.issues)
       setPreviewPlan(res.plan ?? { ops: [], inverse: [] })
+      setPreviewDiff(res.diff ?? null)
     } catch (e) {
       setError(friendly(e))
     } finally {
@@ -179,6 +207,13 @@ export function ProfileBuilder({
       }
       onApplied()
       onClose()
+      if (res.apply_error) {
+        // Partial success: the profile persisted but the reconcile didn't run
+        // (e.g. include mode with no live tunnel). The profile list is correct;
+        // surface why nothing was installed yet.
+        onWarning?.(`Profile saved — not applied yet: ${res.apply_error}`)
+        return
+      }
       if (r?.needs_confirm && r.tx_id) onPending(r)
     } catch (e) {
       setError(friendly(e))
@@ -263,6 +298,7 @@ export function ProfileBuilder({
           title="Domain rules"
           addLabel="Add domain"
           placeholder="*.corp.example.com"
+          hint="Wildcards (*.example.com) route the domain itself; subdomains follow via split-DNS in Settings."
           rows={domains}
           setRows={setDomains}
           errorFor={(r) => (submitted || r.value.trim() ? domainErr(r) : null)}
@@ -273,7 +309,9 @@ export function ProfileBuilder({
         <AppManager
           rows={apps}
           setRows={setApps}
-          defStrategy={defStrategy}
+          platform={platform}
+          mode={mode}
+          modeError={appModeErr}
           errorFor={(r) => (submitted || r.value.trim() ? appErr(r) : null)}
         />
 
@@ -316,7 +354,8 @@ export function ProfileBuilder({
               <input
                 type="number"
                 value={priority}
-                onChange={(e) => setPriority(parseInt(e.target.value, 10) || 0)}
+                onChange={(e) => setPriority(e.target.value)}
+                placeholder="0"
                 className={inputCls(null)}
               />
             </Field>
@@ -353,11 +392,20 @@ export function ProfileBuilder({
 
         {/* Dry-run plan preview */}
         {previewPlan && (
-          <div className="rounded-lg border border-line">
-            <div className="border-b border-line px-3 py-1.5 text-xs font-medium text-muted">
-              Plan preview — {previewPlan.ops.length} op(s)
+          <div ref={previewRef} className="rounded-lg border border-line">
+            <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-xs font-medium text-muted">
+              <span>Review — what applying will change</span>
+              {previewDiff && (
+                <span>
+                  <span className="text-success">+{previewDiff.adds} to add</span>
+                  <span className="mx-1">·</span>
+                  <span className="text-danger">−{previewDiff.dels} to remove</span>
+                </span>
+              )}
             </div>
-            {previewPlan.ops.length === 0 && <div className="px-3 py-2 text-sm text-muted">No changes — already in sync.</div>}
+            {previewPlan.ops.length === 0 && (
+              <div className="px-3 py-2 text-sm text-muted">No changes — this configuration is already applied.</div>
+            )}
             {previewPlan.ops.map((op, i) => (
               <div key={i} className="ltr flex items-center gap-2 border-b border-line/60 px-3 py-1.5 text-sm last:border-0">
                 <span className={op.kind.startsWith('add') ? 'text-success' : 'text-danger'}>{op.kind.startsWith('add') ? '+' : '−'}</span>
@@ -399,6 +447,7 @@ function RuleManager({
   title,
   addLabel,
   placeholder,
+  hint,
   rows,
   setRows,
   errorFor,
@@ -407,6 +456,7 @@ function RuleManager({
   title: string
   addLabel: string
   placeholder: string
+  hint?: string
   rows: Row[]
   setRows: React.Dispatch<React.SetStateAction<Row[]>>
   errorFor: (r: Row) => string | null
@@ -442,47 +492,75 @@ function RuleManager({
       <button onClick={() => setRows((rs) => [...rs, newRow()])} className="mt-2 text-sm font-medium text-accent hover:opacity-80">
         + {addLabel}
       </button>
+      {hint && <p className="mt-1 text-xs text-muted">{hint}</p>}
     </div>
   )
 }
 
+// AppManager edits per-app rules with a platform-appropriate searchable picker:
+// macOS matches an app's traffic by its running user (PF socket owner), Linux
+// by cgroup v2 unit. Free text stays valid — the catalogs are suggestions.
 function AppManager({
   rows,
   setRows,
-  defStrategy,
+  platform,
+  mode,
+  modeError,
   errorFor,
 }: {
   rows: Row[]
   setRows: React.Dispatch<React.SetStateAction<Row[]>>
-  defStrategy: AppStrategy
+  platform?: string
+  mode: 'include' | 'exclude'
+  modeError: string | null
   errorFor: (r: Row) => string | null
 }) {
-  const update = (id: number, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  const isLinux = platform === 'linux'
+  const active = rows.some((r) => r.value.trim())
+  // Catalogs load lazily: only once the section is in use (or being added to).
+  const [wantCatalog, setWantCatalog] = useState(false)
+  const usersQ = useQuery({
+    queryKey: ['sysusers'],
+    queryFn: api.systemUsers,
+    enabled: !isLinux && (wantCatalog || active),
+    staleTime: 60_000,
+  })
+  const appsQ = useQuery({
+    queryKey: ['sysapps'],
+    queryFn: api.systemApps,
+    enabled: isLinux && (wantCatalog || active),
+    staleTime: 60_000,
+  })
+
+  const options = isLinux
+    ? (appsQ.data ?? []).map((a) => ({ value: a.value, label: a.name, sub: a.value }))
+    : (usersQ.data ?? []).map((u) => ({
+        value: u.username,
+        label: `${u.username} (uid ${u.uid})`,
+        sub: u.full_name,
+      }))
+
+  const update = (id: number, value: string) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, value } : r)))
   const remove = (id: number) => setRows((rs) => rs.filter((r) => r.id !== id))
+
   return (
     <div>
-      <Label>Per-app rules</Label>
+      <Label>{isLinux ? 'Per-app rules — applications' : 'Per-app rules — by user'}</Label>
       <div className="mt-2 space-y-2">
         {rows.length === 0 && <div className="text-sm text-muted">None yet.</div>}
         {rows.map((r) => {
-          const strat = r.strategy ?? defStrategy
           const err = errorFor(r)
           return (
             <div key={r.id}>
               <div className="flex items-center gap-2">
-                <select
-                  value={strat}
-                  onChange={(e) => update(r.id, { strategy: e.target.value as AppStrategy })}
-                  className="rounded-lg border border-line bg-elevated px-2 py-2 text-sm text-default"
-                >
-                  <option value="uid">By UID / Username (macOS)</option>
-                  <option value="app">By Application (Linux)</option>
-                </select>
-                <input
+                <Combobox
                   value={r.value}
-                  onChange={(e) => update(r.id, { value: e.target.value })}
-                  placeholder={strat === 'uid' ? '501 or alice' : 'app id / cgroup'}
-                  className={`ltr flex-1 ${inputCls(err)}`}
+                  onChange={(v) => update(r.id, v)}
+                  options={options}
+                  loading={isLinux ? appsQ.isLoading : usersQ.isLoading}
+                  placeholder={isLinux ? 'Search applications (cgroup units)…' : 'Search users — name or uid…'}
+                  ariaLabel="App rule value"
+                  invalid={!!err}
                 />
                 <button onClick={() => remove(r.id)} aria-label="Remove" className="rounded-lg border border-line px-2.5 py-2 text-sm text-muted hover:text-danger">
                   ✕
@@ -494,11 +572,25 @@ function AppManager({
         })}
       </div>
       <button
-        onClick={() => setRows((rs) => [...rs, { id: nextRowId(), value: '', strategy: defStrategy }])}
+        onClick={() => {
+          setWantCatalog(true)
+          setRows((rs) => [...rs, { id: nextRowId(), value: '' }])
+        }}
         className="mt-2 text-sm font-medium text-accent hover:opacity-80"
       >
         + Add app rule
       </button>
+      {modeError ? (
+        <p className="mt-1 text-xs text-danger">{modeError}</p>
+      ) : (
+        mode === 'exclude' &&
+        rows.length === 0 && (
+          <p className="mt-1 text-xs text-muted">Per-app rules steer an app into the tunnel — they need Include mode.</p>
+        )
+      )}
+      {!isLinux && mode === 'include' && (
+        <p className="mt-1 text-xs text-muted">macOS steers an app by the user it runs as (PF socket owner).</p>
+      )}
     </div>
   )
 }

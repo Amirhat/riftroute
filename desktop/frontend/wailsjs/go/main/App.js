@@ -82,6 +82,14 @@ export function GetSplitDNS() {
   return window['go']['main']['App']['GetSplitDNS']();
 }
 
+export function GetSystemApps() {
+  return window['go']['main']['App']['GetSystemApps']();
+}
+
+export function GetSystemUsers() {
+  return window['go']['main']['App']['GetSystemUsers']();
+}
+
 export function GetState() {
   return window['go']['main']['App']['GetState']();
 }

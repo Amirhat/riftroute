@@ -12,6 +12,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/sysinfo"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -124,6 +125,35 @@ func (a *App) GetRules() ([]domain.PolicyRule, error) {
 		rules = []domain.PolicyRule{}
 	}
 	return rules, nil
+}
+
+// GetSystemUsers lists local accounts for the per-app picker (macOS PF
+// matches by socket owner).
+func (a *App) GetSystemUsers() ([]sysinfo.User, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	us, err := a.client.SystemUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if us == nil {
+		us = []sysinfo.User{}
+	}
+	return us, nil
+}
+
+// GetSystemApps lists per-app routing targets (Linux cgroup units).
+func (a *App) GetSystemApps() ([]sysinfo.App, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	as, err := a.client.SystemApps(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if as == nil {
+		as = []sysinfo.App{}
+	}
+	return as, nil
 }
 
 // GetInterfaces returns the interface list.
