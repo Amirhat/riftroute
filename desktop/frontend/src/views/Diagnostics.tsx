@@ -19,7 +19,7 @@ const CHECK_INFO: Record<string, { label: string; explain: string }> = {
   conflicts: { label: 'Route conflicts', explain: 'Managed routes don’t fight system or VPN routes.' },
   'wildcard-dns': {
     label: 'Wildcard DNS learner',
-    explain: 'Learns subdomain addresses for *.domain rules as apps look them up.',
+    explain: 'Resolves common subdomains of *.domain rules up front and learns others as apps use them.',
   },
 }
 
