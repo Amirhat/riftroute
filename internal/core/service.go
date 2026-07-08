@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,12 @@ type Service struct {
 	autoApply  atomic.Bool
 	domains    *dns.Cache
 	killStatus func() bool
+	// wildcardIPs returns the LEARNED addresses for a wildcard rule value
+	// (fed by the daemon's DNS learner); nil = apex-only resolution.
+	wildcardIPs func(rule string) []string
+	// wildcardStatus reports whether the DNS learner is serving and on which
+	// port (for the doctor); nil = not wired.
+	wildcardStatus func() (bool, int)
 }
 
 // SetResolver overrides the domain resolver cache (tests).
@@ -42,6 +49,13 @@ func (s *Service) SetResolver(c *dns.Cache) { s.domains = c }
 // SetKillSwitchStatus installs a callback reporting whether the kill switch is
 // active, so State can surface it (the manager lives in the daemon).
 func (s *Service) SetKillSwitchStatus(fn func() bool) { s.killStatus = fn }
+
+// SetWildcardIPs installs the daemon's learned-answer source for wildcard
+// domain rules (see internal/dnsproxy).
+func (s *Service) SetWildcardIPs(fn func(rule string) []string) { s.wildcardIPs = fn }
+
+// SetWildcardStatus installs the DNS learner's health callback (doctor).
+func (s *Service) SetWildcardStatus(fn func() (bool, int)) { s.wildcardStatus = fn }
 
 // SetAutoApply records whether auto-apply is active (surfaced in State for the
 // UI/CLI). Atomic: the Settings toggle flips it from an API handler while State
@@ -129,6 +143,19 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 			for _, a := range s.domains.Lookup(ctx, domain.DomainRuleHost(r.Value)) {
 				ss = append(ss, a.String())
 			}
+			// …plus every subdomain address the DNS learner has observed.
+			if s.wildcardIPs != nil && strings.HasPrefix(r.Value, "*.") {
+				seen := map[string]bool{}
+				for _, v := range ss {
+					seen[v] = true
+				}
+				for _, v := range s.wildcardIPs(r.Value) {
+					if !seen[v] {
+						seen[v] = true
+						ss = append(ss, v)
+					}
+				}
+			}
 			m[r.Value] = ss
 		}
 	}
@@ -169,6 +196,32 @@ func (s *Service) RefreshDomains(ctx context.Context) bool {
 	}
 	return s.domains.Refresh(ctx, s.DomainHosts())
 }
+
+// WildcardRules returns the distinct wildcard domain rule values ("*.x.com")
+// across enabled profiles — what the DNS learner should be watching.
+func (s *Service) WildcardRules() []string {
+	if s.store == nil {
+		return nil
+	}
+	profs, _ := s.store.ListProfiles()
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range profs {
+		if !p.Enabled {
+			continue
+		}
+		for _, r := range p.Rules {
+			if r.Type == domain.RuleDomain && strings.HasPrefix(r.Value, "*.") && !seen[r.Value] {
+				seen[r.Value] = true
+				out = append(out, r.Value)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Service) wildcardRuleCount() int { return len(s.WildcardRules()) }
 
 // AppCgroups returns the distinct per-app rule values across enabled
 // include-mode profiles — on Linux these are cgroup v2 paths, the

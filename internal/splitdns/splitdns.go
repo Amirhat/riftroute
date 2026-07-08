@@ -43,8 +43,11 @@ func New() Manager {
 }
 
 // ResolverFile renders a macOS /etc/resolver/<domain> file pointing the domain at
-// the given resolver (pure; unit-tested).
-func ResolverFile(resolver string) string {
+// the given resolver (pure; unit-tested). port 0 means the default 53.
+func ResolverFile(resolver string, port int) string {
+	if port > 0 {
+		return fmt.Sprintf("# managed by riftroute\nnameserver %s\nport %d\n", resolver, port)
+	}
 	return fmt.Sprintf("# managed by riftroute\nnameserver %s\n", resolver)
 }
 
@@ -72,7 +75,7 @@ func (m *macResolverManager) Apply(_ context.Context, routes []domain.SplitDNSRo
 		// wildcard normalizes to its apex (a literal "*.example.com" filename
 		// would never match anything).
 		path := filepath.Join(resolverDir, domain.DomainRuleHost(r.Domain))
-		if err := os.WriteFile(path, []byte(ResolverFile(r.Resolver)), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(ResolverFile(r.Resolver, r.Port)), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}
@@ -116,6 +119,56 @@ func (resolvectlManager) Apply(ctx context.Context, routes []domain.SplitDNSRout
 }
 
 func (resolvectlManager) Clear(context.Context) error { return nil }
+
+// Composed merges the user's split-DNS selection with daemon-generated
+// routes (the wildcard learner's resolver-file entries) behind the Manager
+// interface, so both write through ONE owner of /etc/resolver — two managers
+// would clear each other's files.
+type Composed struct {
+	inner Manager
+	extra func() []domain.SplitDNSRoute
+
+	mu   sync.Mutex
+	user []domain.SplitDNSRoute
+}
+
+// NewComposed wraps inner; extra() supplies the daemon's additional routes at
+// every (re)apply. extra may return nil.
+func NewComposed(inner Manager, extra func() []domain.SplitDNSRoute) *Composed {
+	return &Composed{inner: inner, extra: extra}
+}
+
+func (c *Composed) Backend() string { return c.inner.Backend() }
+
+// Apply records the USER selection and writes user+extra through.
+func (c *Composed) Apply(ctx context.Context, routes []domain.SplitDNSRoute) error {
+	c.mu.Lock()
+	c.user = append([]domain.SplitDNSRoute{}, routes...)
+	c.mu.Unlock()
+	return c.Resync(ctx)
+}
+
+// Resync rewrites user+extra (call when the extra set changes).
+func (c *Composed) Resync(ctx context.Context) error {
+	c.mu.Lock()
+	merged := append([]domain.SplitDNSRoute{}, c.user...)
+	c.mu.Unlock()
+	if c.extra != nil {
+		merged = append(merged, c.extra()...)
+	}
+	return c.inner.Apply(ctx, merged)
+}
+
+// ApplyUserOnly rewrites just the user selection — the shutdown path, so no
+// resolver file is left pointing at a proxy that no longer exists.
+func (c *Composed) ApplyUserOnly(ctx context.Context) error {
+	c.mu.Lock()
+	user := append([]domain.SplitDNSRoute{}, c.user...)
+	c.mu.Unlock()
+	return c.inner.Apply(ctx, user)
+}
+
+func (c *Composed) Clear(ctx context.Context) error { return c.inner.Clear(ctx) }
 
 // FakeManager records applied routes for tests / the fake provider.
 type FakeManager struct {
