@@ -256,3 +256,44 @@ func TestAnswerStoreExpiresStaleAddresses(t *testing.T) {
 		t.Fatalf("only the fresh addr should remain: %v", got)
 	}
 }
+
+// Resolve queries the upstreams directly (bypassing the scoped resolver files),
+// so the daemon can pre-warm wildcard subdomains itself — routing them before
+// anything connects, regardless of how the browser resolves DNS.
+func TestResolveDirectAgainstUpstream(t *testing.T) {
+	answer := netip.MustParseAddr("81.91.145.166")
+	up := fakeUpstream(t, answer)
+
+	p := New(nil, nil)
+	port, err := p.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Stop)
+	_ = port
+	p.SetUpstreams([]string{up})
+
+	got := p.Resolve("app.blumarkets.com")
+	if len(got) != 1 || got[0] != answer {
+		t.Fatalf("Resolve = %v, want [%v]", got, answer)
+	}
+
+	// No upstream configured → no answer (never fabricates).
+	p2 := New(nil, nil)
+	if a := p2.Resolve("app.blumarkets.com"); len(a) != 0 {
+		t.Fatalf("Resolve with no upstream = %v, want none", a)
+	}
+}
+
+func TestCommonSubdomainLabelsNonEmpty(t *testing.T) {
+	if len(CommonSubdomainLabels) < 20 {
+		t.Fatalf("expected a substantial pre-warm wordlist, got %d labels", len(CommonSubdomainLabels))
+	}
+	seen := map[string]bool{}
+	for _, l := range CommonSubdomainLabels {
+		if seen[l] {
+			t.Fatalf("duplicate label %q in the pre-warm list", l)
+		}
+		seen[l] = true
+	}
+}

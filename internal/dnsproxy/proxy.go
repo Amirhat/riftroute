@@ -354,6 +354,80 @@ func writeTCPMessage(c net.Conn, msg []byte) error {
 	return err
 }
 
+// CommonSubdomainLabels is the wordlist the daemon proactively resolves under
+// each wildcard apex (see prewarm). DNS can't enumerate a wildcard's children,
+// so pre-resolving the common ones — done by the daemon itself, independent of
+// the browser — means their routes exist BEFORE anything connects, which fixes
+// both the first-connection race and the case where the browser resolves over
+// DoH (bypassing our scoped resolver entirely).
+var CommonSubdomainLabels = []string{
+	"www", "app", "api", "api2", "cdn", "static", "assets", "media", "img",
+	"images", "files", "download", "ws", "wss", "socket", "stream", "live",
+	"feed", "data", "quote", "quotes", "market", "markets", "trade", "trading",
+	"chart", "charts", "account", "accounts", "login", "auth", "sso", "oauth",
+	"portal", "dashboard", "admin", "my", "m", "mobile", "web", "secure", "pay",
+	"payment", "checkout", "status", "edge", "gateway", "node", "backend",
+}
+
+// Resolve looks up fqdn's A and AAAA records directly against the configured
+// upstreams — bypassing the scoped resolver files, so it can never loop back
+// into this proxy. Returns the deduped addresses (nil on failure). Used for
+// proactive wildcard pre-warming; the results feed the same learn path as
+// passively observed answers.
+func (p *Proxy) Resolve(fqdn string) []netip.Addr {
+	var out []netip.Addr
+	seen := map[netip.Addr]bool{}
+	for _, qtype := range []dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
+		q, err := buildDNSQuery(fqdn, qtype)
+		if err != nil {
+			continue
+		}
+		resp := p.forwardUDP(q)
+		if resp == nil {
+			continue
+		}
+		for _, a := range addrsFromResponse(resp) {
+			if !seen[a] {
+				seen[a] = true
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+func buildDNSQuery(fqdn string, qtype dnsmessage.Type) ([]byte, error) {
+	if !strings.HasSuffix(fqdn, ".") {
+		fqdn += "."
+	}
+	name, err := dnsmessage.NewName(fqdn)
+	if err != nil {
+		return nil, err
+	}
+	msg := dnsmessage.Message{
+		Header:    dnsmessage.Header{RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: name, Type: qtype, Class: dnsmessage.ClassINET}},
+	}
+	return msg.Pack()
+}
+
+func addrsFromResponse(resp []byte) []netip.Addr {
+	var msg dnsmessage.Message
+	if err := msg.Unpack(resp); err != nil {
+		return nil
+	}
+	var out []netip.Addr
+	for _, ans := range msg.Answers {
+		switch rr := ans.Body.(type) {
+		case *dnsmessage.AResource:
+			out = append(out, netip.AddrFrom4(rr.A))
+		case *dnsmessage.AAAAResource:
+			out = append(out, netip.AddrFrom16(rr.AAAA))
+		}
+	}
+	return out
+}
+
 // observe is the learning tap: if the response answers a name covered by a
 // wildcard rule, report its A/AAAA addresses.
 func (p *Proxy) observe(resp []byte) {

@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -178,7 +179,9 @@ func run() error {
 	var learnedDirty atomic.Bool
 	var lastLearnerReady atomic.Bool
 	learnKick := make(chan struct{}, 1)
-	proxy := dnsproxy.New(logger, func(rule, fqdn string, addrs []netip.Addr) {
+	// recordLearned is the single sink for both passively-observed answers (the
+	// proxy's learn callback) and proactively pre-warmed ones (prewarm).
+	recordLearned := func(rule, fqdn string, addrs []netip.Addr) {
 		if wildStore.Add(rule, fqdn, addrs) {
 			learnedDirty.Store(true)
 			logger.Info("wildcard subdomain learned", "rule", rule, "name", fqdn, "addrs", len(addrs))
@@ -187,9 +190,48 @@ func run() error {
 			default:
 			}
 		}
-	})
+	}
+	proxy := dnsproxy.New(logger, recordLearned)
 	svc.SetWildcardIPs(wildStore.IPs)
 	svc.SetWildcardStatus(proxy.Active)
+
+	// prewarm proactively resolves each wildcard's apex + a common-subdomain
+	// wordlist itself (bounded concurrency, directly against the upstreams), so
+	// their routes are installed BEFORE anything connects — independent of the
+	// browser's DNS (fixes the first-connection race and browsers that resolve
+	// over DoH, bypassing our scoped resolver). Reactive learning still covers
+	// any subdomain not in the list. Runs async; safe to call repeatedly.
+	prewarm := func() {
+		if ready, _ := proxy.Ready(); !ready {
+			return
+		}
+		rules := svc.WildcardRules()
+		if len(rules) == 0 {
+			return
+		}
+		type job struct{ rule, fqdn string }
+		var jobs []job
+		for _, rule := range rules {
+			apex := domain.DomainRuleHost(rule)
+			jobs = append(jobs, job{rule, apex})
+			for _, lbl := range dnsproxy.CommonSubdomainLabels {
+				jobs = append(jobs, job{rule, lbl + "." + apex})
+			}
+		}
+		sem := make(chan struct{}, 8)
+		var wg sync.WaitGroup
+		for _, j := range jobs {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(j job) {
+				defer func() { <-sem; wg.Done() }()
+				if addrs := proxy.Resolve(j.fqdn); len(addrs) > 0 {
+					recordLearned(j.rule, j.fqdn, addrs)
+				}
+			}(j)
+		}
+		wg.Wait()
+	}
 
 	// ONE owner of the resolver-file dir: user split-DNS + the learner's
 	// wildcard entries write through the same composed manager. Learner entries
@@ -247,6 +289,7 @@ func run() error {
 		if err := composedDNS.Resync(ctx); err != nil {
 			logger.Warn("wildcard resolver files not applied (apex-only routing)", "err", err)
 		}
+		go prewarm() // proactively populate common subdomains for the new rule set
 	}
 
 	// refreshLearnerDNS keeps the proxy's upstreams current as the system's
@@ -407,6 +450,7 @@ func run() error {
 				return
 			case <-tick.C:
 				refreshLearnerDNS(c) // track resolver changes (VPN up/down)
+				go prewarm()         // refresh common subdomains + discover new IPs
 				expired := wildStore.GC()
 				if expired || learnedDirty.Swap(false) {
 					persistLearned()
