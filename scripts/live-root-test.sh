@@ -130,6 +130,15 @@ ck "resolver file written" "$([[ -f "$RESOLVER" ]] && echo yes)" "yes"
 ck "resolver file is ours" "$(cat "$RESOLVER" 2>/dev/null)" "managed by riftroute"
 [[ -n "$PORT" ]] && ck "resolver file names the proxy port" "$(cat "$RESOLVER" 2>/dev/null)" "port $PORT"
 
+echo "-- B2b. PROACTIVE pre-warm: common subdomains are learned without any lookup"
+# The daemon resolves the apex + a common-subdomain wordlist itself, so routes
+# exist before anything connects (fixes the first-connection race and browsers
+# that resolve over DoH). www.example.com is a real name → it should be learned
+# with no query from us yet.
+sleep 3
+ck "pre-warmed a subdomain with no browser/query involved" "$([[ $(grep -c 'wildcard subdomain learned' "$LOG") -ge 1 ]] && echo yes)" "yes"
+grep "wildcard subdomain learned" "$LOG" | sed 's/^.*name=/    prewarmed /; s/ addrs.*//' | sort -u | head -5
+
 echo "-- B3. learning proof — query the proxy directly (deterministic), then via the system"
 if [[ -n "$PORT" ]] && command -v dig >/dev/null; then
   D1=$(dig +short +time=4 @127.0.0.1 -p "$PORT" www.example.com A 2>/dev/null | head -1)
