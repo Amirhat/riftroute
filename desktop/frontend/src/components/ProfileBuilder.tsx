@@ -298,7 +298,7 @@ export function ProfileBuilder({
           title="Domain rules"
           addLabel="Add domain"
           placeholder="*.corp.example.com"
-          hint="Wildcards (*.example.com) route the domain itself; subdomains follow via split-DNS in Settings."
+          hint="Wildcards (*.example.com) cover subdomains too: the daemon learns their addresses as apps look them up and routes them automatically."
           rows={domains}
           setRows={setDomains}
           errorFor={(r) => (submitted || r.value.trim() ? domainErr(r) : null)}
@@ -589,7 +589,12 @@ function AppManager({
         )
       )}
       {!isLinux && mode === 'include' && (
-        <p className="mt-1 text-xs text-muted">macOS steers an app by the user it runs as (PF socket owner).</p>
+        <p className="mt-1 text-xs text-muted">
+          macOS steers traffic by the <span className="text-default">user</span> a process runs as (PF matches the
+          socket owner) — regular GUI apps all run as you, so this fits daemons and services with their own account
+          (VPN helpers, torrent clients, servers). Per-application steering needs a Network Extension and is on the
+          roadmap.
+        </p>
       )}
     </div>
   )

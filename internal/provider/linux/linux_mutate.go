@@ -25,7 +25,7 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	if mr.Route.Gateway != "" {
 		args = append(args, "via", mr.Route.Gateway)
 	}
-	args = append(args, "dev", mr.Route.Iface, "proto", routeProtoNum)
+	args = append(args, "dev", mr.Route.Iface, "proto", protoArg(mr.Route.Proto))
 	if mr.Route.Metric > 0 {
 		args = append(args, "metric", fmt.Sprint(mr.Route.Metric))
 	}
@@ -42,12 +42,15 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	return nil
 }
 
-// DelRoute removes a managed route (matched by its proto tag + table).
+// DelRoute removes a route, matched by its proto tag + table. Managed routes
+// carry proto riftroute; EXTERNAL routes (user edits from the routing table)
+// carry whatever proto the kernel reported (dhcp/static/kernel/…) — matching
+// on OUR tag there would simply fail to find them.
 func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	if _, err := netip.ParsePrefix(mr.Route.DstCIDR); err != nil {
 		return fmt.Errorf("linux: invalid destination CIDR %q", mr.Route.DstCIDR)
 	}
-	args := []string{"route", "del", mr.Route.DstCIDR, "proto", routeProtoNum}
+	args := []string{"route", "del", mr.Route.DstCIDR, "proto", protoArg(mr.Route.Proto)}
 	if mr.Route.Table != "" {
 		args = append(args, "table", mr.Route.Table)
 	}
@@ -59,6 +62,21 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 		return fmt.Errorf("ip route del %s: %w: %s", mr.Route.DstCIDR, err, strings.TrimSpace(out))
 	}
 	return nil
+}
+
+// protoArg maps a route's proto to the `ip route` argument: RiftRoute's own
+// tag (also the default and the "riftroute" alias), or the kernel-reported
+// proto of an external route, charset-vetted for the exec arg-array.
+func protoArg(proto string) string {
+	if proto == "" || proto == routeProtoName {
+		return routeProtoNum
+	}
+	for _, r := range proto {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return routeProtoNum // unexpected value → fail closed onto our own tag
+		}
+	}
+	return proto
 }
 
 // AddRule installs a policy rule (Model B), proto-tagged for ownership. Falls

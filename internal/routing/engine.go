@@ -332,6 +332,24 @@ func invert(ops []domain.PlanOp, platform string) []domain.PlanOp {
 	return inv
 }
 
+// DeleteRoutePlan builds a single-op plan that removes r, with its add as the
+// precomputed inverse — the plan-level path for user-initiated deletion of
+// routes RiftRoute does not manage (added via terminal, DHCP, a VPN client…).
+func DeleteRoutePlan(r domain.Route, platform string) domain.Plan {
+	ops := []domain.PlanOp{makeRouteOp(domain.OpDelRoute, domain.ManagedRoute{Route: r}, platform)}
+	return domain.Plan{Ops: ops, Inverse: invert(ops, platform)}
+}
+
+// ReplaceRoutePlan swaps old for new in one transaction (delete first — two
+// routes for the same destination would collide), inverse restoring old.
+func ReplaceRoutePlan(old, updated domain.Route, platform string) domain.Plan {
+	ops := []domain.PlanOp{
+		makeRouteOp(domain.OpDelRoute, domain.ManagedRoute{Route: old}, platform),
+		makeRouteOp(domain.OpAddRoute, domain.ManagedRoute{Route: updated}, platform),
+	}
+	return domain.Plan{Ops: ops, Inverse: invert(ops, platform)}
+}
+
 func makeRouteOp(kind domain.OpKind, mr domain.ManagedRoute, platform string) domain.PlanOp {
 	cp := mr
 	return domain.PlanOp{Kind: kind, Route: &cp, Command: commandForRoute(kind, mr.Route, platform), Human: humanForRoute(kind, mr.Route)}
@@ -356,6 +374,10 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 			return []string{"route", "-n", "delete", scope, r.DstCIDR, r.Gateway}
 		}
 	}
+	proto := r.Proto
+	if proto == "" {
+		proto = "riftroute"
+	}
 	args := []string{"ip", "route"}
 	switch kind {
 	case domain.OpAddRoute:
@@ -363,9 +385,9 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 		if r.Gateway != "" {
 			args = append(args, "via", r.Gateway) // omit for an on-link tunnel default
 		}
-		args = append(args, "dev", r.Iface, "proto", "riftroute")
+		args = append(args, "dev", r.Iface, "proto", proto)
 	case domain.OpDelRoute:
-		args = append(args, "del", r.DstCIDR, "proto", "riftroute")
+		args = append(args, "del", r.DstCIDR, "proto", proto)
 	}
 	if r.Table != "" {
 		args = append(args, "table", r.Table)

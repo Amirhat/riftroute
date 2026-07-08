@@ -39,7 +39,7 @@ func TestStateManagedCountFallsBackToProvider(t *testing.T) {
 	svc := New(prov, nil, "test")
 	mr := domain.ManagedRoute{Route: domain.Route{
 		DstCIDR: "203.0.113.0/24", Iface: "utun9", Family: domain.FamilyV4,
-	}}
+	}, ProfileID: "p1"}
 	if err := prov.AddRoute(context.Background(), mr); err != nil {
 		t.Fatal(err)
 	}

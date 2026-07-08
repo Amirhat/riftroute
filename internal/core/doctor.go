@@ -49,6 +49,21 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 		add("drift", domain.CheckPass, "desired routing matches actual", "")
 	}
 
+	// Wildcard DNS learner: with *.domain rules configured, subdomain routing
+	// depends on the loopback forwarder being up.
+	if n := s.wildcardRuleCount(); n > 0 {
+		if s.wildcardStatus != nil {
+			if active, port := s.wildcardStatus(); active {
+				add("wildcard-dns", domain.CheckPass,
+					fmt.Sprintf("learning subdomains for %d wildcard rule(s) via 127.0.0.1:%d", n, port), "")
+			} else {
+				add("wildcard-dns", domain.CheckWarn,
+					"wildcard rules configured but the DNS learner is not active — only the apex domains are routed",
+					"restart the daemon; if this persists, per-domain DNS routing is unavailable on this system")
+			}
+		}
+	}
+
 	// MTU / blackhole: a tunnel with a notably low MTU can silently drop large
 	// packets; suggest an MSS clamp (spec §7.10).
 	if ifaces, err := s.prov.Interfaces(ctx); err == nil {

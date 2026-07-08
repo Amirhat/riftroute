@@ -104,8 +104,12 @@ export function Toggle({
       aria-label={ariaLabel}
       className={`relative h-6 w-11 shrink-0 rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/70 focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50 ${track}`}
     >
+      {/* left-0 anchors the knob explicitly: without it, an absolutely
+          positioned child takes its STATIC position — which WebKit derives
+          from the button's centered text alignment — and the translate then
+          pushed the knob outside the track, overlapping neighboring text. */}
       <span
-        className={`absolute top-0.5 h-5 w-5 rounded-full bg-knob shadow transition-transform ${on ? 'translate-x-[22px]' : 'translate-x-0.5'}`}
+        className={`absolute left-0 top-0.5 h-5 w-5 rounded-full bg-knob shadow transition-transform ${on ? 'translate-x-[22px]' : 'translate-x-0.5'}`}
       />
     </button>
   )

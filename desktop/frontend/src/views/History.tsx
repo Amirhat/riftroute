@@ -105,9 +105,11 @@ export function History() {
                 <div key={s.id} className="flex items-center justify-between gap-2 px-4 py-3">
                   <div className="min-w-0">
                     <div className="text-sm text-default">{fmtTime(s.created_at)}</div>
-                    <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
-                      <span className="ltr font-mono">{s.id}</span>
-                      <span>· {s.reason === 'pre-apply' ? 'before an apply' : s.reason}</span>
+                    <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                      <span className="ltr min-w-0 truncate font-mono" title={s.id}>
+                        {s.id}
+                      </span>
+                      <span className="shrink-0">· {s.reason === 'pre-apply' ? 'before an apply' : s.reason}</span>
                     </div>
                   </div>
                   {s.restorable ? (

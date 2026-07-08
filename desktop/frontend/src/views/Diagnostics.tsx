@@ -17,6 +17,10 @@ const CHECK_INFO: Record<string, { label: string; explain: string }> = {
   dns: { label: 'DNS resolvers', explain: 'Name servers the system currently uses.' },
   drift: { label: 'Routes in sync', explain: 'Installed routes match the enabled profiles.' },
   conflicts: { label: 'Route conflicts', explain: 'Managed routes don’t fight system or VPN routes.' },
+  'wildcard-dns': {
+    label: 'Wildcard DNS learner',
+    explain: 'Learns subdomain addresses for *.domain rules as apps look them up.',
+  },
 }
 
 function checkInfo(name: string): { label: string; explain: string } {

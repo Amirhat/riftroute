@@ -186,6 +186,18 @@ func (c *Client) Rules(ctx context.Context, family domain.Family) ([]domain.Poli
 	return body.Rules, err
 }
 
+// RouteOp deletes or replaces a single EXTERNAL route (one RiftRoute doesn't
+// manage) through the plan-level Apply Protocol. newRoute is nil for delete.
+func (c *Client) RouteOp(ctx context.Context, action string, route domain.Route, newRoute *domain.Route) (ConfigResult, error) {
+	body, err := json.Marshal(map[string]any{
+		"action": action, "route": route, "new_route": newRoute,
+	})
+	if err != nil {
+		return ConfigResult{}, err
+	}
+	return c.configRequest(ctx, http.MethodPost, "/routes/ops", body)
+}
+
 // SystemUsers fetches the local user catalog (per-app picker source).
 func (c *Client) SystemUsers(ctx context.Context) ([]sysinfo.User, error) {
 	var body struct {

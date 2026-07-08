@@ -284,6 +284,7 @@ export interface List {
 export interface SplitDNSRoute {
   domain: string
   resolver: string
+  port?: number // non-standard resolver port (wildcard DNS learner entries)
 }
 
 // UpdateResult mirrors update.Result — the GitHub Releases check.

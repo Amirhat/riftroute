@@ -101,6 +101,9 @@ func (l List) Entries() []string {
 type SplitDNSRoute struct {
 	Domain   string `json:"domain"`
 	Resolver string `json:"resolver"`
+	// Port is a non-standard resolver port (0 = 53). Used by the wildcard DNS
+	// learner, whose loopback forwarder binds a dynamic port.
+	Port int `json:"port,omitempty"`
 }
 
 // ManagedRoute is a route RiftRoute intends to own (spec §5.1).

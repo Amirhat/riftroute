@@ -130,6 +130,10 @@ export function Rollback(arg1) {
   return window['go']['main']['App']['Rollback'](arg1);
 }
 
+export function RouteOp(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RouteOp'](arg1, arg2, arg3);
+}
+
 export function SaveList(arg1) {
   return window['go']['main']['App']['SaveList'](arg1);
 }

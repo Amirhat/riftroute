@@ -4,11 +4,14 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { FormEvent } from 'react'
 import { api } from '../lib/api'
 import { stateKey, useRoutesQuery, useStateQuery } from '../lib/queries'
-import { Card, CardHeader, OwnerBadge, Badge, Addr, Skeleton } from '../components/ui'
+import { Card, CardHeader, OwnerBadge, Badge, Addr, Skeleton, Label, fieldCls } from '../components/ui'
 import { CommitConfirm } from '../components/CommitConfirm'
+import { ConfirmModal } from '../components/ConfirmModal'
+import { Modal } from '../components/Modal'
+import { Combobox } from '../components/Combobox'
 import { friendly } from '../lib/format'
-import { validateRouteTarget } from '../lib/validate'
-import type { ApplyResult, Family, Owner, Profile, Route, RouteDecision, RouteExplain } from '../types'
+import { validateRouteGateway, validateRouteTarget } from '../lib/validate'
+import type { ApplyResult, ConfigImportResult, Family, Owner, Profile, Route, RouteDecision, RouteExplain } from '../types'
 
 type FamilyFilter = '' | Family
 type OwnerFilter = '' | Owner
@@ -24,6 +27,11 @@ export const MANUAL_PROFILES = {
   bypass: { id: 'manual-bypass', name: 'Manual routes (bypass VPN)', mode: 'exclude' },
 } as const
 export type ManualKind = keyof typeof MANUAL_PROFILES
+
+/** isDefaultRoute: main-table 0/0 — deletion is guarded server-side too. */
+function isDefaultRoute(r: Route): boolean {
+  return !r.table && (r.dst_cidr === '0.0.0.0/0' || r.dst_cidr === '::/0')
+}
 
 /** filterRoutes narrows the table by owner and free-text substring (destination,
  * gateway, interface, owner, profile, table). Pure — unit-tested directly. */
@@ -42,6 +50,9 @@ export function RoutesView() {
   const qc = useQueryClient()
   const [pending, setPending] = useState<ApplyResult | null>(null)
   const [matched, setMatched] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<Route | null>(null)
+  const [editing, setEditing] = useState<Route | null>(null)
+  const [opError, setOpError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     qc.invalidateQueries({ queryKey: ['routes'] })
@@ -49,6 +60,37 @@ export function RoutesView() {
     qc.invalidateQueries({ queryKey: ['profiles'] })
     qc.invalidateQueries({ queryKey: stateKey })
   }, [qc])
+
+  // Shared result handling for external-route ops: guardrail refusals render
+  // inline; an interactive tx hands off to commit-confirm.
+  const handleOpResult = useCallback(
+    (res: ConfigImportResult) => {
+      const r = res.result
+      if (r?.violations && r.violations.length > 0) {
+        setOpError('Refused: ' + r.violations.map((v) => v.detail || v.rule).join('; '))
+        return
+      }
+      if (r?.error) {
+        setOpError(r.error)
+        return
+      }
+      setOpError(null)
+      refresh()
+      if (r?.needs_confirm && r.tx_id) setPending(r)
+    },
+    [refresh],
+  )
+
+  async function doDelete() {
+    const r = deleting
+    setDeleting(null)
+    if (!r) return
+    try {
+      handleOpResult(await api.routeOp('delete', r))
+    } catch (e) {
+      setOpError(friendly(e, 'delete failed'))
+    }
+  }
 
   const onKeep = useCallback(async () => {
     if (!pending?.tx_id) return setPending(null)
@@ -74,10 +116,160 @@ export function RoutesView() {
     <div className="space-y-4">
       <RouteLookup onResult={(r) => setMatched(r.kernel?.matched_cidr ?? null)} />
       <ManualRoutes onPending={setPending} onApplied={refresh} />
-      <RouteTable matched={matched} />
+      {opError && (
+        <Card className="flex items-center justify-between border-danger/40 p-3 text-sm text-danger">
+          <span>{opError}</span>
+          <button onClick={() => setOpError(null)} aria-label="Dismiss" className="text-muted hover:text-default">
+            ✕
+          </button>
+        </Card>
+      )}
+      <RouteTable matched={matched} onEdit={setEditing} onDelete={setDeleting} />
       <PolicyRules />
+
+      <ConfirmModal
+        open={deleting !== null}
+        danger
+        title={`Delete route ${deleting?.dst_cidr ?? ''}`}
+        message="This route was added outside RiftRoute (system, DHCP, a VPN client…). Removing it is guarded: you'll get a Keep/Revert countdown, and the change auto-reverts if connectivity breaks."
+        confirmLabel="Delete route"
+        onConfirm={doDelete}
+        onCancel={() => setDeleting(null)}
+      />
+
+      {editing && (
+        <EditRouteDialog
+          route={editing}
+          onClose={() => setEditing(null)}
+          onResult={(res) => {
+            setEditing(null)
+            handleOpResult(res)
+          }}
+          onError={(m) => {
+            setEditing(null)
+            setOpError(m)
+          }}
+        />
+      )}
+
       {pending && <CommitConfirm result={pending} seconds={CONFIRM_SECONDS} onKeep={onKeep} onRevert={onRevert} />}
     </div>
+  )
+}
+
+// EditRouteDialog swaps one external route atomically (delete + add in a
+// single guarded transaction). Destination, gateway, and interface are all
+// editable; the daemon re-validates and commit-confirm protects the change.
+function EditRouteDialog({
+  route,
+  onClose,
+  onResult,
+  onError,
+}: {
+  route: Route
+  onClose: () => void
+  onResult: (res: ConfigImportResult) => void
+  onError: (msg: string) => void
+}) {
+  const [dst, setDst] = useState(route.dst_cidr)
+  const [gateway, setGateway] = useState(route.gateway ?? '')
+  const [iface, setIface] = useState(route.iface)
+  const [busy, setBusy] = useState(false)
+  const ifacesQ = useQuery({ queryKey: ['interfaces'], queryFn: () => api.interfaces() })
+
+  const dstErr = validateRouteTarget(dst)
+  // A concrete route needs a concrete gateway: blank (on-link) or a literal IP.
+  // "auto" is a PROFILE concept (auto-detect the physical gateway) that the
+  // route-op path can't honor, so — unlike validateGateway — reject it here.
+  const gwErr = gateway.trim() === '' ? null : validateRouteGateway(gateway)
+  const ifaceErr = iface.trim() === '' ? 'required' : null
+  const invalid = !!(dstErr || gwErr || ifaceErr)
+
+  async function save() {
+    if (invalid) return
+    setBusy(true)
+    try {
+      const updated: Route = {
+        ...route,
+        dst_cidr: dst.includes('/') ? dst.trim() : `${dst.trim()}/${dst.includes(':') ? 128 : 32}`,
+        gateway: gateway.trim(),
+        iface: iface.trim(),
+      }
+      onResult(await api.routeOp('replace', route, updated))
+    } catch (e) {
+      onError(friendly(e, 'edit failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Modal onBackdrop={busy ? undefined : onClose} className="max-w-lg">
+      <div className="flex items-center justify-between border-b border-line px-5 py-3">
+        <h2 className="text-base font-semibold text-default">Edit route</h2>
+        <button onClick={onClose} disabled={busy} className="text-muted hover:text-default disabled:opacity-50" aria-label="Close">
+          ✕
+        </button>
+      </div>
+      <div className="space-y-4 p-5">
+        <div>
+          <Label>Destination</Label>
+          <input
+            value={dst}
+            onChange={(e) => setDst(e.target.value)}
+            spellCheck={false}
+            aria-label="Route destination"
+            className={`ltr mt-1 font-mono ${fieldCls(dstErr)}`}
+          />
+          {dstErr && <div className="mt-1 text-xs text-danger">{dstErr}</div>}
+        </div>
+        <div>
+          <Label>Gateway</Label>
+          <input
+            value={gateway}
+            onChange={(e) => setGateway(e.target.value)}
+            placeholder="empty = on-link (via the interface)"
+            spellCheck={false}
+            aria-label="Route gateway"
+            className={`ltr mt-1 font-mono ${fieldCls(gwErr)}`}
+          />
+          {gwErr && <div className="mt-1 text-xs text-danger">{gwErr}</div>}
+        </div>
+        <div>
+          <Label>Interface</Label>
+          <div className="mt-1">
+            <Combobox
+              value={iface}
+              onChange={setIface}
+              options={(ifacesQ.data ?? []).map((i) => ({
+                value: i.name,
+                label: i.name,
+                sub: `${i.kind}${i.is_vpn ? ' · vpn' : ''}${i.up ? '' : ' · down'}`,
+              }))}
+              loading={ifacesQ.isLoading}
+              ariaLabel="Route interface"
+              invalid={!!ifaceErr}
+            />
+          </div>
+          {ifaceErr && <div className="mt-1 text-xs text-danger">{ifaceErr}</div>}
+        </div>
+        <p className="text-xs text-muted">
+          Applied as one atomic swap through the safety protocol — Keep/Revert countdown included.
+        </p>
+      </div>
+      <div className="flex justify-end gap-2 border-t border-line px-5 py-3">
+        <button onClick={onClose} disabled={busy} className="rounded-lg border border-line px-4 py-2 text-sm text-muted hover:text-default disabled:opacity-50">
+          Cancel
+        </button>
+        <button
+          onClick={() => void save()}
+          disabled={busy || invalid}
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
+        >
+          {busy ? 'Applying…' : 'Apply change'}
+        </button>
+      </div>
+    </Modal>
   )
 }
 
@@ -340,9 +532,17 @@ function ManualRoutes({ onPending, onApplied }: { onPending: (r: ApplyResult) =>
 
 // --- The routing table itself ---
 
-const COLS = 'grid grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_90px_70px_minmax(0,1fr)] gap-3'
+const COLS = 'grid grid-cols-[minmax(0,1.5fr)_minmax(0,1.2fr)_90px_60px_minmax(0,1fr)_72px] gap-3'
 
-function RouteTable({ matched }: { matched: string | null }) {
+function RouteTable({
+  matched,
+  onEdit,
+  onDelete,
+}: {
+  matched: string | null
+  onEdit: (r: Route) => void
+  onDelete: (r: Route) => void
+}) {
   const [family, setFamily] = useState<FamilyFilter>('')
   const [owner, setOwner] = useState<OwnerFilter>('')
   const [q, setQ] = useState('')
@@ -410,6 +610,7 @@ function RouteTable({ matched }: { matched: string | null }) {
         <div>Interface</div>
         <div className="text-right">Metric</div>
         <div>Owner</div>
+        <div className="text-right">Actions</div>
       </div>
 
       {isLoading && (
@@ -463,6 +664,33 @@ function RouteTable({ matched }: { matched: string | null }) {
                       <span className="truncate text-xs text-muted" title={`managed by profile ${r.profile}`}>
                         {r.profile}
                       </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-end gap-1">
+                    {r.owner === 'riftroute' ? (
+                      <span className="text-[11px] text-muted" title={`Managed by profile ${r.profile || '—'} — edit it on the Profiles page (or under Manual routes above).`}>
+                        via profile
+                      </span>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => onEdit(r)}
+                          aria-label={`Edit route ${r.dst_cidr}`}
+                          title="Edit this route (guarded swap)"
+                          className="rounded-md px-1.5 py-1 text-xs text-muted hover:bg-elevated hover:text-default"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => onDelete(r)}
+                          disabled={isDefaultRoute(r)}
+                          aria-label={`Delete route ${r.dst_cidr}`}
+                          title={isDefaultRoute(r) ? 'The default route is protected — edit it instead' : 'Delete this route (guarded)'}
+                          className="rounded-md px-1.5 py-1 text-xs text-danger hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-30"
+                        >
+                          ✕
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>

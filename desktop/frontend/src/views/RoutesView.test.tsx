@@ -1,9 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RoutesView, filterRoutes } from './RoutesView'
 import { api } from '../lib/api'
 import type { Profile, Route, State } from '../types'
+
+// jsdom reports zero dimensions, so @tanstack/react-virtual renders no rows.
+// Give the scroll container a real height so virtualized rows (and their
+// action buttons) mount, matching the browser.
+beforeAll(() => {
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 600 })
+  Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 800 })
+  Element.prototype.getBoundingClientRect = function () {
+    return { width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600, x: 0, y: 0, toJSON() {} } as DOMRect
+  }
+})
 
 vi.mock('../lib/api', () => ({
   api: {
@@ -13,6 +24,8 @@ vi.mock('../lib/api', () => ({
     explain: vi.fn(),
     saveProfile: vi.fn(),
     deleteProfile: vi.fn(),
+    routeOp: vi.fn(),
+    interfaces: vi.fn(),
     state: vi.fn(),
     confirm: vi.fn(),
     rollback: vi.fn(),
@@ -74,6 +87,7 @@ describe('RoutesView', () => {
     ])
     mockApi.profiles.mockResolvedValue([manualProfile])
     mockApi.state.mockResolvedValue(state)
+    mockApi.interfaces.mockResolvedValue([{ name: 'en0', kind: 'phys', up: true, is_vpn: false }])
   })
 
   it('shows the route count footer sorted by precedence', async () => {
@@ -150,5 +164,49 @@ describe('RoutesView', () => {
     renderView()
     expect(await screen.findByText('from any to any user 501')).toBeInTheDocument()
     expect(screen.getByText('route-to utun4')).toBeInTheDocument()
+  })
+
+  it('deletes an external route through the plan-level protocol', async () => {
+    mockApi.routeOp.mockResolvedValue({ result: { needs_confirm: false } })
+    // A deletable (non-default) external route.
+    mockApi.routes.mockResolvedValue([
+      ...routes,
+      { dst_cidr: '10.0.8.0/24', gateway: '192.168.1.1', iface: 'en0', metric: 0, family: 'v4', owner: 'system' },
+    ])
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete route 10.0.8.0/24' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete route' }))
+    await waitFor(() => expect(mockApi.routeOp).toHaveBeenCalled())
+    const [action, route] = mockApi.routeOp.mock.calls[0]
+    expect(action).toBe('delete')
+    expect(route.dst_cidr).toBe('10.0.8.0/24')
+    expect(route.owner).toBe('system')
+  })
+
+  it('does not offer delete/edit on riftroute-managed routes', async () => {
+    renderView()
+    await screen.findByText(/showing 2 of 2 routes/)
+    // The managed row (198.51.100.0/24) shows "via profile" instead of actions.
+    expect(screen.getByText('via profile')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete route 198.51.100.0/24' })).not.toBeInTheDocument()
+  })
+
+  it('disables deleting the default route (guarded)', async () => {
+    renderView()
+    const btn = (await screen.findByRole('button', { name: 'Delete route 0.0.0.0/0' })) as HTMLButtonElement
+    expect(btn.disabled).toBe(true)
+  })
+
+  it('edits an external route via the edit dialog', async () => {
+    mockApi.routeOp.mockResolvedValue({ result: { needs_confirm: false } })
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit route 0.0.0.0/0' }))
+    const gw = await screen.findByLabelText('Route gateway')
+    fireEvent.change(gw, { target: { value: '192.168.1.254' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Apply change' }))
+    await waitFor(() => expect(mockApi.routeOp).toHaveBeenCalled())
+    const [action, , updated] = mockApi.routeOp.mock.calls[0]
+    expect(action).toBe('replace')
+    expect(updated.gateway).toBe('192.168.1.254')
   })
 })

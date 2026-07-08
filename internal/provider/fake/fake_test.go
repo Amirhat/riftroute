@@ -61,14 +61,15 @@ func TestDelRouteOwnershipInvariant(t *testing.T) {
 	p := New()
 	ctx := context.Background()
 
-	// Deleting a route we never added must be refused (ownership invariant).
-	foreign := domain.ManagedRoute{Route: domain.Route{DstCIDR: "192.168.1.0/24", Iface: "en0", Family: domain.FamilyV4}}
+	// A POLICY delete (ProfileID set) of a route we never added must be
+	// refused — the reconcile-bug tripwire.
+	foreign := domain.ManagedRoute{Route: domain.Route{DstCIDR: "192.168.1.0/24", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
 	if err := p.DelRoute(ctx, foreign); err == nil {
-		t.Fatal("expected refusal deleting an unowned route")
+		t.Fatal("expected refusal deleting an unowned route via the policy path")
 	}
 
-	// A route we added can be deleted.
-	mr := domain.ManagedRoute{Route: domain.Route{DstCIDR: "1.1.1.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}}
+	// A route we added (managed, with profile) can be deleted.
+	mr := domain.ManagedRoute{Route: domain.Route{DstCIDR: "1.1.1.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
 	if err := p.AddRoute(ctx, mr); err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +78,45 @@ func TestDelRouteOwnershipInvariant(t *testing.T) {
 	}
 }
 
+// External route-ops (no owning profile) model the kernel: any listed route
+// can be deleted, and re-adding one does NOT make it RiftRoute-managed.
+func TestDelRouteExternalPathDeletesForeignRoutes(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+
+	ext := domain.ManagedRoute{Route: domain.Route{
+		DstCIDR: "192.168.1.0/24", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerSystem,
+	}}
+	if err := p.DelRoute(ctx, ext); err != nil {
+		t.Fatalf("external delete of a listed system route should succeed: %v", err)
+	}
+	rs, _ := p.ListRoutes(ctx, domain.FamilyV4)
+	for _, r := range rs {
+		if r.DstCIDR == "192.168.1.0/24" {
+			t.Fatalf("route still present after external delete: %+v", r)
+		}
+	}
+
+	// External add (the edit's new half) keeps its own identity.
+	if err := p.AddRoute(ctx, domain.ManagedRoute{Route: domain.Route{
+		DstCIDR: "192.168.2.0/24", Gateway: "", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerSystem,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	rs, _ = p.ListRoutes(ctx, domain.FamilyV4)
+	for _, r := range rs {
+		if r.DstCIDR == "192.168.2.0/24" && r.Owner == domain.OwnerRiftRoute {
+			t.Fatalf("external add must not become riftroute-managed: %+v", r)
+		}
+	}
+}
+
 func TestFlushOwnedLeavesForeignRoutes(t *testing.T) {
 	p := New()
 	ctx := context.Background()
 
 	before, _ := p.ListRoutes(ctx, domain.FamilyV4)
-	mr := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}}
+	mr := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
 	if err := p.AddRoute(ctx, mr); err != nil {
 		t.Fatal(err)
 	}
