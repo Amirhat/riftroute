@@ -100,25 +100,93 @@ func (m *macResolverManager) Clear(_ context.Context) error {
 	return nil
 }
 
-type resolvectlManager struct{}
+// resolvectlManager implements split-DNS on systemd-resolved. Its model is
+// per-LINK, not per-server: a link carries a set of DNS servers and a set of
+// routing domains, and queries for any routed domain go to that link's server
+// set (spec §6). RiftRoute uses ONE dedicated link ("lo", which always exists)
+// so its config is isolated and reverted atomically: the wildcard learner's
+// apexes route to the loopback proxy, and any user split-DNS resolvers join
+// the same link's server set. The command construction is pure/unit-tested;
+// real application is Linux + root only.
+type resolvectlManager struct {
+	link string // "" → the default riftroute link
+}
+
+const resolvectlLink = "lo"
+
+func (m *resolvectlManager) linkName() string {
+	if m.link != "" {
+		return m.link
+	}
+	return resolvectlLink
+}
 
 func (resolvectlManager) Backend() string { return "resolvectl" }
 
-func (resolvectlManager) Apply(ctx context.Context, routes []domain.SplitDNSRoute) error {
-	// Best-effort: point the primary link's per-domain resolver. Full per-domain
-	// link selection is environment-specific; documented in packaging.
+func (m *resolvectlManager) Apply(ctx context.Context, routes []domain.SplitDNSRoute) error {
 	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for _, r := range routes {
-		out, err := exec.CommandContext(cctx, "resolvectl", "dns", domain.DomainRuleHost(r.Domain), r.Resolver).CombinedOutput()
+	link := m.linkName()
+	// Always start from a clean slate so removed domains/resolvers don't linger.
+	_, _ = exec.CommandContext(cctx, "resolvectl", "revert", link).CombinedOutput()
+	if len(routes) == 0 {
+		return nil
+	}
+	for _, args := range resolvectlApplyArgs(link, routes) {
+		out, err := exec.CommandContext(cctx, "resolvectl", args...).CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("resolvectl: %w: %s", err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("resolvectl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil
 }
 
-func (resolvectlManager) Clear(context.Context) error { return nil }
+func (m *resolvectlManager) Clear(ctx context.Context) error {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_, _ = exec.CommandContext(cctx, "resolvectl", "revert", m.linkName()).CombinedOutput()
+	return nil
+}
+
+// resolvectlServer renders a systemd-resolved DNS server address, honoring a
+// non-standard port (the learner proxy binds a dynamic one). systemd-resolved
+// accepts the "ADDRESS:PORT" form for IPv4 and "[ADDRESS]:PORT" for IPv6.
+func resolvectlServer(resolver string, port int) string {
+	if port <= 0 {
+		return resolver
+	}
+	if strings.Contains(resolver, ":") { // IPv6 literal
+		return fmt.Sprintf("[%s]:%d", resolver, port)
+	}
+	return fmt.Sprintf("%s:%d", resolver, port)
+}
+
+// resolvectlApplyArgs builds the ordered resolvectl invocations (arg-arrays,
+// no shell) that install routes on link: the union of resolvers as the link's
+// servers, and every domain as a routing-only domain ("~domain", which covers
+// subdomains). Pure — unit-tested.
+func resolvectlApplyArgs(link string, routes []domain.SplitDNSRoute) [][]string {
+	var servers []string
+	seenSrv := map[string]bool{}
+	var domains []string
+	seenDom := map[string]bool{}
+	for _, r := range routes {
+		srv := resolvectlServer(r.Resolver, r.Port)
+		if !seenSrv[srv] {
+			seenSrv[srv] = true
+			servers = append(servers, srv)
+		}
+		d := domain.DomainRuleHost(r.Domain)
+		if !seenDom[d] {
+			seenDom[d] = true
+			domains = append(domains, "~"+d)
+		}
+	}
+	return [][]string{
+		append([]string{"dns", link}, servers...),
+		append([]string{"domain", link}, domains...),
+	}
+}
 
 // Composed merges the user's split-DNS selection with daemon-generated
 // routes (the wildcard learner's resolver-file entries) behind the Manager
@@ -128,8 +196,9 @@ type Composed struct {
 	inner Manager
 	extra func() []domain.SplitDNSRoute
 
-	mu   sync.Mutex
-	user []domain.SplitDNSRoute
+	mu      sync.Mutex // guards user AND serializes inner writes (non-atomic)
+	user    []domain.SplitDNSRoute
+	applyMu sync.Mutex // serializes inner.Apply (Clear+write is not atomic)
 }
 
 // NewComposed wraps inner; extra() supplies the daemon's additional routes at
@@ -148,15 +217,15 @@ func (c *Composed) Apply(ctx context.Context, routes []domain.SplitDNSRoute) err
 	return c.Resync(ctx)
 }
 
-// Resync rewrites user+extra (call when the extra set changes).
+// Resync rewrites user+extra (call when the extra set changes). User routes
+// take precedence: an extra (learner) route for a domain the user already
+// configured is dropped, so a wildcard never silently clobbers an explicit
+// split-DNS resolver for the same domain.
 func (c *Composed) Resync(ctx context.Context) error {
 	c.mu.Lock()
-	merged := append([]domain.SplitDNSRoute{}, c.user...)
+	merged := dedupePreferUser(c.user, extraOf(c.extra))
 	c.mu.Unlock()
-	if c.extra != nil {
-		merged = append(merged, c.extra()...)
-	}
-	return c.inner.Apply(ctx, merged)
+	return c.applyLocked(ctx, merged)
 }
 
 // ApplyUserOnly rewrites just the user selection — the shutdown path, so no
@@ -165,10 +234,47 @@ func (c *Composed) ApplyUserOnly(ctx context.Context) error {
 	c.mu.Lock()
 	user := append([]domain.SplitDNSRoute{}, c.user...)
 	c.mu.Unlock()
-	return c.inner.Apply(ctx, user)
+	return c.applyLocked(ctx, user)
 }
 
-func (c *Composed) Clear(ctx context.Context) error { return c.inner.Clear(ctx) }
+func (c *Composed) Clear(ctx context.Context) error {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	return c.inner.Clear(ctx)
+}
+
+// applyLocked serializes the non-atomic inner Clear+write so two concurrent
+// Resyncs can't interleave and leave a partial resolver set.
+func (c *Composed) applyLocked(ctx context.Context, routes []domain.SplitDNSRoute) error {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	return c.inner.Apply(ctx, routes)
+}
+
+func extraOf(fn func() []domain.SplitDNSRoute) []domain.SplitDNSRoute {
+	if fn == nil {
+		return nil
+	}
+	return fn()
+}
+
+// dedupePreferUser returns user routes plus any extra route whose domain
+// (apex-normalized) the user hasn't already claimed — user wins collisions.
+func dedupePreferUser(user, extra []domain.SplitDNSRoute) []domain.SplitDNSRoute {
+	claimed := map[string]bool{}
+	out := make([]domain.SplitDNSRoute, 0, len(user)+len(extra))
+	for _, r := range user {
+		claimed[domain.DomainRuleHost(r.Domain)] = true
+		out = append(out, r)
+	}
+	for _, r := range extra {
+		if claimed[domain.DomainRuleHost(r.Domain)] {
+			continue // user config wins this domain
+		}
+		out = append(out, r)
+	}
+	return out
+}
 
 // FakeManager records applied routes for tests / the fake provider.
 type FakeManager struct {

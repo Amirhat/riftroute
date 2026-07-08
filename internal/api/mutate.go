@@ -224,14 +224,31 @@ func (s *Server) handleRouteOp(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown action %q (want delete or replace)", req.Action))
 		return
 	}
-	if _, err := netip.ParsePrefix(req.Route.DstCIDR); err != nil {
+	pfx, err := netip.ParsePrefix(req.Route.DstCIDR)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid destination %q", req.Route.DstCIDR))
 		return
 	}
+	// Canonicalize the destination to its masked form: the kernel operates on
+	// the masked prefix, so the guardrail and the managed-route check must see
+	// the same thing the provider will (else "128.0.0.0/0" would sidestep both).
+	req.Route.DstCIDR = pfx.Masked().String()
+	// A route tagged with OUR proto/owner is managed by definition — never
+	// route-op it (the profile is the thing to edit).
+	if req.Route.Proto == domain.ProtoRiftRoute || req.Route.Owner == domain.OwnerRiftRoute {
+		writeErr(w, http.StatusConflict, errors.New(
+			"this route is managed by RiftRoute — edit the owning profile instead"))
+		return
+	}
+	// Refuse any route-op whose destination collides with a route we own. The
+	// match is by destination+table+family — the granularity the KERNEL delete
+	// uses (macOS matches by destination, Linux by destination+proto) — so a
+	// perturbed gateway/iface can't sneak a managed route's destination past a
+	// full-tuple check and get it deleted out from under its profile.
 	if s.store != nil {
 		if owned, err := s.store.ListOwned(); err == nil {
 			for _, mr := range owned {
-				if routing.RouteKey(mr.Route) == routing.RouteKey(req.Route) {
+				if sameDest(mr.Route, req.Route) {
 					writeErr(w, http.StatusConflict, fmt.Errorf(
 						"this route is managed by profile %q — edit that profile instead", mr.ProfileID))
 					return
@@ -250,13 +267,15 @@ func (s *Server) handleRouteOp(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("replace needs new_route"))
 			return
 		}
-		if _, err := netip.ParsePrefix(req.NewRoute.DstCIDR); err != nil {
+		npfx, err := netip.ParsePrefix(req.NewRoute.DstCIDR)
+		if err != nil {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid new destination %q", req.NewRoute.DstCIDR))
 			return
 		}
+		req.NewRoute.DstCIDR = npfx.Masked().String()
 		if req.NewRoute.Gateway != "" {
 			if _, err := netip.ParseAddr(req.NewRoute.Gateway); err != nil {
-				writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid gateway %q", req.NewRoute.Gateway))
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid gateway %q (use an IP address, or leave empty for on-link)", req.NewRoute.Gateway))
 				return
 			}
 		}
@@ -279,6 +298,19 @@ func (s *Server) handleRouteOp(w http.ResponseWriter, r *http.Request) {
 	}
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, ConfigResp{Result: &res})
+}
+
+// sameDest reports whether two routes address the same kernel FIB entry —
+// destination + table + family, the granularity a kernel delete matches on.
+// Gateway/iface are deliberately excluded: the delete would hit the route
+// regardless of the next-hop the caller supplied.
+func sameDest(a, b domain.Route) bool {
+	pa, ea := netip.ParsePrefix(a.DstCIDR)
+	pb, eb := netip.ParsePrefix(b.DstCIDR)
+	if ea != nil || eb != nil {
+		return a.DstCIDR == b.DstCIDR && a.Table == b.Table
+	}
+	return pa.Masked() == pb.Masked() && a.Table == b.Table
 }
 
 // handleProfileSave upserts a single profile assembled by the GUI builder and

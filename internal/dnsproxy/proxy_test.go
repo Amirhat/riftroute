@@ -169,8 +169,8 @@ func TestSetUpstreamsNormalizesAndGuardsSelfLoop(t *testing.T) {
 	}
 }
 
-func TestAnswerStoreMergesCapsAndRoundTrips(t *testing.T) {
-	s := NewAnswerStore(2)
+func TestAnswerStoreMergesAndRoundTrips(t *testing.T) {
+	s := NewAnswerStore(8)
 	a1 := netip.MustParseAddr("192.0.2.1")
 	a2 := netip.MustParseAddr("192.0.2.2")
 
@@ -180,7 +180,8 @@ func TestAnswerStoreMergesCapsAndRoundTrips(t *testing.T) {
 	if s.Add("*.x.com", "a.x.com", []netip.Addr{a1}) {
 		t.Fatal("same answer should not change")
 	}
-	// CDN rotation merges rather than replaces (pinned connections keep routes).
+	// A rotated answer merges rather than replaces (a pinned connection's route
+	// must not flap away between lookups).
 	if !s.Add("*.x.com", "a.x.com", []netip.Addr{a2}) {
 		t.Fatal("new answer should merge")
 	}
@@ -188,28 +189,70 @@ func TestAnswerStoreMergesCapsAndRoundTrips(t *testing.T) {
 		t.Fatalf("IPs = %v", got)
 	}
 
-	// Cap: a third distinct NAME is dropped, existing ones keep updating.
-	_ = s.Add("*.x.com", "b.x.com", []netip.Addr{a1})
-	if s.Add("*.x.com", "c.x.com", []netip.Addr{a2}) {
-		t.Fatal("cap exceeded: new name must be dropped")
-	}
-
 	data, err := s.Marshal()
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2 := NewAnswerStore(2)
+	s2 := NewAnswerStore(8)
 	if err := s2.Load(data); err != nil {
 		t.Fatal(err)
 	}
 	if got := s2.IPs("*.x.com"); len(got) != 2 {
 		t.Fatalf("round-trip lost data: %v", got)
 	}
-
 	if !s2.Prune([]string{}) {
 		t.Fatal("prune of inactive rule should change")
 	}
 	if got := s2.IPs("*.x.com"); len(got) != 0 {
 		t.Fatalf("prune left data: %v", got)
+	}
+}
+
+// The name cap evicts the OLDEST name (not the newest) so a burst of junk
+// lookups can never permanently freeze out a legitimate name.
+func TestAnswerStoreEvictsOldestName(t *testing.T) {
+	s := NewAnswerStore(2)
+	base := time.Unix(1_700_000_000, 0)
+	tick := 0
+	s.SetClock(func() time.Time { tick++; return base.Add(time.Duration(tick) * time.Second) })
+	ip := netip.MustParseAddr("192.0.2.9")
+
+	s.Add("*.x.com", "old.x.com", []netip.Addr{ip})
+	s.Add("*.x.com", "mid.x.com", []netip.Addr{ip})
+	s.Add("*.x.com", "new.x.com", []netip.Addr{ip}) // evicts old.x.com
+
+	if s.Names("*.x.com") != 2 {
+		t.Fatalf("names = %d, want 2", s.Names("*.x.com"))
+	}
+	// The real (newest) name is learned; the oldest was dropped.
+	if _, ok := s.m["*.x.com"]["new.x.com"]; !ok {
+		t.Fatal("newest name must be present")
+	}
+	if _, ok := s.m["*.x.com"]["old.x.com"]; ok {
+		t.Fatal("oldest name should have been evicted")
+	}
+}
+
+// A learned address that isn't re-seen within the TTL expires — so a CDN
+// wildcard doesn't accumulate dead IPs (and route table entries) forever.
+func TestAnswerStoreExpiresStaleAddresses(t *testing.T) {
+	s := NewAnswerStore(8)
+	now := time.Unix(1_700_000_000, 0)
+	s.SetClock(func() time.Time { return now })
+	a1 := netip.MustParseAddr("192.0.2.1")
+	a2 := netip.MustParseAddr("192.0.2.2")
+
+	s.Add("*.cdn.com", "app.cdn.com", []netip.Addr{a1})
+	now = now.Add(defaultAddrTTL / 2)
+	s.Add("*.cdn.com", "app.cdn.com", []netip.Addr{a2}) // a1 still live, a2 fresh
+	if got := s.IPs("*.cdn.com"); len(got) != 2 {
+		t.Fatalf("both addrs should be live: %v", got)
+	}
+	now = now.Add(defaultAddrTTL/2 + time.Second) // a1 now past TTL, a2 still live
+	if changed := s.GC(); !changed {
+		t.Fatal("GC should have expired a1")
+	}
+	if got := s.IPs("*.cdn.com"); len(got) != 1 || got[0] != "192.0.2.2" {
+		t.Fatalf("only the fresh addr should remain: %v", got)
 	}
 }

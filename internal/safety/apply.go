@@ -272,29 +272,41 @@ func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Pla
 
 // checkPlanGuardrails vets a hand-built plan: it must never remove a
 // main-table default route without adding one back in the same transaction —
-// that is the one edit whose brief absence can strand the host entirely.
+// that is the one edit whose brief absence can strand the host entirely. The
+// default is detected by PREFIX LENGTH (0 significant bits) after parsing, not
+// by string equality: the kernel matches a route by its masked prefix, so a
+// non-canonical "128.0.0.0/0" deletes the real default just the same and must
+// not slip past the guard.
 func checkPlanGuardrails(plan domain.Plan) []Violation {
-	removed := map[string]bool{}
+	removed := map[string]bool{} // family → a default delete is pending
 	for _, op := range plan.Ops {
 		if op.Route == nil || op.Route.Table != "" {
 			continue
 		}
-		dst := op.Route.DstCIDR
-		if dst != "0.0.0.0/0" && dst != "::/0" {
+		pfx, err := netip.ParsePrefix(op.Route.DstCIDR)
+		if err != nil || pfx.Bits() != 0 {
 			continue
+		}
+		fam := "v4"
+		if pfx.Addr().Is6() {
+			fam = "v6"
 		}
 		switch op.Kind {
 		case domain.OpDelRoute:
-			removed[dst] = true
+			removed[fam] = true
 		case domain.OpAddRoute:
-			delete(removed, dst)
+			delete(removed, fam)
 		}
 	}
 	var vs []Violation
-	for dst := range removed {
+	for fam := range removed {
+		def := "0.0.0.0/0"
+		if fam == "v6" {
+			def = "::/0"
+		}
 		vs = append(vs, Violation{
 			Rule:   "keep-default-route",
-			Detail: "refusing to remove the default route " + dst + " without a replacement — edit it instead",
+			Detail: "refusing to remove the " + fam + " default route (" + def + ") without a replacement — edit it instead",
 		})
 	}
 	return vs

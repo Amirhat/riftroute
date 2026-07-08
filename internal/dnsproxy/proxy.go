@@ -48,14 +48,18 @@ type Proxy struct {
 	tln     net.Listener
 	port    int
 	done    chan struct{}
+	wg      sync.WaitGroup // in-flight handlers, drained by Stop
+	sem     chan struct{}  // bounds concurrent handlers (local-DoS guard)
 }
+
+const maxInFlight = 128 // concurrent handler cap (loopback, so generous)
 
 // New builds a stopped proxy. learn may be nil (pure forwarding).
 func New(log *slog.Logger, learn Learner) *Proxy {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Proxy{log: log, learn: learn, apexes: map[string]string{}}
+	return &Proxy{log: log, learn: learn, apexes: map[string]string{}, sem: make(chan struct{}, maxInFlight)}
 }
 
 // SetUpstreams installs the REAL resolvers to forward to (":53" added when no
@@ -130,6 +134,24 @@ func (p *Proxy) Active() (bool, int) {
 	return p.pc != nil, p.port
 }
 
+// Ready reports whether the proxy is serving AND has at least one upstream to
+// forward to. Pointing a resolver file at a proxy with no upstream would
+// blackhole those domains (it answers every query with silence and macOS
+// won't fall back past a scoped resolver), so resolver files are installed
+// only when Ready.
+func (p *Proxy) Ready() (bool, int) {
+	p.startMu.Lock()
+	active, port := p.pc != nil, p.port
+	p.startMu.Unlock()
+	if !active {
+		return false, 0
+	}
+	p.mu.RLock()
+	n := len(p.upstreams)
+	p.mu.RUnlock()
+	return n > 0, port
+}
+
 // Start binds UDP and TCP on the same loopback port and serves until Stop.
 // Idempotent; returns the bound port.
 func (p *Proxy) Start() (int, error) {
@@ -166,17 +188,38 @@ func (p *Proxy) Start() (int, error) {
 	return p.port, nil
 }
 
-// Stop closes the listeners. Idempotent.
+// Stop closes the listeners and drains in-flight handlers. Idempotent.
 func (p *Proxy) Stop() {
 	p.startMu.Lock()
-	defer p.startMu.Unlock()
 	if p.pc == nil {
+		p.startMu.Unlock()
 		return
 	}
 	close(p.done)
 	_ = p.pc.Close()
 	_ = p.tln.Close()
 	p.pc, p.tln, p.port = nil, nil, 0
+	p.startMu.Unlock()
+	// Drain OUTSIDE the lock so a handler finishing up can't deadlock against it.
+	p.wg.Wait()
+}
+
+// spawn runs fn as a bounded handler goroutine: if the in-flight cap is hit the
+// packet/connection is dropped rather than growing goroutines unboundedly (a
+// local process flooding the loopback port can't exhaust memory/fds). Returns
+// false if the work was shed.
+func (p *Proxy) spawn(fn func()) bool {
+	select {
+	case p.sem <- struct{}{}:
+	default:
+		return false // at capacity — shed load
+	}
+	p.wg.Add(1)
+	go func() {
+		defer func() { <-p.sem; p.wg.Done() }()
+		fn()
+	}()
+	return true
 }
 
 func (p *Proxy) serveUDP(pc net.PacketConn, done chan struct{}) {
@@ -193,7 +236,7 @@ func (p *Proxy) serveUDP(pc net.PacketConn, done chan struct{}) {
 		}
 		q := make([]byte, n)
 		copy(q, buf[:n])
-		go p.handleUDP(pc, addr, q)
+		p.spawn(func() { p.handleUDP(pc, addr, q) })
 	}
 }
 
@@ -249,7 +292,9 @@ func (p *Proxy) serveTCP(ln net.Listener, done chan struct{}) {
 				continue
 			}
 		}
-		go p.handleTCP(c)
+		if !p.spawn(func() { p.handleTCP(c) }) {
+			_ = c.Close() // at capacity — shed
+		}
 	}
 }
 

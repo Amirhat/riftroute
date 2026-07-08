@@ -10,7 +10,7 @@ import { ConfirmModal } from '../components/ConfirmModal'
 import { Modal } from '../components/Modal'
 import { Combobox } from '../components/Combobox'
 import { friendly } from '../lib/format'
-import { validateGateway, validateRouteTarget } from '../lib/validate'
+import { validateRouteGateway, validateRouteTarget } from '../lib/validate'
 import type { ApplyResult, ConfigImportResult, Family, Owner, Profile, Route, RouteDecision, RouteExplain } from '../types'
 
 type FamilyFilter = '' | Family
@@ -178,8 +178,10 @@ function EditRouteDialog({
   const ifacesQ = useQuery({ queryKey: ['interfaces'], queryFn: () => api.interfaces() })
 
   const dstErr = validateRouteTarget(dst)
-  // Gateway may be blank (on-link) — otherwise it must be a plain IP.
-  const gwErr = gateway.trim() === '' ? null : validateGateway(gateway) ? 'must be an IP address or empty (on-link)' : null
+  // A concrete route needs a concrete gateway: blank (on-link) or a literal IP.
+  // "auto" is a PROFILE concept (auto-detect the physical gateway) that the
+  // route-op path can't honor, so — unlike validateGateway — reject it here.
+  const gwErr = gateway.trim() === '' ? null : validateRouteGateway(gateway)
   const ifaceErr = iface.trim() === '' ? 'required' : null
   const invalid = !!(dstErr || gwErr || ifaceErr)
 

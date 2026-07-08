@@ -105,6 +105,20 @@ func TestRouteOpRefusesRemovingDefaultRoute(t *testing.T) {
 	}
 }
 
+// A non-canonical /0 (host bits set) must NOT slip past the default-route
+// guardrail: the kernel masks it to the real default, so the guard must too.
+func TestRouteOpRefusesNonCanonicalDefault(t *testing.T) {
+	ts, _ := newMutableServer(t)
+	sneaky := domain.Route{DstCIDR: "128.0.0.0/0", Iface: "en0", Family: domain.FamilyV4}
+	_, out := postRouteOp(t, ts, routeOpReq{Action: "delete", Route: sneaky})
+	if out.Result == nil || len(out.Result.Violations) == 0 || out.Result.Violations[0].Rule != "keep-default-route" {
+		t.Fatalf("non-canonical default delete must be refused, got %+v", out.Result)
+	}
+	if _, still := routesOf(t, ts)["0.0.0.0/0"]; !still {
+		t.Fatal("default route removed via a non-canonical /0")
+	}
+}
+
 // Managed routes are refused — they belong to profiles.
 func TestRouteOpRefusesManagedRoutes(t *testing.T) {
 	ts, _ := newMutableServer(t)
@@ -119,5 +133,16 @@ func TestRouteOpRefusesManagedRoutes(t *testing.T) {
 	resp, _ := postRouteOp(t, ts, routeOpReq{Action: "delete", Route: managed})
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("managed route delete should 409, got %d", resp.StatusCode)
+	}
+
+	// The destination-based guard must hold even when the caller perturbs the
+	// gateway/iface (so a full-tuple check would have missed it).
+	perturbed := managed
+	perturbed.Gateway = "9.9.9.9"
+	perturbed.Iface = "en0"
+	perturbed.Owner = ""
+	resp, _ = postRouteOp(t, ts, routeOpReq{Action: "delete", Route: perturbed})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("managed dest with perturbed next-hop should still 409, got %d", resp.StatusCode)
 	}
 }

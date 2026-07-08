@@ -61,10 +61,20 @@ export function validateProfileName(v: string, taken: string[]): string | null {
   return null
 }
 
-/** validateGateway accepts "auto" or a bare IP address. */
+/** validateGateway accepts "auto" or a bare IP address (profile gateways). */
 export function validateGateway(v: string): string | null {
   const s = v.trim()
   if (!s || s === 'auto') return null
   if (!IPV4.test(s) && !IPV6.test(s)) return 'must be "auto" or a valid IP'
+  return null
+}
+
+/** validateRouteGateway is for a CONCRETE route's next-hop: a literal IP only
+ * (no "auto" — that's a profile-level auto-detect the route-op path can't do).
+ * Callers treat an empty string as on-link and skip this. */
+export function validateRouteGateway(v: string): string | null {
+  const s = v.trim()
+  if (!s) return null
+  if (!IPV4.test(s) && !IPV6.test(s)) return 'must be an IP address, or empty for on-link'
   return null
 }

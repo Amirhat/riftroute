@@ -59,7 +59,7 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 			} else {
 				add("wildcard-dns", domain.CheckWarn,
 					"wildcard rules configured but the DNS learner is not active — only the apex domains are routed",
-					"restart the daemon; on Linux, wildcard subdomain learning is not wired yet")
+					"restart the daemon; if this persists, per-domain DNS routing is unavailable on this system")
 			}
 		}
 	}

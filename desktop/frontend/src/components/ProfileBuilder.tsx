@@ -298,11 +298,7 @@ export function ProfileBuilder({
           title="Domain rules"
           addLabel="Add domain"
           placeholder="*.corp.example.com"
-          hint={
-            platform === 'linux'
-              ? 'Wildcards (*.example.com) route the apex domain on Linux; subdomain learning is coming.'
-              : 'Wildcards (*.example.com) cover subdomains too: the daemon learns their addresses as apps look them up and routes them automatically.'
-          }
+          hint="Wildcards (*.example.com) cover subdomains too: the daemon learns their addresses as apps look them up and routes them automatically."
           rows={domains}
           setRows={setDomains}
           errorFor={(r) => (submitted || r.value.trim() ? domainErr(r) : null)}

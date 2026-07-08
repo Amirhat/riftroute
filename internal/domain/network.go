@@ -25,6 +25,11 @@ const (
 	OwnerUnknown   Owner = "unknown"
 )
 
+// ProtoRiftRoute is the Linux route protocol tag on routes RiftRoute manages
+// (the name form; the numeric form lives in the linux provider). A route
+// carrying it is managed by definition.
+const ProtoRiftRoute = "riftroute"
+
 // Route is a kernel route as read from the routing table.
 type Route struct {
 	DstCIDR string `json:"dst_cidr"`

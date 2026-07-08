@@ -172,10 +172,15 @@ func run() error {
 			_ = st.SetSetting("wildcard_learned", string(data))
 		}
 	}
+	// Persistence is coalesced (a DNS flood could otherwise thrash the DB with
+	// full-blob writes): learned answers set a dirty flag; a maintenance loop
+	// flushes it and expires stale entries. learnKick debounces the reconcile.
+	var learnedDirty atomic.Bool
+	var lastLearnerReady atomic.Bool
 	learnKick := make(chan struct{}, 1)
 	proxy := dnsproxy.New(logger, func(rule, fqdn string, addrs []netip.Addr) {
 		if wildStore.Add(rule, fqdn, addrs) {
-			persistLearned()
+			learnedDirty.Store(true)
 			logger.Info("wildcard subdomain learned", "rule", rule, "name", fqdn, "addrs", len(addrs))
 			select {
 			case learnKick <- struct{}{}:
@@ -187,10 +192,12 @@ func run() error {
 	svc.SetWildcardStatus(proxy.Active)
 
 	// ONE owner of the resolver-file dir: user split-DNS + the learner's
-	// wildcard entries write through the same composed manager.
+	// wildcard entries write through the same composed manager. Learner entries
+	// are emitted only when the proxy is READY (serving AND has an upstream to
+	// forward to) — otherwise a resolver file would blackhole those domains.
 	composedDNS := splitdns.NewComposed(sdns, func() []domain.SplitDNSRoute {
-		active, port := proxy.Active()
-		if !active {
+		ready, port := proxy.Ready()
+		if !ready {
 			return nil
 		}
 		var out []domain.SplitDNSRoute
@@ -201,7 +208,11 @@ func run() error {
 	})
 	srv.SetSplitDNS(composedDNS)
 
-	wildcardCapable := sdns.Backend() == "resolver-files" || sdns.Backend() == "fake"
+	// Wildcard subdomain learning needs a per-domain resolver mechanism the
+	// proxy can be pointed at: macOS resolver files, Linux systemd-resolved
+	// (resolvectl), or the fake manager in dev. Absent that, wildcards route
+	// their apex only.
+	wildcardCapable := map[string]bool{"resolver-files": true, "resolvectl": true, "fake": true}[sdns.Backend()]
 	syncWildcards := func(ctx context.Context) {
 		rules := svc.WildcardRules()
 		if wildStore.Prune(rules) {
@@ -225,8 +236,39 @@ func run() error {
 			proxy.SetUpstreams(dnsCfg.Servers)
 		}
 		proxy.SetWildcards(rules)
+		ready, _ := proxy.Ready()
+		lastLearnerReady.Store(ready)
+		// Ready gates resolver-file install (see composedDNS extra()): with no
+		// upstream to forward to, we route apex-only rather than blackhole.
+		if !ready {
+			logger.Warn("wildcard learner has no upstream resolver — routing apex domains only until DNS is configured",
+				"rules", len(rules))
+		}
 		if err := composedDNS.Resync(ctx); err != nil {
 			logger.Warn("wildcard resolver files not applied (apex-only routing)", "err", err)
+		}
+	}
+
+	// refreshLearnerDNS keeps the proxy's upstreams current as the system's
+	// resolvers change (VPN up/down swaps them), and installs/removes the
+	// scoped resolver files when readiness flips — so a learner that started
+	// before DNS was configured begins forwarding (and stops routing apex-only)
+	// without waiting for a profile edit. Cheap: SetUpstreams is a slice swap;
+	// a Resync only happens on a readiness transition (resolver-file content
+	// depends on the apex+port, not the upstream set).
+	refreshLearnerDNS := func(ctx context.Context) {
+		if active, _ := proxy.Active(); !active {
+			return
+		}
+		if dnsCfg, err := prov.DNSConfig(ctx); err == nil {
+			proxy.SetUpstreams(dnsCfg.Servers)
+		}
+		ready, _ := proxy.Ready()
+		if lastLearnerReady.Swap(ready) != ready {
+			logger.Info("wildcard learner readiness changed", "ready", ready)
+			if err := composedDNS.Resync(ctx); err != nil {
+				logger.Warn("wildcard resolver resync failed", "err", err)
+			}
 		}
 	}
 
@@ -341,6 +383,31 @@ func run() error {
 			}
 		}
 	})
+	// Wildcard maintenance: expire stale learned addresses (bounding the route
+	// table) and flush the coalesced dirty flag to the DB — so a burst of
+	// lookups produces at most one persist per tick, not one per answer.
+	go supervise(ctx, logger, "wildcard-maint", func(c context.Context) {
+		tick := time.NewTicker(60 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-tick.C:
+				refreshLearnerDNS(c) // track resolver changes (VPN up/down)
+				expired := wildStore.GC()
+				if expired || learnedDirty.Swap(false) {
+					persistLearned()
+				}
+				if expired {
+					select {
+					case learnKick <- struct{}{}: // routes changed → reconcile
+					default:
+					}
+				}
+			}
+		}
+	})
 	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
 
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version, "uid", allowUID)
@@ -355,6 +422,10 @@ func run() error {
 	// that would break DNS for those domains until the daemon returns.
 	_ = composedDNS.ApplyUserOnly(context.Background())
 	proxy.Stop()
+	// Flush any learned answers not yet persisted by the maintenance tick.
+	if learnedDirty.Load() {
+		persistLearned()
+	}
 
 	// Clean up the socket so the next launch starts fresh (spec/AGENTS §4).
 	_ = os.Remove(socketPath)
