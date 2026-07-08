@@ -49,6 +49,10 @@ type Server struct {
 	// the daemon can sync profile-derived side state (the Linux per-app cgroup
 	// marker). nil = no-op.
 	onProfilesChanged func(context.Context)
+	// onPanic fires after a panic flush so the daemon can tear down side state
+	// the protocol doesn't own — the wildcard DNS learner and its resolver
+	// files — restoring the DNS baseline alongside routes/PF. nil = no-op.
+	onPanic func(context.Context)
 }
 
 // SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
@@ -66,6 +70,9 @@ func (s *Server) SetAutoApplyControl(fn func(on bool)) { s.setAutoApply = fn }
 
 // SetOnProfilesChanged installs the post-profile-mutation hook (daemon wiring).
 func (s *Server) SetOnProfilesChanged(fn func(context.Context)) { s.onProfilesChanged = fn }
+
+// SetOnPanic installs the post-panic teardown hook (daemon wiring).
+func (s *Server) SetOnPanic(fn func(context.Context)) { s.onPanic = fn }
 
 // notifyProfilesChanged fires the profile-mutation hook, if wired.
 func (s *Server) notifyProfilesChanged(ctx context.Context) {

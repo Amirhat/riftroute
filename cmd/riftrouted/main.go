@@ -309,6 +309,18 @@ func run() error {
 		syncPerApp(ctx)
 		syncWildcards(ctx)
 	})
+	// Panic restores the DNS baseline alongside routes/PF: stop the learner and
+	// rewrite resolver files to the user selection only (dropping the learner's
+	// proxy-pointing entries), so nothing dangles at a stopped proxy. The learner
+	// re-establishes on the next profile change / restart if still wanted.
+	srv.SetOnPanic(func(ctx context.Context) {
+		proxy.SetWildcards(nil)
+		proxy.Stop()
+		lastLearnerReady.Store(false)
+		if err := composedDNS.ApplyUserOnly(ctx); err != nil {
+			logger.Warn("panic: could not drop learner resolver files", "err", err)
+		}
+	})
 
 	// Re-apply the persisted split-DNS selection so per-domain resolvers survive
 	// a daemon restart (best-effort; an empty/unset selection is a no-op), then

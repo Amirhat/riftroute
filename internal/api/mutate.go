@@ -137,6 +137,12 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	// Restore the DNS baseline too: stop the wildcard learner and drop its
+	// resolver files (the protocol only owns routes/PF). A dangling resolver
+	// file pointing at a stopped proxy would otherwise break DNS for the domain.
+	if s.onPanic != nil {
+		s.onPanic(r.Context())
+	}
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "panicked"})
 }
