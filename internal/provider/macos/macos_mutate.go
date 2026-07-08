@@ -54,16 +54,19 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 // restore pf.conf — see FlushOwned in pf.go.
 
 // macRouteArgs builds a validated arg-array for `route -n <action> ...`.
+// Routes RiftRoute manages always carry an IP gateway. EXTERNAL routes (user
+// edits from the routing table) may not: the RIB reports on-link routes with
+// "link#N" or MAC gateways, which route(8) doesn't accept as arguments —
+// those become `-interface <iface>` adds, and deletes (which never need a
+// gateway) drop it entirely.
 func macRouteArgs(action string, mr domain.ManagedRoute) ([]string, error) {
 	pfx, err := netip.ParsePrefix(mr.Route.DstCIDR)
 	if err != nil {
 		return nil, fmt.Errorf("macos: invalid destination CIDR %q", mr.Route.DstCIDR)
 	}
-	gw, err := netip.ParseAddr(mr.Route.Gateway)
-	if err != nil {
-		return nil, fmt.Errorf("macos: invalid gateway %q", mr.Route.Gateway)
-	}
-	if pfx.Addr().Is4() != gw.Is4() {
+	gw, gwErr := netip.ParseAddr(mr.Route.Gateway)
+	hasGW := gwErr == nil
+	if hasGW && pfx.Addr().Is4() != gw.Is4() {
 		return nil, fmt.Errorf("macos: gateway/destination family mismatch")
 	}
 
@@ -72,12 +75,36 @@ func macRouteArgs(action string, mr domain.ManagedRoute) ([]string, error) {
 		args = append(args, "-inet6")
 	}
 	if pfx.Bits() == pfx.Addr().BitLen() {
-		// host route: route add -host <ip> <gw>
-		args = append(args, "-host", pfx.Addr().String(), gw.String())
+		args = append(args, "-host", pfx.Addr().String())
 	} else {
-		args = append(args, "-net", pfx.Masked().String(), gw.String())
+		args = append(args, "-net", pfx.Masked().String())
+	}
+	switch {
+	case hasGW:
+		args = append(args, gw.String())
+	case action == "delete":
+		// route delete matches by destination alone.
+	default:
+		// on-link add: steer via the interface instead of a next-hop.
+		if !validIfaceName(mr.Route.Iface) {
+			return nil, fmt.Errorf("macos: route without a gateway needs a valid interface, got %q", mr.Route.Iface)
+		}
+		args = append(args, "-interface", mr.Route.Iface)
 	}
 	return args, nil
+}
+
+// validIfaceName vets an interface name for use in an exec arg-array.
+func validIfaceName(s string) bool {
+	if s == "" || len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func runCombined(ctx context.Context, name string, args ...string) (string, error) {

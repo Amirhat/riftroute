@@ -71,6 +71,8 @@ export function RestoreSnapshot(arg1:string):Promise<apiclient.ConfigResult>;
 
 export function Rollback(arg1:string):Promise<domain.TxResult>;
 
+export function RouteOp(arg1:string,arg2:domain.Route,arg3:domain.Route):Promise<apiclient.ConfigResult>;
+
 export function SaveList(arg1:domain.List):Promise<domain.List>;
 
 export function SaveProfile(arg1:domain.Profile,arg2:boolean):Promise<apiclient.ConfigResult>;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +25,12 @@ var (
 
 // snapshotRetention caps stored pre-apply snapshots (newest kept).
 const snapshotRetention = 50
+
+// routeOpTxPrefix marks journal entries for plan-level route ops (external
+// routes, no ownership records). Crash recovery must NOT undo ownership for
+// these — there is none — and the prefix is the only signal that survives in
+// the WAL across a restart.
+const routeOpTxPrefix = "routeop-"
 
 // Store is the slice of persistence the Apply Protocol needs (satisfied by
 // *store.Store). Keeping it an interface keeps safety decoupled and testable.
@@ -95,10 +102,14 @@ type pendingTx struct {
 	id          string
 	plan        domain.Plan
 	interactive bool
-	decided     chan decision
-	cancel      context.CancelFunc
-	done        chan struct{}
-	result      domain.TxResult
+	// ownership: whether this tx's ops are recorded in the ownership map.
+	// Policy applies are; plan-level route ops on EXTERNAL routes are not —
+	// claiming a user's system route would make panic/crash-repair delete it.
+	ownership bool
+	decided   chan decision
+	cancel    context.CancelFunc
+	done      chan struct{}
+	result    domain.TxResult
 }
 
 func (pt *pendingTx) decide(d decision) {
@@ -174,15 +185,25 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 
-	// Serialize applies (spec §11). An interactive change awaiting confirmation
-	// blocks new applies; a non-interactive change is just guarding in the
-	// background, so a new apply supersedes it (commit it, stop its guard).
+	if err := p.supersedePending(); err != nil {
+		return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: err.Error()}, err
+	}
+	p.takeSnapshot(ctx, opts)
+
+	return p.executePlan(ctx, "apply", plan, diff, opts, true)
+}
+
+// supersedePending serializes applies (spec §11): an interactive change
+// awaiting confirmation blocks new applies; a non-interactive change is just
+// guarding in the background, so a new apply supersedes it (commit it, stop
+// its guard).
+func (p *Protocol) supersedePending() error {
 	p.txmu.Lock()
 	var supersede []*pendingTx
 	for _, pt := range p.pending {
 		if pt.interactive {
 			p.txmu.Unlock()
-			return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: ErrApplyInProgress.Error()}, ErrApplyInProgress
+			return ErrApplyInProgress
 		}
 		supersede = append(supersede, pt)
 	}
@@ -191,34 +212,106 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 		pt.decide(decCommit)
 		<-pt.done
 	}
+	return nil
+}
 
-	// Snapshot (restore point of last resort behind the inverse). The profile
-	// set rides along: that is what a user-facing "restore" brings back — the
-	// reconciler then converges routes to it. Retention-pruned so years of
-	// applies can't grow the DB unboundedly.
-	if p.store != nil {
-		if snap, err := Capture(ctx, p.prov, p.nextSnapID(), "pre-apply", func() domain.Snapshot {
-			return domain.Snapshot{CreatedAt: p.clock.Now()}
-		}); err == nil {
-			snap.Profiles = opts.SnapshotProfiles
-			if snap.Profiles == nil {
-				if profs, perr := p.store.ListProfiles(); perr == nil {
-					if profs == nil {
-						profs = []domain.Profile{} // empty ≠ uncaptured
-					}
-					snap.Profiles = profs
-				}
+// takeSnapshot records the restore point of last resort behind the inverse.
+// The profile set rides along: that is what a user-facing "restore" brings
+// back — the reconciler then converges routes to it. Retention-pruned so
+// years of applies can't grow the DB unboundedly.
+func (p *Protocol) takeSnapshot(ctx context.Context, opts Options) {
+	if p.store == nil {
+		return
+	}
+	snap, err := Capture(ctx, p.prov, p.nextSnapID(), "pre-apply", func() domain.Snapshot {
+		return domain.Snapshot{CreatedAt: p.clock.Now()}
+	})
+	if err != nil {
+		return
+	}
+	snap.Profiles = opts.SnapshotProfiles
+	if snap.Profiles == nil {
+		if profs, perr := p.store.ListProfiles(); perr == nil {
+			if profs == nil {
+				profs = []domain.Profile{} // empty ≠ uncaptured
 			}
-			_ = p.store.SaveSnapshot(snap)
-			_ = p.store.PruneSnapshots(snapshotRetention)
+			snap.Profiles = profs
 		}
 	}
+	_ = p.store.SaveSnapshot(snap)
+	_ = p.store.PruneSnapshots(snapshotRetention)
+}
 
+// ApplyPlan runs a hand-built plan (single-route edit/delete of routes
+// RiftRoute does NOT manage) through the same machinery as a policy apply:
+// snapshot → WAL → atomic execute → watchdog + commit-confirm. Ownership is
+// deliberately NOT recorded — these are user edits of system state, so panic
+// and crash-repair must leave the results alone; the journaled inverse is
+// what protects the change until it's confirmed.
+func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Plan, opts Options) (Result, error) {
+	p.applyMu.Lock()
+	defer p.applyMu.Unlock()
+
+	diff := diffFromPlan(plan)
+	if opts.DryRun {
+		return Result{Plan: plan, Diff: diff, Status: domain.TxPending}, nil
+	}
+	if vs := checkPlanGuardrails(plan); len(vs) > 0 {
+		p.audit(opts.Actor, action, "refused", violationSummary(vs), &plan, false)
+		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
+	}
+	if len(plan.Ops) == 0 {
+		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
+	}
+	if err := p.supersedePending(); err != nil {
+		return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: err.Error()}, err
+	}
+	p.takeSnapshot(ctx, opts)
+	return p.executePlan(ctx, action, plan, diff, opts, false)
+}
+
+// checkPlanGuardrails vets a hand-built plan: it must never remove a
+// main-table default route without adding one back in the same transaction —
+// that is the one edit whose brief absence can strand the host entirely.
+func checkPlanGuardrails(plan domain.Plan) []Violation {
+	removed := map[string]bool{}
+	for _, op := range plan.Ops {
+		if op.Route == nil || op.Route.Table != "" {
+			continue
+		}
+		dst := op.Route.DstCIDR
+		if dst != "0.0.0.0/0" && dst != "::/0" {
+			continue
+		}
+		switch op.Kind {
+		case domain.OpDelRoute:
+			removed[dst] = true
+		case domain.OpAddRoute:
+			delete(removed, dst)
+		}
+	}
+	var vs []Violation
+	for dst := range removed {
+		vs = append(vs, Violation{
+			Rule:   "keep-default-route",
+			Detail: "refusing to remove the default route " + dst + " without a replacement — edit it instead",
+		})
+	}
+	return vs
+}
+
+// executePlan journals, executes, and arms the watchdog/commit-confirm for a
+// computed plan — the shared tail of Apply and ApplyPlan. ownership controls
+// whether the delta is recorded in (and rolled back out of) the ownership map.
+func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.Plan, diff domain.Diff, opts Options, ownership bool) (Result, error) {
 	// Write-ahead journal: record how to undo this tx BEFORE touching the kernel.
 	// If we're SIGKILLed/power-lost between here and COMMIT, startup RecoverPending
 	// replays the inverse — the only crash-safe recovery on macOS, where kernel
 	// routes carry no owner tag to reattribute them.
 	txID := p.nextTxID()
+	if !ownership {
+		txID = routeOpTxPrefix + strings.TrimPrefix(txID, "tx-")
+	}
 	if p.store != nil {
 		if err := p.store.PutPendingTx(txID, plan); err != nil {
 			p.log.Warn("could not journal pending tx; proceeding without crash-recovery for it", "tx", txID, "err", err)
@@ -229,17 +322,19 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 	exec := NewExecutor(p.prov)
 	if err := exec.Apply(ctx, plan); err != nil {
 		p.clearPending(txID)
-		p.audit(opts.Actor, "apply", string(domain.TxFailed), err.Error(), &plan, true)
+		p.audit(opts.Actor, action, string(domain.TxFailed), err.Error(), &plan, true)
 		return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: err.Error()}, nil
 	}
 
 	// Record ownership for the applied delta and audit the applied change.
-	p.applyOwnership(plan, false)
-	p.audit(opts.Actor, "apply", "applied", "", &plan, false)
+	if ownership {
+		p.applyOwnership(plan, false)
+	}
+	p.audit(opts.Actor, action, "applied", "", &plan, false)
 
 	// ARM watchdog + commit-confirm and resolve in the background.
 	ctxTx, cancel := context.WithCancel(context.Background())
-	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
+	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, ownership: ownership, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
 	p.register(pt)
 
 	prober := p.newProber()
@@ -286,7 +381,9 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		if r := recover(); r != nil {
 			p.log.Error("recovered panic resolving tx; forcing rollback", "tx", pt.id, "panic", r)
 			_ = NewExecutor(p.prov).RunOps(context.Background(), pt.plan.Inverse)
-			p.applyOwnership(pt.plan, true)
+			if pt.ownership {
+				p.applyOwnership(pt.plan, true)
+			}
 			pt.result = domain.TxRolledBack
 			p.finishTx(pt)
 		}
@@ -309,7 +406,9 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 			p.finishTx(pt)
 			return
 		}
-		p.applyOwnership(pt.plan, true)
+		if pt.ownership {
+			p.applyOwnership(pt.plan, true)
+		}
 		p.clearPending(pt.id)
 		pt.result = domain.TxRolledBack
 		p.audit(actor, "rollback", "rolled_back", "watchdog or missed confirm", nil, true)
@@ -464,7 +563,9 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	n := 0
 	for id, plan := range pend {
 		_ = exec.RunOps(ctx, plan.Inverse) // best-effort revert to baseline
-		p.applyOwnership(plan, true)       // undo any ownership records it wrote
+		if !strings.HasPrefix(id, routeOpTxPrefix) {
+			p.applyOwnership(plan, true) // undo any ownership records it wrote
+		}
 		_ = p.store.ClearPendingTx(id)
 		p.audit(domain.ActorDaemon, "recover", "reverted_pending",
 			"crash recovery: reverted in-flight transaction "+id, nil, true)

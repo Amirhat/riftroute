@@ -112,6 +112,19 @@ func (a *App) GetRoutes(family string, owner string) ([]domain.Route, error) {
 	return rs, nil
 }
 
+// RouteOp deletes or edits a single external route (one no profile manages)
+// through the plan-level Apply Protocol; interactive, so the returned pending
+// tx feeds commit-confirm. newRoute is ignored for action "delete".
+func (a *App) RouteOp(action string, route domain.Route, newRoute domain.Route) (apiclient.ConfigResult, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	var np *domain.Route
+	if action == "replace" {
+		np = &newRoute
+	}
+	return a.client.RouteOp(ctx, action, route, np)
+}
+
 // GetRules returns policy rules — Linux `ip rule` entries or macOS PF
 // route-to anchor rules (both families).
 func (a *App) GetRules() ([]domain.PolicyRule, error) {

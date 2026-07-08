@@ -193,17 +193,28 @@ func (p *Provider) AddRoute(_ context.Context, r domain.ManagedRoute) error {
 		return fmt.Errorf("fake: injected AddRoute failure for %s", r.Route.DstCIDR)
 	}
 	rt := r.Route
-	rt.Owner = domain.OwnerRiftRoute
-	rt.Proto = "riftroute"
-	rt.Profile = r.ProfileID
+	if r.ProfileID != "" {
+		// Policy-managed add: tagged ours, like `ip route add proto riftroute`.
+		rt.Owner = domain.OwnerRiftRoute
+		rt.Proto = "riftroute"
+		rt.Profile = r.ProfileID
+	} else if rt.Owner == "" {
+		// External add (route-op edit): the kernel keeps the route's own
+		// identity — it does NOT become RiftRoute-managed.
+		rt.Owner = domain.OwnerSystem
+	}
 	key := routeKey(rt)
 	if p.indexOf(rt) >= 0 {
 		// idempotent: already present
-		p.managedKey[key] = true
+		if r.ProfileID != "" {
+			p.managedKey[key] = true
+		}
 		return nil
 	}
 	p.appendRoute(rt)
-	p.managedKey[key] = true
+	if r.ProfileID != "" {
+		p.managedKey[key] = true
+	}
 	return nil
 }
 
@@ -213,11 +224,34 @@ func (p *Provider) DelRoute(_ context.Context, r domain.ManagedRoute) error {
 	if p.failDel[r.Route.DstCIDR] {
 		return fmt.Errorf("fake: injected DelRoute failure for %s", r.Route.DstCIDR)
 	}
+	// External delete (route-op, no owning profile): the kernel deletes any
+	// route that exists — match by destination identity as listed.
+	if r.ProfileID == "" {
+		rt := r.Route
+		if idx := p.indexOf(rt); idx >= 0 {
+			p.removeRoute(rt.Family, idx)
+			delete(p.managedKey, routeKey(rt))
+			return nil
+		}
+		// Try the managed rendering of the same route (owner/proto stamped).
+		rt.Owner = domain.OwnerRiftRoute
+		rt.Proto = "riftroute"
+		if idx := p.indexOf(rt); idx >= 0 {
+			p.removeRoute(rt.Family, idx)
+			delete(p.managedKey, routeKey(rt))
+			return nil
+		}
+		return nil // idempotent: already gone
+	}
 	rt := r.Route
 	rt.Owner = domain.OwnerRiftRoute
+	rt.Proto = "riftroute"
+	rt.Profile = r.ProfileID
 	key := routeKey(rt)
 	if !p.managedKey[key] {
-		// ownership invariant: never delete a route we don't own.
+		// ownership invariant: a POLICY delete must never touch a route we
+		// don't own (reconcile-bug tripwire; user route-ops carry no profile
+		// and take the external path above).
 		return fmt.Errorf("fake: refusing to delete unowned route %s", rt.DstCIDR)
 	}
 	idx := p.indexOf(rt)

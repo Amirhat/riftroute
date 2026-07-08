@@ -9,6 +9,17 @@ export default defineConfig({
   plugins: [react()],
   // Relative base so the embedded assets load under the Wails asset server.
   base: './',
+  server: {
+    // Browser dev mode: /rr-api is proxied to the devbridge (UDS→TCP), so the
+    // dev shim's fetches stay same-origin. Harmless when the bridge is absent.
+    proxy: {
+      '/rr-api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/rr-api/, ''),
+      },
+    },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

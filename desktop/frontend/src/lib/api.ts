@@ -19,6 +19,7 @@ import {
   Apply,
   Confirm,
   Rollback,
+  RouteOp,
   PanicFlush,
   SetProfileEnabled,
   Reachable,
@@ -73,6 +74,14 @@ export const api = {
   state: () => GetState() as unknown as Promise<State>,
   routes: (family = '', owner = '') => GetRoutes(family, owner) as unknown as Promise<Route[]>,
   rules: () => GetRules() as unknown as Promise<PolicyRule[]>,
+  // Single-route delete/edit of EXTERNAL routes (plan-level Apply Protocol,
+  // commit-confirm guarded). newRoute is ignored for 'delete'.
+  routeOp: (action: 'delete' | 'replace', route: Route, newRoute?: Route) =>
+    RouteOp(
+      action,
+      route as unknown as Parameters<typeof RouteOp>[1],
+      (newRoute ?? route) as unknown as Parameters<typeof RouteOp>[2],
+    ) as unknown as Promise<ConfigImportResult>,
   interfaces: () => GetInterfaces() as unknown as Promise<Iface[]>,
   explain: (target: string) => Explain(target) as unknown as Promise<RouteExplain>,
   profiles: () => GetProfiles() as unknown as Promise<Profile[]>,

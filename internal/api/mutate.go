@@ -15,6 +15,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/killswitch"
+	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
@@ -195,6 +196,89 @@ func (s *Server) priorProfiles() []domain.Profile {
 		profs = []domain.Profile{}
 	}
 	return profs
+}
+
+// routeOpReq is a user-initiated single-route mutation from the routing table:
+// delete or replace one EXTERNAL route (one RiftRoute doesn't manage).
+type routeOpReq struct {
+	Action   string        `json:"action"` // delete | replace
+	Route    domain.Route  `json:"route"`
+	NewRoute *domain.Route `json:"new_route,omitempty"`
+}
+
+// handleRouteOp deletes or edits a single route through the plan-level Apply
+// Protocol (WAL + watchdog + commit-confirm; NO ownership records — panic and
+// crash-repair must leave user edits of system state alone). Managed routes
+// are refused here: they belong to profiles and would be reconciled right
+// back — the profile is the thing to edit.
+func (s *Server) handleRouteOp(w http.ResponseWriter, r *http.Request) {
+	if !s.mutationEnabled(w) {
+		return
+	}
+	var req routeOpReq
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.Action != "delete" && req.Action != "replace" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown action %q (want delete or replace)", req.Action))
+		return
+	}
+	if _, err := netip.ParsePrefix(req.Route.DstCIDR); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid destination %q", req.Route.DstCIDR))
+		return
+	}
+	if s.store != nil {
+		if owned, err := s.store.ListOwned(); err == nil {
+			for _, mr := range owned {
+				if routing.RouteKey(mr.Route) == routing.RouteKey(req.Route) {
+					writeErr(w, http.StatusConflict, fmt.Errorf(
+						"this route is managed by profile %q — edit that profile instead", mr.ProfileID))
+					return
+				}
+			}
+		}
+	}
+
+	var plan domain.Plan
+	platform := s.svc.Platform()
+	switch req.Action {
+	case "delete":
+		plan = routing.DeleteRoutePlan(req.Route, platform)
+	case "replace":
+		if req.NewRoute == nil {
+			writeErr(w, http.StatusBadRequest, errors.New("replace needs new_route"))
+			return
+		}
+		if _, err := netip.ParsePrefix(req.NewRoute.DstCIDR); err != nil {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid new destination %q", req.NewRoute.DstCIDR))
+			return
+		}
+		if req.NewRoute.Gateway != "" {
+			if _, err := netip.ParseAddr(req.NewRoute.Gateway); err != nil {
+				writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid gateway %q", req.NewRoute.Gateway))
+				return
+			}
+		}
+		if strings.TrimSpace(req.NewRoute.Iface) == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("new route needs an interface"))
+			return
+		}
+		// The edited route keeps the kernel's proto (Linux) and stays main-table.
+		req.NewRoute.Proto = req.Route.Proto
+		req.NewRoute.Table = req.Route.Table
+		req.NewRoute.Family = req.Route.Family
+		plan = routing.ReplaceRoutePlan(req.Route, *req.NewRoute, platform)
+	}
+
+	gw4, _, _ := s.svc.Provider().DefaultGateway(r.Context(), domain.FamilyV4)
+	res, err := s.proto.ApplyPlan(r.Context(), "route-op", plan, s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, gw4))
+	if err != nil && !errors.Is(err, safety.ErrGuardrail) {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, ConfigResp{Result: &res})
 }
 
 // handleProfileSave upserts a single profile assembled by the GUI builder and
