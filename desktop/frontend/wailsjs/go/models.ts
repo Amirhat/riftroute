@@ -890,6 +890,7 @@ export namespace domain {
 	export class SplitDNSRoute {
 	    domain: string;
 	    resolver: string;
+	    port?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SplitDNSRoute(source);
@@ -899,6 +900,7 @@ export namespace domain {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.domain = source["domain"];
 	        this.resolver = source["resolver"];
+	        this.port = source["port"];
 	    }
 	}
 	export class VPNStatus {
