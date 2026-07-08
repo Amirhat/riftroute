@@ -4,6 +4,33 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] — 2026-07-08
+
+Makes wildcard domain rules cover subdomains reliably, and sets honest
+expectations about what that coverage is.
+
+### Added
+- **Proactive wildcard pre-warming.** Wildcard learning was purely reactive — a
+  subdomain only got a route once an app resolved it *through* RiftRoute's
+  scoped resolver, so distinct-IP subdomains raced the first connection, and
+  anything resolved over browser DNS-over-HTTPS or from cache never routed at
+  all. The daemon now resolves each wildcard's apex plus a built-in list of
+  common subdomains (`app`, `api`, `www`, `admin`, `cdn`, `stream`, `market`,
+  …) **itself**, straight to the upstream resolvers, so their routes exist
+  before anything connects — independent of the browser. Reactive learning
+  still catches anything outside the list. Runs on rule-add and refreshes on the
+  maintenance tick. Verified against a real wildcard domain: adding the rule
+  with no browser involved pre-routes the common subdomains to the distinct IPs
+  the site actually uses.
+
+### Changed
+- **Honest wildcard messaging.** The Profile Builder hint, the Diagnostics
+  "Wildcard DNS learner" check, and a new README "Domain rules & wildcards"
+  section now explain that common subdomains are pre-warmed and others are
+  learned as apps use them, that rare/custom subdomains outside the list (or
+  resolved via DoH/cache) aren't guaranteed, and that a specific important
+  subdomain can be added as its own exact `domain` rule for certain coverage.
+
 ## [0.2.2] — 2026-07-08
 
 Follow-up round hardening the routing table, wildcard domains, and toggles from
@@ -318,6 +345,7 @@ verified against the real system where possible:
   The kernel's canonical rule echo matched the parser's test fixtures verbatim.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
+[0.2.3]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.3
 [0.2.2]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.2
 [0.2.1]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.0
