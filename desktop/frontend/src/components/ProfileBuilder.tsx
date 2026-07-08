@@ -298,7 +298,7 @@ export function ProfileBuilder({
           title="Domain rules"
           addLabel="Add domain"
           placeholder="*.corp.example.com"
-          hint="Wildcards (*.example.com) cover subdomains too: the daemon resolves common subdomains up front and learns any others as apps use them, then routes them all automatically."
+          hint="Wildcards (*.example.com) cover subdomains: common ones (app, api, www, admin, …) are routed up front, and others are learned as apps use them. Very rare or custom subdomains aren't guaranteed — if you rely on a specific one, add it as its own domain rule for certain coverage."
           rows={domains}
           setRows={setDomains}
           errorFor={(r) => (submitted || r.value.trim() ? domainErr(r) : null)}

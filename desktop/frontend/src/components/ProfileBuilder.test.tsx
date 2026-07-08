@@ -48,6 +48,20 @@ describe('ProfileBuilder', () => {
     mockApi.systemApps.mockResolvedValue([{ value: 'system.slice/nginx.service', name: 'nginx' }])
   })
 
+  it('sets honest, actionable expectations for wildcard subdomain coverage', () => {
+    renderBuilder()
+    const hint = screen.getByText(/Wildcards/i)
+    const text = hint.textContent || ''
+    // Names concrete examples of what IS discovered proactively.
+    expect(text).toMatch(/\b(app|api|www)\b/)
+    // Is honest that coverage is not exhaustive…
+    expect(text).toMatch(/not (all|every)|rare|custom|aren'?t guaranteed|may not/i)
+    // …and gives the actionable escape hatch (add an exact rule).
+    expect(text).toMatch(/add .*(rule|domain)/i)
+    // Must not over-promise that everything routes automatically.
+    expect(text).not.toMatch(/routes? (them )?all automatically/i)
+  })
+
   it('offers known lists as toggleable references and serializes the selection', async () => {
     mockApi.lists.mockResolvedValue([{ name: 'corp-nets', static: ['10.0.0.0/8'] }])
     mockApi.saveProfile.mockResolvedValue({ result: { status: 'pending', needs_confirm: false } })

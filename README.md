@@ -173,6 +173,30 @@ profiles:
       # - { type: app, value: "501" }    # → route this user's egress into the tunnel
 ```
 
+### Domain rules & wildcards
+
+A `domain` rule routes a hostname's current addresses, re-resolved on a schedule
+so it follows CDN changes. A **wildcard** (`*.example.com`) covers the apex and
+its subdomains, but DNS can't enumerate a domain's subdomains, so RiftRoute
+combines two mechanisms:
+
+- **Proactive pre-warming** — the daemon resolves the apex plus a built-in list
+  of common subdomains (`app`, `api`, `www`, `admin`, `cdn`, `stream`, `market`,
+  …) itself and routes them **up front**, before anything connects. Because the
+  daemon does this directly, it works even when the browser resolves over
+  DNS-over-HTTPS or from cache.
+- **Reactive learning** — a small loopback resolver observes lookups for the
+  domain and learns any other subdomains as apps actually use them.
+
+Between the two, the subdomains that matter in practice are covered. What is
+**not** guaranteed: a rare, custom, or brand-new subdomain that is outside the
+common-name list *and* is resolved in a way that bypasses the resolver (some
+DoH setups, a pre-existing OS cache entry) may not be picked up automatically on
+the first hit. **If you depend on a specific subdomain, add it as its own exact
+`domain` rule** (e.g. `{ type: domain, value: api-v2.example.com }`) for
+guaranteed, immediate coverage. Wildcard subdomain learning is available on
+macOS (scoped resolver files) and Linux (systemd-resolved).
+
 ## CLI
 
 ```
