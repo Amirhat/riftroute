@@ -4,6 +4,48 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-07-08
+
+Follow-up round hardening the routing table, wildcard domains, and toggles from
+hands-on testing.
+
+### Added
+- **Full edit/delete of external routes** (added via terminal, DHCP, a VPN
+  client — anything RiftRoute doesn't own): the Routing Table gains per-row
+  Edit and Delete, run through a new plan-level Apply Protocol path
+  (`ApplyPlan`) with the same WAL journal, connectivity watchdog, and
+  commit-confirm countdown as a profile apply — but **without** ownership
+  records, so a user's edit of system state is never re-touched by panic or
+  crash recovery. The default route is protected (delete refused; edit allowed),
+  and the guard catches a non-canonical `128.0.0.0/0` the kernel would mask to
+  the real default. Managed routes are refused with a pointer to their profile.
+- **Wildcard subdomains route end-to-end** (`*.example.com`): a loopback DNS
+  learner, pointed at by per-domain resolver files (macOS) or systemd-resolved
+  (`resolvectl`, Linux), relays lookups verbatim while learning the real
+  subdomain addresses apps resolve — which then route automatically. Learned
+  answers carry a TTL, are recency-capped, persist across restarts, and drive a
+  debounced reconcile. A new `wildcard-dns` doctor check reports learner health.
+
+### Fixed
+- **Toggle switches** rendered with the knob outside the track (WebKit derived
+  an unanchored absolute child's position from the button's centered text) —
+  anchored with `left-0`; ON/OFF now read clearly in both light and dark mode.
+- **Route-op guardrail**: default-route detection is by prefix length after
+  parsing, and destinations are canonicalized to their masked form, so no
+  non-canonical prefix can bypass the keep-default guard; the managed-route
+  check matches by destination+table+family (the kernel's delete granularity).
+- **DNS learner robustness**: in-flight handlers drain on stop and are
+  concurrency-bounded; persistence is coalesced behind a 60s maintenance tick
+  (no DB thrash under a lookup flood) that also GCs expired addresses and keeps
+  upstreams current as resolvers change; resolver files are installed only when
+  the proxy has an upstream, so a scoped resolver can never blackhole a domain.
+- **Split-DNS precedence**: an explicit user resolver for a domain always wins
+  over a wildcard learner entry for the same domain; the non-atomic resolver
+  rewrite is serialized.
+- Per-app builder copy clarifies macOS matches by the user a process runs as
+  (PF socket owner); the edit-route gateway field rejects the profile-only
+  `auto` value.
+
 ## [0.2.1] — 2026-07-07
 
 A comprehensive UX and functionality overhaul across every screen.
@@ -276,5 +318,6 @@ verified against the real system where possible:
   The kernel's canonical rule echo matched the parser's test fixtures verbatim.
 - GeoIP/ASN rules require a user-supplied MaxMind MMDB.
 
+[0.2.2]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.2
 [0.2.1]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.1
 [0.2.0]: https://github.com/Amirhat/riftroute/releases/tag/v0.2.0
