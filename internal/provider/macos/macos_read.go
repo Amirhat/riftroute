@@ -163,6 +163,22 @@ func (p *Provider) DefaultGateway(ctx context.Context, family domain.Family) (ne
 			}
 		}
 	}
+	// `ipconfig getoption` only answers for DHCP-configured links, so on a
+	// static address (or a server that doesn't send the router option) it says
+	// nothing. Read the physical default straight out of the routing table
+	// BEFORE falling back to `route get default`: that command reports whichever
+	// default currently WINS, which with a point-to-point tunnel up is the
+	// VPN's on-link, gateway-less route — leaving exclude-mode profiles unable
+	// to resolve a next-hop ("no physical gateway for v4") for as long as the
+	// VPN stays connected, even though the physical gateway is in the table.
+	if routes, rerr := p.ListRoutes(ctx, domain.FamilyV4); rerr == nil {
+		if a, ifn, ok := pickPhysicalDefault(routes, func(n string) bool {
+			_, isVPN := classifyIface(n)
+			return isVPN
+		}); ok {
+			return a, ifn, nil
+		}
+	}
 	return p.defaultViaRouteGet(ctx, false)
 }
 

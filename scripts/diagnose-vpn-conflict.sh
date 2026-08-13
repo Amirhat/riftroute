@@ -64,10 +64,11 @@ scutil --dns 2>/dev/null | grep -E "nameserver|domain " | head -12 | sed 's/^/  
 echo; echo "######## 5. THE DECISIVE CHECK — where does the VPN's own traffic go? ########"
 echo "  (run this WHILE the VPN is failing to connect)"
 echo "  --- VPN client sockets (which endpoint is it dialing?) ---"
-VPNIPS=$(lsof -nP -iTCP -iUDP 2>/dev/null \
-  | grep -iE "windscribe|openvpn|wireguard|nym|cisco|anyconnect" \
-  | tee /dev/stderr \
-  | sed -E 's/.*->([0-9a-fA-F:.]+):[0-9]+.*/\1/;t;d' | sort -u | head -8)
+VPNSOCKS=$(lsof -nP -iTCP -iUDP 2>/dev/null \
+  | grep -iE "windscribe|openvpn|wireguard|nym|cisco|anyconnect|tunnelblick")
+echo "$VPNSOCKS" | sed 's/^/    /'
+# BSD awk (macOS) — extract the remote address from "local->remote:port".
+VPNIPS=$(echo "$VPNSOCKS" | awk '{for(i=1;i<=NF;i++) if($i ~ /->/){split($i,a,"->"); n=split(a[2],b,":"); if(n>1){p=""; for(j=1;j<n;j++) p=p (j>1?":":"") b[j]; print p}}}' | sort -u | head -8)
 echo "$VPNIPS" | sed 's/^/    endpoint: /'
 echo "  --- half-open (SYN_SENT) connections = handshakes that are failing ---"
 netstat -an 2>/dev/null | grep -i "syn_sent" | head -10 | sed 's/^/    /'
