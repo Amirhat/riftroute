@@ -499,11 +499,13 @@ func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
 	return err
 }
 
-// ReconcileOwnership repairs partial state after a crash (spec §2.5): it makes
-// the kernel's managed routes match the ownership DB — re-adding routes we own
-// but are missing, and removing kernel routes tagged ours that we no longer own
-// (rollback of an interrupted add).
+// ReconcileOwnership makes the kernel's managed routes match the ownership DB.
+// It runs both after a crash and during live reconciliation because VPN clients
+// can remove a host route without changing RiftRoute's ownership records.
 func (p *Protocol) ReconcileOwnership(ctx context.Context) (added, removed int, err error) {
+	p.applyMu.Lock()
+	defer p.applyMu.Unlock()
+
 	if p.store == nil {
 		return 0, 0, nil
 	}
@@ -511,27 +513,59 @@ func (p *Protocol) ReconcileOwnership(ctx context.Context) (added, removed int, 
 	if err != nil {
 		return 0, 0, err
 	}
-	// The kernel's real managed routes — NOT the DB — are the "actual" side here;
-	// reconcile converges the kernel to the ownership DB (spec §2.5 crash repair).
-	actual := providerManaged(ctx, p.prov)
-	ownedKeys := keySet(owned)
-	actualKeys := keySet(actual)
-
+	ownedFamilies := make(map[domain.Family]bool, 2)
 	for _, o := range owned {
-		if !actualKeys[routing.RouteKey(o.Route)] {
-			if e := p.prov.AddRoute(ctx, o); e == nil {
+		ownedFamilies[o.Family] = true
+	}
+	// macOS routes have no owner tag, so compare DB-owned route identities against
+	// the complete kernel RIB. Tagged managed routes are still retained separately
+	// for stale-route cleanup on platforms that support ownership tags.
+	kernelKeys := map[string]bool{}
+	var actual []domain.ManagedRoute
+	familyErr := map[domain.Family]error{}
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, listErr := p.prov.ListRoutes(ctx, fam)
+		if listErr != nil {
+			familyErr[fam] = listErr
+			continue
+		}
+		for _, r := range rs {
+			kernelKeys[routing.RouteKey(r)] = true
+			if r.Owner == domain.OwnerRiftRoute {
+				actual = append(actual, domain.ManagedRoute{Route: r, ProfileID: r.Profile})
+			}
+		}
+	}
+	ownedKeys := keySet(owned)
+
+	var repairErr error
+	for fam, listErr := range familyErr {
+		if ownedFamilies[fam] {
+			repairErr = errors.Join(repairErr, fmt.Errorf("read kernel routes for %s: %w", fam, listErr))
+		}
+	}
+	for _, o := range owned {
+		if familyErr[o.Family] != nil {
+			continue
+		}
+		if !kernelKeys[routing.RouteKey(o.Route)] {
+			if e := p.prov.AddRoute(ctx, o); e != nil {
+				repairErr = errors.Join(repairErr, fmt.Errorf("re-add %s: %w", o.DstCIDR, e))
+			} else {
 				added++
 			}
 		}
 	}
 	for _, a := range actual {
 		if !ownedKeys[routing.RouteKey(a.Route)] {
-			if e := p.prov.DelRoute(ctx, a); e == nil {
+			if e := p.prov.DelRoute(ctx, a); e != nil {
+				repairErr = errors.Join(repairErr, fmt.Errorf("remove stale %s: %w", a.DstCIDR, e))
+			} else {
 				removed++
 			}
 		}
 	}
-	return added, removed, nil
+	return added, removed, repairErr
 }
 
 // ShutdownResolve resolves in-flight transactions for a GRACEFUL shutdown, so a

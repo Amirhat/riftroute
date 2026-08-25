@@ -65,6 +65,14 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 		Actor:         domain.ActorDaemon,
 		PhysGW:        physGW,
 	})
+	if aerr == nil {
+		added, removed, repairErr := r.proto.ReconcileOwnership(ctx)
+		if repairErr != nil {
+			aerr = repairErr
+		} else if added > 0 || removed > 0 {
+			r.log.Info("reconciled live ownership drift", "re-added", added, "removed", removed)
+		}
+	}
 	if r.onReconcile != nil {
 		r.onReconcile(res, aerr)
 	}

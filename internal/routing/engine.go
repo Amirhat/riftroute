@@ -27,11 +27,13 @@ const (
 
 // DesiredInput is everything the builder needs to derive desired managed state.
 type DesiredInput struct {
-	Profiles    []domain.Profile
-	GatewayV4   netip.Addr // resolved physical gateway (VPN-independent)
-	GatewayV6   netip.Addr
-	PhysIfaceV4 string
-	PhysIfaceV6 string
+	Profiles     []domain.Profile
+	GatewayV4    netip.Addr // resolved physical gateway (VPN-independent)
+	GatewayV6    netip.Addr
+	GatewayV4Err error
+	GatewayV6Err error
+	PhysIfaceV4  string
+	PhysIfaceV6  string
 	// VPN tunnel next-hop/iface, for include mode (Model B) destinations that go
 	// INTO the tunnel. Zero when no tunnel is active.
 	VPNGatewayV4 netip.Addr
@@ -307,11 +309,47 @@ func Reconcile(desiredRoutes, actualRoutes []domain.ManagedRoute, desiredRules, 
 		}
 	}
 
-	// Order: add routes (incl. table defaults) → add rules → del rules → del
-	// routes. So a rule is never live without its table, and the table default
-	// outlives the rules during teardown.
-	ops := append(append(append(append([]domain.PlanOp{}, routeAdds...), ruleAdds...), ruleDels...), routeDels...)
+	var routePrefixOps []domain.PlanOp
+	if platform == "darwin" {
+		// route(8) cannot add a second route for the same destination. A physical
+		// gateway change must therefore delete the old route before adding the new
+		// one; add-first is treated as "File exists" and the following delete would
+		// leave no bypass route at all. Pair each delete with its replacement add
+		// so a multi-route gateway refresh does not remove every bypass at once.
+		addByDst := make(map[string]int, len(routeAdds))
+		for i, op := range routeAdds {
+			addByDst[routeDestinationKey(op.Route.Route)] = i
+		}
+		usedAdds := make(map[int]bool, len(routeAdds))
+		keptDels := routeDels[:0]
+		for _, op := range routeDels {
+			k := routeDestinationKey(op.Route.Route)
+			if addIdx, ok := addByDst[k]; ok && !usedAdds[addIdx] {
+				routePrefixOps = append(routePrefixOps, op, routeAdds[addIdx])
+				usedAdds[addIdx] = true
+				continue
+			}
+			keptDels = append(keptDels, op)
+		}
+		keptAdds := routeAdds[:0]
+		for i, op := range routeAdds {
+			if !usedAdds[i] {
+				keptAdds = append(keptAdds, op)
+			}
+		}
+		routeAdds = keptAdds
+		routeDels = keptDels
+	}
+
+	// Order: destination replacements → add routes (incl. table defaults) → add
+	// rules → del rules → del routes. So a rule is never live without its table,
+	// and the table default outlives the rules during teardown.
+	ops := append(append(append(append(append([]domain.PlanOp{}, routePrefixOps...), routeAdds...), ruleAdds...), ruleDels...), routeDels...)
 	return domain.Plan{Ops: ops, Inverse: invert(ops, platform)}
+}
+
+func routeDestinationKey(r domain.Route) string {
+	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR
 }
 
 func invert(ops []domain.PlanOp, platform string) []domain.PlanOp {
@@ -520,6 +558,12 @@ func resolveGateway(profileGW string, fam domain.Family, in DesiredInput) (netip
 	}
 	if profileGW == "" || profileGW == "auto" {
 		if !auto.IsValid() {
+			if fam == domain.FamilyV4 && in.GatewayV4Err != nil {
+				return netip.Addr{}, "", fmt.Errorf("no physical gateway for %s: %w", fam, in.GatewayV4Err)
+			}
+			if fam == domain.FamilyV6 && in.GatewayV6Err != nil {
+				return netip.Addr{}, "", fmt.Errorf("no physical gateway for %s: %w", fam, in.GatewayV6Err)
+			}
 			return netip.Addr{}, "", fmt.Errorf("no physical gateway for %s (cannot resolve gateway: auto)", fam)
 		}
 		return auto, iface, nil

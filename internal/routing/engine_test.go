@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
@@ -283,8 +284,25 @@ func TestBuildDesiredIncludeNeedsPolicyRouting(t *testing.T) {
 func TestBuildDesiredAutoGatewayMissing(t *testing.T) {
 	in := testInput(excludeProfile())
 	in.GatewayV4 = netip.Addr{} // no physical gateway resolvable
+	in.GatewayV4Err = errors.New("provider gateway lookup failed")
 	if _, _, err := BuildDesired(in); err == nil {
 		t.Fatal("expected error when gateway: auto cannot resolve")
+	} else if !strings.Contains(err.Error(), "provider gateway lookup failed") {
+		t.Fatalf("provider error was lost: %v", err)
+	}
+}
+
+func TestBuildDesiredAutoGatewayMissingIPv6PreservesProviderError(t *testing.T) {
+	in := testInput(domain.Profile{
+		ID: "p6", Name: "v6-direct", Enabled: true, Mode: domain.ModeExclude,
+		Gateway: "auto",
+		Rules:   []domain.Rule{{Type: domain.RuleCIDR, Value: "2001:db8::/32"}},
+	})
+	in.GatewayV6Err = errors.New("IPv6 gateway lookup failed")
+	if _, _, err := BuildDesired(in); err == nil {
+		t.Fatal("expected error when IPv6 gateway: auto cannot resolve")
+	} else if !strings.Contains(err.Error(), "IPv6 gateway lookup failed") {
+		t.Fatalf("provider error was lost: %v", err)
 	}
 }
 
@@ -341,6 +359,50 @@ func TestReconcileNoChange(t *testing.T) {
 	plan := Reconcile(d, d, nil, nil, "linux")
 	if len(plan.Ops) != 0 {
 		t.Fatalf("expected no ops when desired==actual, got %d", len(plan.Ops))
+	}
+}
+
+func TestReconcileDarwinGatewayChangeDeletesBeforeAdd(t *testing.T) {
+	oldRoute := domain.ManagedRoute{Route: domain.Route{
+		DstCIDR: "203.0.113.7/32", Gateway: "192.0.2.1", Iface: "en0", Family: domain.FamilyV4,
+	}, ProfileID: "manual-bypass"}
+	newRoute := oldRoute
+	newRoute.Gateway = "192.0.2.254"
+
+	plan := Reconcile([]domain.ManagedRoute{newRoute}, []domain.ManagedRoute{oldRoute}, nil, nil, "darwin")
+	if len(plan.Ops) != 2 {
+		t.Fatalf("gateway replacement should have two ops, got %+v", plan.Ops)
+	}
+	if plan.Ops[0].Kind != domain.OpDelRoute || plan.Ops[0].Route.Gateway != oldRoute.Gateway {
+		t.Fatalf("old route must be deleted first on darwin: %+v", plan.Ops)
+	}
+	if plan.Ops[1].Kind != domain.OpAddRoute || plan.Ops[1].Route.Gateway != newRoute.Gateway {
+		t.Fatalf("new route must be added after delete on darwin: %+v", plan.Ops)
+	}
+	if plan.Inverse[0].Kind != domain.OpDelRoute || plan.Inverse[1].Kind != domain.OpAddRoute {
+		t.Fatalf("inverse must remove new then restore old: %+v", plan.Inverse)
+	}
+}
+
+func TestReconcileDarwinGatewayChangesRemainPaired(t *testing.T) {
+	oldRoutes := []domain.ManagedRoute{
+		{Route: domain.Route{DstCIDR: "203.0.113.7/32", Gateway: "192.0.2.1", Iface: "en0", Family: domain.FamilyV4}},
+		{Route: domain.Route{DstCIDR: "198.51.100.8/32", Gateway: "192.0.2.1", Iface: "en0", Family: domain.FamilyV4}},
+	}
+	newRoutes := append([]domain.ManagedRoute(nil), oldRoutes...)
+	for i := range newRoutes {
+		newRoutes[i].Gateway = "192.0.2.254"
+	}
+
+	plan := Reconcile(newRoutes, oldRoutes, nil, nil, "darwin")
+	if len(plan.Ops) != 4 {
+		t.Fatalf("two gateway replacements should have four ops, got %+v", plan.Ops)
+	}
+	for i := 0; i < len(plan.Ops); i += 2 {
+		del, add := plan.Ops[i], plan.Ops[i+1]
+		if del.Kind != domain.OpDelRoute || add.Kind != domain.OpAddRoute || del.Route.DstCIDR != add.Route.DstCIDR {
+			t.Fatalf("replacement ops must remain paired by destination: %+v", plan.Ops)
+		}
 	}
 }
 

@@ -13,9 +13,10 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 )
 
-// AddRoute installs a managed route via route(8). Idempotent: an already-present
-// route is treated as success. Inputs are strictly validated before exec (no
-// shell; arg-array only) per spec §12.
+// AddRoute installs a managed route via route(8). If another route already owns
+// the same destination, policy-managed routes change it to the DB-owned target;
+// external route operations remain idempotent and leave the existing route alone.
+// Inputs are strictly validated before exec (no shell; arg-array only) per spec §12.
 func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	args, err := macRouteArgs("add", mr)
 	if err != nil {
@@ -24,7 +25,18 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	out, err := runCombined(ctx, "route", args...)
 	if err != nil {
 		if strings.Contains(out, "File exists") {
-			return nil // already present → idempotent
+			if mr.ProfileID == "" {
+				return nil // external add: already present, do not rewrite a foreign route
+			}
+			changeArgs, argErr := macRouteArgs("change", mr)
+			if argErr != nil {
+				return argErr
+			}
+			changeOut, changeErr := runCombined(ctx, "route", changeArgs...)
+			if changeErr != nil {
+				return fmt.Errorf("route change %s: %w: %s", mr.DstCIDR, changeErr, strings.TrimSpace(changeOut))
+			}
+			return nil
 		}
 		return fmt.Errorf("route add %s: %w: %s", mr.DstCIDR, err, strings.TrimSpace(out))
 	}

@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,5 +89,28 @@ func TestDomainHostsNormalizesWildcards(t *testing.T) {
 	hosts := svc.DomainHosts()
 	if len(hosts) != 1 || hosts[0] != "example.com" {
 		t.Fatalf("DomainHosts = %v, want [example.com]", hosts)
+	}
+}
+
+func TestExplainOmitsSimulatedRouteWhenDesiredStateUnavailable(t *testing.T) {
+	svc := newSvc(t)
+	prov := svc.Provider().(*fake.Provider)
+	prov.SetPhysicalGateway(netip.Addr{}, "")
+	if err := svc.Store().UpsertProfile(domain.Profile{
+		ID: "p1", Name: "direct", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleIP, Value: "198.51.100.7"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	explain, err := svc.Explain(context.Background(), "198.51.100.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explain.Simulated != nil {
+		t.Fatalf("unavailable desired state must not be presented as simulated: %+v", explain.Simulated)
+	}
+	if !strings.Contains(explain.Note, "desired state unavailable") {
+		t.Fatalf("missing desired-state error note: %q", explain.Note)
 	}
 }

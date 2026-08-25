@@ -412,6 +412,30 @@ func run() error {
 	rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
 	go supervise(ctx, logger, "poller", poller.Run)
 	go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
+	// Reconcile persisted profiles immediately on daemon restart. Ownership
+	// repair only knows routes already recorded in the DB; it cannot recreate a
+	// profile route that was removed by another VPN after the last apply.
+	go func() {
+		if _, err := rec.Reconcile(ctx); err != nil {
+			logger.Warn("startup profile reconcile failed", "err", err)
+		}
+	}()
+	// VPN clients can rewrite more-specific routes without
+	// changing the default route. Periodic reconciliation catches that drift.
+	go supervise(ctx, logger, "drift-reconciler", func(c context.Context) {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-t.C:
+				if _, err := rec.Reconcile(c); err != nil {
+					logger.Warn("periodic profile reconcile failed", "err", err)
+				}
+			}
+		}
+	})
 	go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
 	// Learned wildcard answers → reconcile (debounced to batch lookup bursts;
 	// gated on auto-apply inside rec.Reconcile — with it off, drift shows).

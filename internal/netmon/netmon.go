@@ -15,13 +15,14 @@ import (
 type EventType string
 
 const (
-	EventVPNUp               EventType = "vpn_up"
-	EventVPNDown             EventType = "vpn_down"
-	EventDefaultRouteChanged EventType = "default_route_changed"
-	EventLinkChanged         EventType = "link_changed"
-	EventAddrChanged         EventType = "addr_changed"
-	EventDNSChanged          EventType = "dns_changed"
-	EventWake                EventType = "wake"
+	EventVPNUp                  EventType = "vpn_up"
+	EventVPNDown                EventType = "vpn_down"
+	EventDefaultRouteChanged    EventType = "default_route_changed"
+	EventLinkChanged            EventType = "link_changed"
+	EventAddrChanged            EventType = "addr_changed"
+	EventDNSChanged             EventType = "dns_changed"
+	EventPhysicalGatewayChanged EventType = "physical_gateway_changed"
+	EventWake                   EventType = "wake"
 )
 
 // Event is a single observed network change.

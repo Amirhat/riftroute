@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -146,8 +147,9 @@ func (p *Provider) DNSConfig(ctx context.Context) (domain.DNSState, error) {
 }
 
 // DefaultGateway returns the physical gateway independent of the VPN default
-// route (spec §4.4): it reads the router option off the primary non-tunnel
-// interface via ipconfig, falling back to the default route's next hop.
+// route (spec §4.4). On macOS, the DHCP router option is authoritative while a
+// VPN owns the default route; a non-VPN default route is only a fallback for
+// static configurations.
 func (p *Provider) DefaultGateway(ctx context.Context, family domain.Family) (netip.Addr, string, error) {
 	if family == domain.FamilyV6 {
 		// VPN-independent v6 gateway detection lands later; fall back to the
@@ -155,15 +157,27 @@ func (p *Provider) DefaultGateway(ctx context.Context, family domain.Family) (ne
 		gw, ifn, err := p.defaultViaRouteGet(ctx, true)
 		return gw, ifn, err
 	}
-	phys := p.primaryPhysicalIface()
-	if phys != "" {
-		if out, err := run(ctx, "ipconfig", "getoption", phys, "router"); err == nil {
-			if a, perr := netip.ParseAddr(strings.TrimSpace(out)); perr == nil {
-				return a, phys, nil
-			}
+	// When the default route is already physical, it is the authoritative
+	// primary service. This matters when Wi-Fi and Ethernet are both active:
+	// interface-name ordering does not describe macOS service priority.
+	defaultGW, defaultIf, defaultErr := p.defaultViaRouteGet(ctx, false)
+	if defaultErr == nil {
+		kind, isVPN := classifyIface(defaultIf)
+		if kind == domain.IfaceKindPhysical && !isVPN {
+			return defaultGW, defaultIf, nil
 		}
 	}
-	return p.defaultViaRouteGet(ctx, false)
+	candidates := p.physicalIPv4Ifaces()
+	if gw, ifn := p.gatewayFromInterfaces(ctx, candidates); gw.IsValid() {
+		return gw, ifn, nil
+	}
+	if defaultErr == nil {
+		return netip.Addr{}, defaultIf, fmt.Errorf("macos: default route is not physical (%s via %s)", defaultIf, defaultGW)
+	}
+	if len(candidates) == 0 {
+		return netip.Addr{}, defaultIf, fmt.Errorf("macos: no physical IPv4 interface with an address: %w", defaultErr)
+	}
+	return netip.Addr{}, defaultIf, fmt.Errorf("macos: no physical IPv4 gateway on %s: %w", strings.Join(candidates, ","), defaultErr)
 }
 
 // LookupRoute asks the kernel where traffic to dst goes via `route -n get`.
@@ -200,7 +214,7 @@ func (p *Provider) defaultViaRouteGet(ctx context.Context, v6 bool) (netip.Addr,
 		args = append(args, "-inet6")
 	}
 	args = append(args, "default")
-	out, err := run(ctx, "route", args...)
+	out, err := runCommand(ctx, "route", args...)
 	if err != nil {
 		return netip.Addr{}, "", fmt.Errorf("macos: no default route: %w", err)
 	}
@@ -212,27 +226,43 @@ func (p *Provider) defaultViaRouteGet(ctx context.Context, v6 bool) (netip.Addr,
 	return a, ifn, nil
 }
 
-func (p *Provider) primaryPhysicalIface() string {
+func (p *Provider) physicalIPv4Ifaces() []string {
 	ifs, err := net.Interfaces()
 	if err != nil {
-		return ""
+		return nil
 	}
+	var candidates []string
 	for _, ifc := range ifs {
 		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		_, isVPN := classifyIface(ifc.Name)
-		if isVPN {
+		kind, isVPN := classifyIface(ifc.Name)
+		if isVPN || kind != domain.IfaceKindPhysical {
 			continue
 		}
 		addrs, _ := ifc.Addrs()
 		for _, a := range addrs {
 			if ipn, ok := a.(*net.IPNet); ok && ipn.IP.To4() != nil {
-				return ifc.Name
+				candidates = append(candidates, ifc.Name)
+				break
 			}
 		}
 	}
-	return ""
+	sort.Strings(candidates)
+	return candidates
+}
+
+func (p *Provider) gatewayFromInterfaces(ctx context.Context, candidates []string) (netip.Addr, string) {
+	for _, ifn := range candidates {
+		out, err := runCommand(ctx, "ipconfig", "getoption", ifn, "router")
+		if err != nil {
+			continue
+		}
+		if gw, err := netip.ParseAddr(strings.TrimSpace(out)); err == nil && gw.Is4() {
+			return gw, ifn
+		}
+	}
+	return netip.Addr{}, ""
 }
 
 func run(ctx context.Context, name string, args ...string) (string, error) {
@@ -243,6 +273,9 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 	out, err := cmd.Output()
 	return string(out), err
 }
+
+// runCommand is replaceable in provider tests; production uses run.
+var runCommand = run
 
 func afterColon(line string) string {
 	if i := strings.Index(line, ":"); i >= 0 {

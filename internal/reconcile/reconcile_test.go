@@ -53,6 +53,31 @@ func TestReconcileInstallsDesired(t *testing.T) {
 	}
 }
 
+func TestReconcileRepairsRouteRemovedOutsideRiftRoute(t *testing.T) {
+	rec, prov, st, _ := setup(t)
+	ctx := context.Background()
+	if _, err := rec.Reconcile(ctx); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+	owned, err := st.ListOwned()
+	if err != nil || len(owned) != 1 {
+		t.Fatalf("owned routes: err=%v len=%d", err, len(owned))
+	}
+	if err := prov.DelRoute(ctx, owned[0]); err != nil {
+		t.Fatalf("simulate external VPN route removal: %v", err)
+	}
+	if prov.CountManaged() != 0 {
+		t.Fatal("test setup should remove the kernel route but retain DB ownership")
+	}
+
+	if _, err := rec.Reconcile(ctx); err != nil {
+		t.Fatalf("repair reconcile: %v", err)
+	}
+	if prov.CountManaged() != 1 {
+		t.Fatalf("live reconcile should re-add the externally removed route, got %d", prov.CountManaged())
+	}
+}
+
 func TestReconcileActorIsDaemonAuto(t *testing.T) {
 	rec, _, st, _ := setup(t)
 	if _, err := rec.Reconcile(context.Background()); err != nil {

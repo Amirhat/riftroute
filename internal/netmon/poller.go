@@ -22,12 +22,13 @@ type Poller struct {
 }
 
 type snapshot struct {
-	vpnUp     []string
-	vpnOn     bool
-	defaultV4 string // "gw|iface|owner"
-	defaultV6 string
-	dns       string
-	ifaces    string
+	vpnUp      []string
+	vpnOn      bool
+	defaultV4  string // "gw|iface|owner"
+	defaultV6  string
+	physicalV4 string // physical gateway + interface, independent of VPN default
+	dns        string
+	ifaces     string
 }
 
 // NewPoller builds a poller over a provider with the given poll interval.
@@ -88,6 +89,9 @@ func (p *Poller) PollOnce(ctx context.Context) []Event {
 	if prev.defaultV6 != cur.defaultV6 {
 		add(EventDefaultRouteChanged, "", "v6 default: "+cur.defaultV6)
 	}
+	if prev.physicalV4 != cur.physicalV4 {
+		add(EventPhysicalGatewayChanged, "", "physical v4 gateway: "+cur.physicalV4)
+	}
 	if prev.dns != cur.dns {
 		add(EventDNSChanged, "", cur.dns)
 	}
@@ -125,12 +129,21 @@ func (p *Poller) capture(ctx context.Context, prev *snapshot) *snapshot {
 	}
 	s.defaultV4 = defaultKey(ctx, p.prov, domain.FamilyV4, prevOr(prev, func(x *snapshot) string { return x.defaultV4 }))
 	s.defaultV6 = defaultKey(ctx, p.prov, domain.FamilyV6, prevOr(prev, func(x *snapshot) string { return x.defaultV6 }))
+	s.physicalV4 = physicalGatewayKey(ctx, p.prov, prevOr(prev, func(x *snapshot) string { return x.physicalV4 }))
 	if dns, err := p.prov.DNSConfig(ctx); err == nil {
 		s.dns = strings.Join(dns.Servers, ",")
 	} else if prev != nil {
 		s.dns = prev.dns
 	}
 	return s
+}
+
+func physicalGatewayKey(ctx context.Context, prov provider.RouteProvider, prevVal string) string {
+	gw, ifn, err := prov.DefaultGateway(ctx, domain.FamilyV4)
+	if err != nil || !gw.IsValid() || ifn == "" {
+		return prevVal
+	}
+	return gw.String() + "|" + ifn
 }
 
 func prevOr(prev *snapshot, get func(*snapshot) string) string {

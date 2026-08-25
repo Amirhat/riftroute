@@ -2,6 +2,7 @@ package netmon
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -65,4 +66,20 @@ func TestPollerQuietWhenStable(t *testing.T) {
 	if ev := p.PollOnce(ctx); len(ev) != 0 {
 		t.Fatalf("stable network should emit nothing, got %+v", ev)
 	}
+}
+
+func TestPollerDetectsPhysicalGatewayChange(t *testing.T) {
+	prov := fake.New()
+	p := NewPoller(prov, time.Second)
+	ctx := context.Background()
+	p.PollOnce(ctx)
+
+	prov.SetPhysicalGateway(netip.MustParseAddr("192.0.2.254"), "en0")
+	events := p.PollOnce(ctx)
+	for _, e := range events {
+		if e.Type == EventPhysicalGatewayChanged {
+			return
+		}
+	}
+	t.Fatalf("expected physical gateway change event, got %+v", events)
 }

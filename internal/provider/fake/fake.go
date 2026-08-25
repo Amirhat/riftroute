@@ -362,6 +362,14 @@ func (p *Provider) SetVPN(up bool) {
 	}
 }
 
+// SetPhysicalGateway changes the simulated DHCP gateway for network-change tests.
+func (p *Provider) SetPhysicalGateway(gw netip.Addr, iface string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.physGW[domain.FamilyV4] = gw
+	p.physIface = iface
+}
+
 // --- internals (caller holds p.mu) ---
 
 func (p *Provider) appendRoute(rt domain.Route) {

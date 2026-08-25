@@ -101,7 +101,7 @@ func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, []
 // profile set (used by config dry-run before anything is persisted).
 func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
 	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
-	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	gw6, if6, err6 := s.prov.DefaultGateway(ctx, domain.FamilyV6)
 	vg4, vi4 := s.resolveVPN(ctx, domain.FamilyV4)
 	vg6, vi6 := s.resolveVPN(ctx, domain.FamilyV6)
 	in := routing.DesiredInput{
@@ -112,12 +112,16 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 		Domains:       s.resolveDomains(ctx, profiles),
 		VPNGatewayV4:  vg4, VPNIfaceV4: vi4,
 		VPNGatewayV6: vg6, VPNIfaceV6: vi6,
-		Now: s.now(),
+		GatewayV4Err: err4,
+		GatewayV6Err: err6,
+		Now:          s.now(),
 	}
 	if err4 == nil {
 		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
 	}
-	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
+	if err6 == nil {
+		in.GatewayV6, in.PhysIfaceV6 = gw6, if6
+	}
 	routes, rules, err := routing.BuildDesired(in)
 	return routes, rules, gw4, err
 }
@@ -648,11 +652,19 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 			overlay = append(overlay, r)
 		}
 	}
-	if desired, _, _, derr := s.DesiredManaged(ctx); derr == nil {
-		for _, mr := range desired {
-			if mr.Route.Family == fam && mr.Route.Table == "" {
-				overlay = append(overlay, mr.Route)
-			}
+	desired, _, _, derr := s.DesiredManaged(ctx)
+	if derr != nil {
+		reason := "desired state unavailable: " + derr.Error()
+		if out.Note == "" {
+			out.Note = reason
+		} else {
+			out.Note += "; " + reason
+		}
+		return out, nil
+	}
+	for _, mr := range desired {
+		if mr.Route.Family == fam && mr.Route.Table == "" {
+			overlay = append(overlay, mr.Route)
 		}
 	}
 	vpnByIface := s.vpnByIface(ctx)
