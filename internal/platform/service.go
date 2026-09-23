@@ -41,6 +41,10 @@ type ServiceManager interface {
 // NewServiceManager returns the per-OS service manager.
 func NewServiceManager() ServiceManager { return newServiceManager() }
 
+// InstalledDaemonPath is where install places the root-run daemon binary
+// ("" where service install is unsupported).
+func InstalledDaemonPath() string { return installedBin }
+
 // FindDaemonBinary locates the riftrouted binary: next to the running CLI, then
 // on PATH.
 func FindDaemonBinary() (string, error) {
@@ -174,6 +178,15 @@ func runCmd(name string, args ...string) error {
 		return fmt.Errorf("%s %v: %w: %s", name, args, err, string(out))
 	}
 	return nil
+}
+
+// cmdOutput runs a command and returns its combined output (error on non-zero
+// exit), bounded by a short timeout.
+func cmdOutput(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return string(out), err
 }
 
 func cmdContains(needle string, name string, args ...string) bool {

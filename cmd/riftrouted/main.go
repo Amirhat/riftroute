@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/api"
+	"github.com/Amirhat/riftroute/internal/buildinfo"
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/dnsproxy"
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -71,8 +72,9 @@ func run() error {
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
+	build := buildinfo.Current(version)
 	if showVersion {
-		fmt.Println(version)
+		fmt.Println(buildinfo.Short(build))
 		return nil
 	}
 
@@ -102,15 +104,20 @@ func run() error {
 	logger.Info("provider selected", "provider", prov.Name())
 
 	svc := core.New(prov, st, version)
+	svc.SetBuild(build, buildinfo.NewWatcher(build))
 	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, prov.Capabilities().Platform, logger)
 
 	// Crash recovery, step 1: replay the write-ahead journal. Any transaction that
 	// was in flight (or on probation) at the last shutdown is reverted to its
 	// pre-change state — fail-safe, and the only recovery that works on macOS.
-	if reverted, perr := proto.RecoverPending(context.Background()); perr != nil {
-		logger.Warn("pending-tx recovery on startup failed", "err", perr)
-	} else if reverted > 0 {
+	// Entries this build can't read (written by a newer release before a
+	// rollback) are left journaled and reported, never silently dropped.
+	reverted, perr := proto.RecoverPending(context.Background())
+	if reverted > 0 {
 		logger.Info("reverted in-flight transactions on startup (crash recovery)", "count", reverted)
+	}
+	if perr != nil {
+		logger.Warn("pending-tx recovery incomplete", "err", perr)
 	}
 
 	// Crash recovery, step 2: re-assert/repair owned routes against the kernel
@@ -157,6 +164,7 @@ func run() error {
 		on, _ := ks.Enabled(context.Background())
 		return on
 	})
+	srv.InitKillSwitch(context.Background())
 
 	// Wildcard DNS learner (spec §5.1 "*.domain"): a loopback forwarder the
 	// wildcard apexes are pointed at via split-DNS resolver files. Answers
@@ -464,9 +472,24 @@ func run() error {
 			}
 		}
 	})
+	// Kill switch re-sync: follow VPNs onto new interfaces and the bypass set
+	// as profiles change (no-op while the kill switch is off).
+	go supervise(ctx, logger, "killswitch-sync", func(c context.Context) {
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-t.C:
+				srv.SyncKillSwitch(c)
+			}
+		}
+	})
 	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
 
-	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version, "uid", allowUID)
+	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version,
+		"build", buildinfo.Short(build), "uid", allowUID)
 	serveErr := srv.Serve(ctx, ln)
 
 	// Graceful shutdown: resolve any in-flight transactions (commit auto-applied,

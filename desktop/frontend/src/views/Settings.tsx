@@ -4,10 +4,12 @@ import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge, Toggle } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { KILL_SWITCH_SHORT, KillSwitchConfirmMessage } from '../components/KillSwitchCopy'
 import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
-import { fmtUptime, friendly } from '../lib/format'
-import type { UpdateResult } from '../types'
+import { BuildNotes } from '../components/BuildNotes'
+import { fmtBuildMeta, fmtUptime, friendly } from '../lib/format'
+import type { Preferences, TelemetryLevel, UpdateMode, UpdateResult } from '../types'
 
 type Theme = 'dark' | 'light'
 
@@ -31,10 +33,14 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
   // Guards the switches while a mutation is in flight (double-click race).
   const [busyToggle, setBusyToggle] = useState(false)
 
+  const [killErr, setKillErr] = useState<string | null>(null)
   async function setKill(enabled: boolean) {
     setBusyToggle(true)
+    setKillErr(null)
     try {
       await api.setKillSwitch(enabled)
+    } catch (e) {
+      setKillErr(friendly(e, 'kill switch change failed'))
     } finally {
       setBusyToggle(false)
       qc.invalidateQueries({ queryKey: stateKey })
@@ -97,7 +103,7 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
             <div className="flex items-center justify-between px-4 py-3">
               <div>
                 <div className="text-sm text-default">Kill switch</div>
-                <div className="text-xs text-muted">Fence all egress to the tunnel; a reconnect path stays open.</div>
+                <div className="text-xs text-muted">{KILL_SWITCH_SHORT}</div>
               </div>
               <Toggle
                 on={killOn}
@@ -107,6 +113,10 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
                 onClick={() => (killOn ? void setKill(false) : setConfirmKill(true))}
               />
             </div>
+            {killErr && <p className="px-4 py-2 text-xs text-danger">{killErr}</p>}
+            {!killErr && s.kill_switch_notice && (
+              <p role="status" className="px-4 py-2 text-xs text-warning">{s.kill_switch_notice}</p>
+            )}
           </div>
         )}
       </Card>
@@ -173,6 +183,29 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
             <Stat label="Uptime" value={fmtUptime(s.health.uptime_seconds)} />
           </div>
         )}
+        {s && (s.health.binary || fmtBuildMeta(s.health.build)) && (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-4 pb-4 font-mono text-[11px] text-muted">
+            {fmtBuildMeta(s.health.build) && (
+              <>
+                <dt>build</dt>
+                <dd className="break-all">{fmtBuildMeta(s.health.build)}</dd>
+              </>
+            )}
+            {s.health.binary && (
+              <>
+                <dt>binary</dt>
+                <dd className="break-all">{s.health.binary}</dd>
+              </>
+            )}
+            {s.health.started_at && (
+              <>
+                <dt>started</dt>
+                <dd>{new Date(s.health.started_at).toLocaleString()}</dd>
+              </>
+            )}
+          </dl>
+        )}
+        <BuildNotes />
       </Card>
 
       <SplitDNSEditor />
@@ -196,13 +229,15 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
 
       <ConfigCard />
 
-      <UpdateCard />
+      <UpdateCard prefs={s?.preferences} />
+
+      <TelemetryCard prefs={s?.preferences} />
 
       <ConfirmModal
         open={confirmKill}
         danger
         title="Enable kill switch"
-        message="This blocks all egress except through the tunnel until disabled. A reconnect path (loopback, tunnel, gateway/LAN, DHCP) stays open."
+        message={<KillSwitchConfirmMessage />}
         confirmLabel="Enable"
         onConfirm={() => {
           setConfirmKill(false)
@@ -279,12 +314,95 @@ function ConfigCard() {
   )
 }
 
-// UpdateCard checks GitHub Releases for a newer version. It never self-installs —
-// applying an update stays a deliberate, checksum-verified step.
-function UpdateCard() {
+// ChoiceList is a labelled radio group: one row per option with a one-line
+// explanation, so what each choice actually does is visible before picking it.
+function ChoiceList<T extends string>({
+  name,
+  value,
+  options,
+  disabled,
+  onChange,
+}: {
+  name: string
+  value: T | undefined
+  options: { value: T; label: string; help: string; recommended?: boolean }[]
+  disabled?: boolean
+  onChange: (v: T) => void
+}) {
+  return (
+    <div role="radiogroup" aria-label={name} className="divide-y divide-line">
+      {options.map((o) => (
+        <label
+          key={o.value}
+          className={`flex items-start gap-3 px-4 py-3 ${disabled ? 'opacity-60' : 'cursor-pointer hover:bg-elevated/50'}`}
+        >
+          <input
+            type="radio"
+            name={name}
+            value={o.value}
+            checked={value === o.value}
+            disabled={disabled}
+            onChange={() => onChange(o.value)}
+            className="mt-0.5 accent-accent"
+          />
+          <span>
+            <span className="flex items-center gap-2 text-sm text-default">
+              {o.label}
+              {o.recommended && <Badge tone="muted">default</Badge>}
+            </span>
+            <span className="block text-xs text-muted">{o.help}</span>
+          </span>
+        </label>
+      ))}
+    </div>
+  )
+}
+
+// usePreferenceSetter persists one preference change and refreshes state; the
+// daemon broadcasts the new state too, so other windows/CLI stay in sync.
+function usePreferenceSetter() {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  async function set(patch: Partial<Preferences>) {
+    setBusy(true)
+    setErr(null)
+    try {
+      await api.setPreferences(patch)
+    } catch (e) {
+      setErr(friendly(e))
+    } finally {
+      setBusy(false)
+      qc.invalidateQueries({ queryKey: stateKey })
+    }
+  }
+  return { set, busy, err }
+}
+
+const UPDATE_OPTIONS: { value: UpdateMode; label: string; help: string; recommended?: boolean }[] = [
+  {
+    value: 'auto',
+    label: 'Install automatically',
+    help: 'Verified updates install while RiftRoute is idle; a version that misbehaves is rolled back on its own.',
+    recommended: true,
+  },
+  { value: 'notify', label: 'Notify me', help: 'Check for updates and tell you. Installing is your choice.' },
+  { value: 'off', label: 'Off', help: 'Never check on its own. “Check for updates” still works when you ask.' },
+]
+
+const TELEMETRY_OPTIONS: { value: TelemetryLevel; label: string; help: string; recommended?: boolean }[] = [
+  { value: 'full', label: 'Full', help: 'Basic, plus anonymous counts of which features are used and error codes.', recommended: true },
+  { value: 'basic', label: 'Basic', help: 'Version, OS and architecture, and whether updates and restarts succeeded.' },
+  { value: 'off', label: 'Off', help: 'Nothing is sent — no telemetry request is made at all.' },
+]
+
+// UpdateCard: what RiftRoute may do about new releases, plus a manual check.
+// The check never installs anything.
+function UpdateCard({ prefs }: { prefs?: Preferences }) {
   const [busy, setBusy] = useState(false)
   const [res, setRes] = useState<UpdateResult | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const pref = usePreferenceSetter()
 
   async function check() {
     setBusy(true)
@@ -309,8 +427,19 @@ function UpdateCard() {
           </button>
         }
       />
-      <div className="p-4 text-sm">
-        {!res && !err && <p className="text-muted">Checks GitHub Releases; nothing is installed automatically.</p>}
+      <ChoiceList
+        name="Update mode"
+        value={prefs?.updates}
+        options={UPDATE_OPTIONS}
+        disabled={!prefs || pref.busy}
+        onChange={(v) => void pref.set({ updates: v })}
+      />
+      <div className="space-y-2 border-t border-line p-4 text-sm">
+        {!prefs && <p className="text-xs text-warning">This daemon is too old to store an update preference — install the current daemon.</p>}
+        {pref.err && <p className="text-xs text-danger">{pref.err}</p>}
+        <p className="text-xs text-muted">
+          RiftRoute doesn’t check or install updates on its own yet — your choice here is what it will do once it can.
+        </p>
         {err && <p className="text-danger">Update check failed: {err}</p>}
         {res && !res.available && (
           <p className="text-success">✓ Up to date ({res.current}{res.latest ? `; latest ${res.latest}` : ''})</p>
@@ -324,6 +453,36 @@ function UpdateCard() {
             <p className="text-xs text-muted">Download the asset for your platform, verify its SHA-256 against the release checksums, then reinstall.</p>
           </div>
         )}
+      </div>
+    </Card>
+  )
+}
+
+// TelemetryCard: how much anonymous usage data RiftRoute may send. The hard
+// limits hold at every level, and nothing is sent by this version.
+function TelemetryCard({ prefs }: { prefs?: Preferences }) {
+  const pref = usePreferenceSetter()
+  return (
+    <Card>
+      <CardHeader title="Telemetry" hint="anonymous usage data" />
+      <ChoiceList
+        name="Telemetry level"
+        value={prefs?.telemetry}
+        options={TELEMETRY_OPTIONS}
+        disabled={!prefs || pref.busy}
+        onChange={(v) => void pref.set({ telemetry: v })}
+      />
+      <div className="space-y-2 border-t border-line p-4 text-xs text-muted">
+        {!prefs && <p className="text-warning">This daemon is too old to store a telemetry preference — install the current daemon.</p>}
+        {pref.err && <p className="text-danger">{pref.err}</p>}
+        <p>
+          <span className="font-medium text-default">Never sent, at any level:</span> IP addresses, domains, profile, list,
+          app or user names, and network or host names.
+        </p>
+        <p>
+          This version doesn’t send telemetry yet. When one does, it will tell you first and show you the exact data it
+          sends.
+        </p>
       </div>
     </Card>
   )

@@ -9,7 +9,13 @@ import (
 func killswitchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "killswitch",
-		Short: "Fence egress to the tunnel so traffic can't leak if the VPN drops",
+		Short: "Keep your apps' traffic inside the VPN tunnel so it can't leak if the VPN drops",
+		Long: "While on, processes of regular login accounts (your apps) reach the internet only\n" +
+			"through a VPN tunnel, the LAN, or destinations your exclude profiles route around\n" +
+			"the VPN. Root and system accounts are never blocked, so VPN clients' privileged\n" +
+			"helpers can always reconnect; standard VPN ports stay open. Not blocked: system\n" +
+			"services (including the OS resolver's DNS lookups) and forwarded traffic (VMs).\n" +
+			"The choice is saved and restored after a restart; `riftroute panic` turns it off.",
 	}
 	cmd.AddCommand(
 		killswitchToggleCmd("on", true),

@@ -33,3 +33,12 @@ export function ownerTone(owner: Owner): 'accent' | 'vpn' | 'muted' {
       return 'muted'
   }
 }
+
+// fmtBuildMeta renders the commit + commit date of a build ("a5e49c2 · 2026-08-13");
+// empty for daemons that predate build reporting.
+export function fmtBuildMeta(b?: { commit?: string; commit_time?: string; modified?: boolean }): string {
+  if (!b?.commit) return ''
+  const parts = [b.commit.slice(0, 7) + (b.modified ? '-dirty' : '')]
+  if (b.commit_time) parts.push(b.commit_time.slice(0, 10))
+  return parts.join(' · ')
+}

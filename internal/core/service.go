@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/buildinfo"
 	"github.com/Amirhat/riftroute/internal/dns"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/lists"
@@ -41,6 +42,35 @@ type Service struct {
 	// wildcardStatus reports whether the DNS learner is serving and on which
 	// port (for the doctor); nil = not wired.
 	wildcardStatus func() (bool, int)
+	// build identifies the running binary; binWatch reports when a different
+	// build has since been installed over it (nil = not wired).
+	build    domain.BuildInfo
+	binWatch *buildinfo.Watcher
+}
+
+// SetBuild records the running binary's identity and the watcher that
+// detects a newer install waiting on a restart.
+func (s *Service) SetBuild(b domain.BuildInfo, w *buildinfo.Watcher) {
+	s.build, s.binWatch = b, w
+}
+
+// Health reports the daemon's identity and liveness without touching the
+// provider — cheap enough for /healthz polling.
+func (s *Service) Health() domain.Health {
+	build := s.build
+	if build.Version == "" {
+		build.Version = s.version
+	}
+	h := domain.Health{
+		Daemon: domain.DaemonOK, Version: s.version, Provider: s.prov.Name(),
+		UptimeSeconds: int64(s.now().Sub(s.started).Seconds()), PID: pid(),
+		Build: build, Binary: s.binWatch.Path(), StartedAt: s.started,
+	}
+	h.RestartRequired, h.RestartReason = s.binWatch.Check()
+	if s.store != nil {
+		h.SchemaVersion, _ = s.store.UserVersion()
+	}
+	return h
 }
 
 // SetResolver overrides the domain resolver cache (tests).
@@ -464,10 +494,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 	}
 
 	return domain.State{
-		Health: domain.Health{
-			Daemon: domain.DaemonOK, Version: s.version, Provider: s.prov.Name(),
-			UptimeSeconds: int64(s.now().Sub(s.started).Seconds()), PID: pid(),
-		},
+		Health:            s.Health(),
 		Capabilities:      s.prov.Capabilities(),
 		VPN:               domain.VPNStatus{Active: len(vpnUp) > 0, Interfaces: vpnUp},
 		Interfaces:        ifaces,
@@ -479,8 +506,28 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		ManagedRuleCount:  managedRules,
 		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
+		Preferences:       s.Preferences(),
+		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
 		GeneratedAt:       s.now(),
 	}, nil
+}
+
+func (s *Service) setting(key string) string {
+	if s.store == nil {
+		return ""
+	}
+	v, _, _ := s.store.GetSetting(key)
+	return v
+}
+
+// Preferences returns the user's update/telemetry choices: defaults when
+// unset, the conservative choices (notify, telemetry off) when unreadable.
+func (s *Service) Preferences() domain.Preferences {
+	if s.store == nil {
+		return store.ConservativePreferences()
+	}
+	p, _ := s.store.LoadPreferences()
+	return p
 }
 
 // Routes returns the routing table in kernel lookup-precedence order,
@@ -711,11 +758,11 @@ func (s *Service) Diff(ctx context.Context) (domain.Diff, error) {
 }
 
 func (s *Service) degraded(err error) domain.State {
+	h := s.Health()
+	h.Daemon, h.Reason = domain.DaemonDegraded, err.Error()
 	return domain.State{
-		Health: domain.Health{
-			Daemon: domain.DaemonDegraded, Reason: err.Error(), Version: s.version,
-			Provider: s.prov.Name(), UptimeSeconds: int64(s.now().Sub(s.started).Seconds()), PID: pid(),
-		},
+		Health:       h,
+		Preferences:  s.Preferences(),
 		Capabilities: s.prov.Capabilities(),
 		GeneratedAt:  s.now(),
 	}

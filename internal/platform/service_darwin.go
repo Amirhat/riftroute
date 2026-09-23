@@ -4,45 +4,93 @@ package platform
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strings"
 	"time"
 )
 
 const launchdTarget = "system/" + launchdLabel
 
+// launchctl runs one launchctl verb; printService returns `launchctl print`
+// output for our job (error when it isn't loaded). Package vars so the
+// sequencing below is testable without touching launchd.
+var (
+	launchctl    = func(args ...string) error { return runCmd("launchctl", args...) }
+	printService = func() (string, error) { return cmdOutput("launchctl", "print", launchdTarget) }
+	now          = time.Now
+	sleep        = time.Sleep
+)
+
+// unloadTimeout bounds the wait for bootout to finish: launchd sends SIGTERM,
+// then SIGKILL after the job's exit timeout (20s by default).
+const unloadTimeout = 25 * time.Second
+
 // bootService (re)loads the daemon into the SYSTEM launchd domain and starts it.
 // Uses the modern verbs — `launchctl load` is legacy and does not reliably load
 // a system LaunchDaemon on macOS 11+ (it was the reason the service "installed
 // but never started"). Falls back to `load -w` only on ancient macOS.
+//
+// `bootout` returns before the job is actually gone. Bootstrapping straight
+// after it races the teardown: bootstrap fails ("5: Input/output error") or
+// the OLD definition stays loaded — and with it the old process, still
+// serving the socket after an "install" (Clew lesson). So wait until launchd
+// no longer knows the job, then bootstrap, retrying briefly.
 func bootService() error {
-	_ = runCmd("launchctl", "bootout", "system", launchdPlist) // clear any prior copy
-	_ = runCmd("launchctl", "enable", launchdTarget)           // undo any earlier disable
-	if err := runCmd("launchctl", "bootstrap", "system", launchdPlist); err != nil {
-		if lerr := runCmd("launchctl", "load", "-w", launchdPlist); lerr != nil {
+	if err := unbootService(); err != nil {
+		return err
+	}
+	_ = launchctl("enable", launchdTarget) // undo any earlier disable
+	var err error
+	for attempt := 0; attempt < 4; attempt++ {
+		if attempt > 0 {
+			sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+		if err = launchctl("bootstrap", "system", launchdPlist); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		if lerr := launchctl("load", "-w", launchdPlist); lerr != nil {
 			return fmt.Errorf("launchctl bootstrap failed: %w", err)
 		}
 	}
-	_ = runCmd("launchctl", "kickstart", "-k", launchdTarget) // ensure it's running now
+	// RunAtLoad already started it; kickstart WITHOUT -k is a no-op then and
+	// only starts a job that didn't (-k would kill the fresh process).
+	_ = launchctl("kickstart", launchdTarget)
 	return nil
 }
 
-func unbootService() {
-	_ = runCmd("launchctl", "bootout", "system", launchdPlist)
-	_ = runCmd("launchctl", "bootout", launchdTarget) // belt-and-suspenders
+// unbootService removes the job from launchd and waits until it's really gone.
+func unbootService() error {
+	_ = launchctl("bootout", "system", launchdPlist)
+	_ = launchctl("bootout", launchdTarget) // belt-and-suspenders (plist may be gone)
+	deadline := now().Add(unloadTimeout)
+	for {
+		if _, err := printService(); err != nil {
+			return nil // launchd no longer knows the job
+		}
+		if now().After(deadline) {
+			return fmt.Errorf("launchd did not unload %s within %s; the old daemon may still be running", launchdLabel, unloadTimeout)
+		}
+		sleep(200 * time.Millisecond)
+	}
 }
 
-// waitForSocket blocks until the daemon's socket appears (proof it actually came
-// up), or returns an error with the daemon's log tail so the failure is visible
+// waitForSocket blocks until the new daemon ACCEPTS a connection on its socket
+// (the file alone proves nothing — a crashed predecessor can leave it behind),
+// or returns an error with the daemon's log tail so the failure is visible
 // instead of a silent "installed but not running".
 func waitForSocket(socket string) error {
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if fileExists(socket) {
+		if c, err := net.DialTimeout("unix", socket, 300*time.Millisecond); err == nil {
+			_ = c.Close()
 			return nil
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("riftrouted did not come up within 8s — recent log (%s/riftrouted.err.log):\n%s",
+	return fmt.Errorf("riftrouted did not come up within 10s — recent log (%s/riftrouted.err.log):\n%s",
 		logDir, readTail(logDir+"/riftrouted.err.log", 1200))
 }
 
@@ -65,8 +113,26 @@ func newServiceManager() ServiceManager { return launchdManager{} }
 func (launchdManager) Status() ServiceStatus {
 	st := ServiceStatus{Manager: "launchd", Label: launchdLabel}
 	st.Installed = fileExists(launchdPlist)
-	st.Loaded = cmdContains(launchdLabel, "launchctl", "list")
+	// `launchctl print system/…` works unprivileged; `launchctl list` only
+	// shows the caller's own domain, so it reported a running system daemon
+	// as not loaded to every non-root user.
+	if out, err := printService(); err == nil {
+		st.Loaded = true
+		st.Detail = launchdState(out)
+	}
 	return st
+}
+
+// launchdState extracts the job state ("running", "waiting", …) from
+// `launchctl print` output.
+func launchdState(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), " = ")
+		if ok && k == "state" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
@@ -103,7 +169,9 @@ func (launchdManager) Uninstall() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	unbootService()
+	if err := unbootService(); err != nil {
+		return err // don't delete the binary out from under a live daemon
+	}
 	_ = os.Remove(launchdPlist)
 	_ = os.Remove(installedBin) // remove the privileged binary too
 	return nil
@@ -113,8 +181,7 @@ func (launchdManager) Restart() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	unbootService()
-	return bootService()
+	return bootService() // unloads (and waits) first
 }
 
 func (launchdManager) Start() error {
@@ -131,8 +198,7 @@ func (launchdManager) Stop() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	unbootService()
-	return nil
+	return unbootService()
 }
 
 func renderPlist(bin, socket string, allowUID int) string {

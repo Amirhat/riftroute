@@ -170,3 +170,37 @@ func TestPruneSnapshotsKeepsNewest(t *testing.T) {
 		t.Fatalf("kept the wrong snapshots: %+v", []string{snaps[0].ID, snaps[1].ID})
 	}
 }
+
+// A snapshot written by a newer RiftRoute (a later doc format) is listed but
+// never restored: this build could silently drop fields it doesn't know.
+func TestSnapshotRestoreRefusesNewerFormat(t *testing.T) {
+	ts, st := newMutableServer(t)
+	snap := domain.Snapshot{
+		ID: "future", CreatedAt: time.Now(), Reason: "t",
+		Profiles: []domain.Profile{}, Format: store.SnapshotFormat + 1,
+	}
+	if err := st.SaveSnapshot(snap); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(ts.URL+"/snapshots/future/restore?yes=1", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("restore of a newer-format snapshot: status %d, want 400", resp.StatusCode)
+	}
+
+	lr, err := http.Get(ts.URL + "/snapshots")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lr.Body.Close()
+	var list struct {
+		Snapshots []domain.Snapshot `json:"snapshots"`
+	}
+	_ = json.NewDecoder(lr.Body).Decode(&list)
+	if len(list.Snapshots) != 1 || list.Snapshots[0].Restorable {
+		t.Fatalf("newer-format snapshot must list as not restorable: %+v", list.Snapshots)
+	}
+}

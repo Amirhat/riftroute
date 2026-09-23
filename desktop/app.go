@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/Amirhat/riftroute/internal/apiclient"
+	"github.com/Amirhat/riftroute/internal/buildinfo"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/safety"
@@ -437,3 +439,38 @@ func (a *App) Reachable() bool {
 
 // Version returns the GUI build version.
 func (a *App) Version() string { return version }
+
+// GetPreferences returns the update mode and telemetry level.
+func (a *App) GetPreferences() (domain.Preferences, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Preferences(ctx)
+}
+
+// SetPreferences changes the update mode and/or telemetry level (unset fields
+// keep their value) and returns the result.
+func (a *App) SetPreferences(patch domain.PreferencesPatch) (domain.Preferences, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SetPreferences(ctx, patch)
+}
+
+// BuildNotes lists warnings about the daemon's build as seen from this app:
+// a newer build installed but not yet running, or app and daemon out of step.
+// Empty when all is well (or the daemon is unreachable).
+func (a *App) BuildNotes() []string {
+	ctx, cancel := a.call()
+	defer cancel()
+	notes := []string{}
+	h, err := a.client.Health(ctx)
+	if err != nil {
+		return notes
+	}
+	if h.RestartRequired {
+		notes = append(notes, "Restart needed: "+h.RestartReason)
+	}
+	if m := buildinfo.Mismatch(buildinfo.Current(version), h.Build); m != "" {
+		notes = append(notes, strings.ToUpper(m[:1])+m[1:])
+	}
+	return notes
+}

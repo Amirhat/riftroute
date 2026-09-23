@@ -4,6 +4,8 @@ package platform
 
 import "errors"
 
+const installedBin = ""
+
 type noopManager struct{}
 
 func newServiceManager() ServiceManager { return noopManager{} }

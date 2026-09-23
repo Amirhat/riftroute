@@ -12,6 +12,12 @@ export function useStateQuery() {
   return useQuery({ queryKey: stateKey, queryFn: api.state })
 }
 
+// Build warnings are cheap (one /healthz read) and change only on install or
+// restart, so a slow poll is plenty.
+export function useBuildNotesQuery() {
+  return useQuery({ queryKey: ['buildNotes'], queryFn: api.buildNotes, refetchInterval: 15_000 })
+}
+
 export function useRoutesQuery(family: string) {
   return useQuery({ queryKey: routesKey(family), queryFn: () => api.routes(family) })
 }

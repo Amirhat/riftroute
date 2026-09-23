@@ -11,9 +11,13 @@ export function Apply(arg1:boolean,arg2:number):Promise<safety.Result>;
 
 export function ApplyConfigContent(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<apiclient.ConfigResult>;
 
+export function BuildNotes():Promise<Array<string>>;
+
 export function CheckUpdate():Promise<update.Result>;
 
 export function Confirm(arg1:string):Promise<domain.TxResult>;
+
+export function CreateBugReport():Promise<domain.BugReport>;
 
 export function DeleteList(arg1:string):Promise<void>;
 
@@ -37,6 +41,8 @@ export function GetLeaks():Promise<Array<domain.Leak>>;
 
 export function GetLists():Promise<Array<domain.List>>;
 
+export function GetPreferences():Promise<domain.Preferences>;
+
 export function GetProfiles():Promise<Array<domain.Profile>>;
 
 export function GetRoutes(arg1:string,arg2:string):Promise<Array<domain.Route>>;
@@ -57,6 +63,8 @@ export function InstallDaemon():Promise<void>;
 
 export function OpenConfigDialog():Promise<main.ConfigFile>;
 
+export function OpenIssuePage():Promise<void>;
+
 export function PanicFlush():Promise<void>;
 
 export function PlanPreview():Promise<domain.Plan>;
@@ -73,6 +81,8 @@ export function Rollback(arg1:string):Promise<domain.TxResult>;
 
 export function RouteOp(arg1:string,arg2:domain.Route,arg3:domain.Route):Promise<apiclient.ConfigResult>;
 
+export function SaveBugReport(arg1:string):Promise<string>;
+
 export function SaveList(arg1:domain.List):Promise<domain.List>;
 
 export function SaveProfile(arg1:domain.Profile,arg2:boolean):Promise<apiclient.ConfigResult>;
@@ -80,6 +90,8 @@ export function SaveProfile(arg1:domain.Profile,arg2:boolean):Promise<apiclient.
 export function SetAutoApply(arg1:boolean):Promise<boolean>;
 
 export function SetKillSwitch(arg1:boolean):Promise<boolean>;
+
+export function SetPreferences(arg1:domain.PreferencesPatch):Promise<domain.Preferences>;
 
 export function SetProfileEnabled(arg1:string,arg2:boolean):Promise<safety.Result>;
 

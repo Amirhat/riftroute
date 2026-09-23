@@ -33,3 +33,6 @@ dist/
 
 # Wails frontend dep-hash marker
 desktop/frontend/package.json.md5
+
+# Local bug reports written by `riftroute bugreport` (may hold redacted diagnostics)
+riftroute-bugreport-*.txt

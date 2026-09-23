@@ -10,12 +10,20 @@ export function ApplyConfigContent(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ApplyConfigContent'](arg1, arg2, arg3, arg4);
 }
 
+export function BuildNotes() {
+  return window['go']['main']['App']['BuildNotes']();
+}
+
 export function CheckUpdate() {
   return window['go']['main']['App']['CheckUpdate']();
 }
 
 export function Confirm(arg1) {
   return window['go']['main']['App']['Confirm'](arg1);
+}
+
+export function CreateBugReport() {
+  return window['go']['main']['App']['CreateBugReport']();
 }
 
 export function DeleteList(arg1) {
@@ -62,6 +70,10 @@ export function GetLists() {
   return window['go']['main']['App']['GetLists']();
 }
 
+export function GetPreferences() {
+  return window['go']['main']['App']['GetPreferences']();
+}
+
 export function GetProfiles() {
   return window['go']['main']['App']['GetProfiles']();
 }
@@ -102,6 +114,10 @@ export function OpenConfigDialog() {
   return window['go']['main']['App']['OpenConfigDialog']();
 }
 
+export function OpenIssuePage() {
+  return window['go']['main']['App']['OpenIssuePage']();
+}
+
 export function PanicFlush() {
   return window['go']['main']['App']['PanicFlush']();
 }
@@ -134,6 +150,10 @@ export function RouteOp(arg1, arg2, arg3) {
   return window['go']['main']['App']['RouteOp'](arg1, arg2, arg3);
 }
 
+export function SaveBugReport(arg1) {
+  return window['go']['main']['App']['SaveBugReport'](arg1);
+}
+
 export function SaveList(arg1) {
   return window['go']['main']['App']['SaveList'](arg1);
 }
@@ -148,6 +168,10 @@ export function SetAutoApply(arg1) {
 
 export function SetKillSwitch(arg1) {
   return window['go']['main']['App']['SetKillSwitch'](arg1);
+}
+
+export function SetPreferences(arg1) {
+  return window['go']['main']['App']['SetPreferences'](arg1);
 }
 
 export function SetProfileEnabled(arg1, arg2) {

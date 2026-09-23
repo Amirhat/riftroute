@@ -2,13 +2,17 @@ package safety_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/safety"
+	"github.com/Amirhat/riftroute/internal/store"
 )
 
 // A crash mid-transaction — or while a non-interactive change is on probation —
@@ -62,5 +66,45 @@ func TestGuardrail_RefusesMainTableWhenGatewayUnknown(t *testing.T) {
 	}
 	if h.prov.CountManaged() != 0 {
 		t.Fatalf("nothing should be applied on a fail-safe refusal, got %d", h.prov.CountManaged())
+	}
+}
+
+// unreadableJournal wraps a real store and reports one extra journal entry
+// this build can't interpret — as after rolling back to an older binary that
+// finds an entry written in a newer format.
+type unreadableJournal struct {
+	*store.Store
+}
+
+func (u unreadableJournal) ListPendingTx() (map[string]domain.Plan, error) {
+	pend, err := u.Store.ListPendingTx()
+	if err != nil {
+		return pend, err
+	}
+	return pend, fmt.Errorf("%w: future-tx (format 2, this build reads 1)", store.ErrPendingUnreadable)
+}
+
+// One unreadable entry must not block recovery of the readable ones, and it
+// must be reported (not swallowed) so the daemon logs it.
+func TestRecoverPending_RecoversReadableAndReportsUnreadable(t *testing.T) {
+	h := newHarness(t)
+	res, err := h.p.Apply(context.Background(), desired("9.9.9.0/24"), nil, opts(true))
+	if err != nil || !res.NeedsConfirm {
+		t.Fatalf("apply: %+v err=%v", res, err)
+	}
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	p2 := safety.NewProtocol(h.prov, unreadableJournal{h.st}, safety.NewFakeClock(time.Unix(0, 0)),
+		func() safety.Prober { return safety.NewFakeProber() }, "fake", log)
+
+	n, err := p2.RecoverPending(context.Background())
+	if n != 1 {
+		t.Fatalf("readable in-flight tx must still be reverted, got n=%d", n)
+	}
+	if !errors.Is(err, store.ErrPendingUnreadable) {
+		t.Fatalf("unreadable entry must be reported, got err=%v", err)
+	}
+	if h.prov.CountManaged() != 0 {
+		t.Fatalf("crash recovery must revert the in-flight route, got %d managed", h.prov.CountManaged())
 	}
 }

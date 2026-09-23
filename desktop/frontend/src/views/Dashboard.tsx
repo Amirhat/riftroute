@@ -1,7 +1,8 @@
 import { useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Label, Badge, Dot, Addr, Skeleton, CapBadge } from '../components/ui'
 import { DaemonSetup } from '../components/DaemonSetup'
-import { fmtUptime } from '../lib/format'
+import { BuildNotes } from '../components/BuildNotes'
+import { fmtBuildMeta, fmtUptime } from '../lib/format'
 import type { State } from '../types'
 
 export function Dashboard() {
@@ -78,7 +79,13 @@ function DashboardContent({ state }: { state: State }) {
             <Field label="PID" value={String(state.health.pid)} />
             <Field label="Uptime" value={fmtUptime(state.health.uptime_seconds)} />
           </div>
+          {fmtBuildMeta(state.health.build) && (
+            <div className="-mt-2 truncate px-4 pb-3 font-mono text-[11px] text-muted" title={state.health.binary}>
+              build {fmtBuildMeta(state.health.build)}
+            </div>
+          )}
           {state.health.reason && <div className="px-4 pb-4 text-sm text-danger">{state.health.reason}</div>}
+          <BuildNotes />
         </Card>
 
         {/* DNS */}

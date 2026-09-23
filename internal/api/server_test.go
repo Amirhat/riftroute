@@ -37,10 +37,20 @@ func TestHealthz(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	var body map[string]string
-	_ = json.NewDecoder(resp.Body).Decode(&body)
-	if body["status"] != "ok" {
-		t.Fatalf("unexpected body %v", body)
+	// status+version stay plain strings: older clients (Ping) read only these.
+	var body struct {
+		Status  string        `json:"status"`
+		Version string        `json:"version"`
+		Health  domain.Health `json:"health"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "ok" || body.Version != "test" {
+		t.Fatalf("unexpected body %+v", body)
+	}
+	if body.Health.Build.Version != "test" || body.Health.SchemaVersion != store.SchemaVersion() || body.Health.StartedAt.IsZero() {
+		t.Fatalf("health identity missing: %+v", body.Health)
 	}
 }
 

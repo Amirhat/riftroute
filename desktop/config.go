@@ -10,6 +10,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/apiclient"
 	"github.com/Amirhat/riftroute/internal/config"
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 // maxConfigBytes caps an imported config (matches the daemon's own /config limit).
@@ -99,7 +100,14 @@ func (a *App) ExportConfigDialog() (string, error) {
 		return "", fmt.Errorf("couldn't read split-DNS from the daemon: %w", err)
 	}
 
-	data, err := config.FromDomain(profiles, lists, splitDNS).ToYAML()
+	// Preferences are optional in the file (absent = left alone on apply), so
+	// a daemon that predates them still exports everything that matters.
+	var prefs *domain.Preferences
+	if p, perr := a.client.Preferences(ctx); perr == nil {
+		prefs = &p
+	}
+
+	data, err := config.FromDomain(profiles, lists, splitDNS, prefs).ToYAML()
 	if err != nil {
 		return "", err
 	}

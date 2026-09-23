@@ -14,7 +14,6 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
-	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
@@ -133,8 +132,14 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	if !s.mutationEnabled(w) {
 		return
 	}
+	// The kill switch goes FIRST and regardless of the rest: panic is the
+	// "get me back online" button, and a firewall left behind by a failed
+	// route flush would defeat it.
+	// Detached from the request: a client giving up (uninstall's timeout)
+	// must not cut the removal off half-way.
+	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
 	if err := s.proto.Panic(r.Context(), domain.ActorUI); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, errors.Join(err, ksErr))
 		return
 	}
 	// Restore the DNS baseline too: stop the wildcard learner and drop its
@@ -144,6 +149,10 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 		s.onPanic(r.Context())
 	}
 	s.BroadcastState(r.Context())
+	if ksErr != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("routes flushed, but the kill switch could not be removed: %w", ksErr))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "panicked"})
 }
 
@@ -515,6 +524,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				s.log.Warn("config apply: list not persisted", "list", l.Name, "err", err)
 			}
 		}
+		// settings.updates/telemetry: only what the file mentions (validated
+		// by Parse), so a profiles-only file leaves the user's choices alone.
+		if patch := cfg.PreferencesPatch(); patch.Updates != nil || patch.Telemetry != nil {
+			if serr := s.store.SavePreferencesPatch(patch); serr != nil {
+				s.log.Warn("config apply: preferences not persisted", "err", serr)
+			}
+		}
 	}
 	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
@@ -748,60 +764,57 @@ func (s *Server) handleAutoApply(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"auto_apply": req.Enabled})
 }
 
-func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
-	if s.killSwitch == nil {
-		writeErr(w, http.StatusNotImplemented, errors.New("kill switch unavailable"))
+func (s *Server) handlePreferencesGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.Preferences())
+}
+
+// handlePreferencesSet changes the update mode and/or telemetry level; fields
+// left out of the body keep their current value.
+func (s *Server) handlePreferencesSet(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
 		return
 	}
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+	var patch domain.PreferencesPatch
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&patch); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	var err error
-	if req.Enabled {
-		err = s.killSwitch.Enable(r.Context(), s.killSwitchConfig(r.Context()))
-	} else {
-		err = s.killSwitch.Disable(r.Context())
-	}
+	cur, err := s.store.LoadPreferences()
 	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("read preferences: %w", err))
+		return
+	}
+	p, err := applyPreferencesPatch(cur, patch)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	// Only the changed key is written: the other keeps exactly what's stored.
+	if err := s.store.SavePreferencesPatch(patch); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	on, _ := s.killSwitch.Enabled(r.Context())
+	s.log.Info("preferences changed", "updates", p.Updates, "telemetry", p.Telemetry)
 	s.BroadcastState(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"kill_switch": on, "backend": s.killSwitch.Backend()})
+	writeJSON(w, http.StatusOK, p)
 }
 
-// killSwitchConfig derives the kill switch allow-list from current state: the
-// up tunnel interfaces, the physical gateway, and the LAN subnets (so the VPN
-// can still reconnect — never a permanent lockout).
-func (s *Server) killSwitchConfig(ctx context.Context) killswitch.Config {
-	cfg := killswitch.Config{}
-	ifaces, _ := s.svc.Interfaces(ctx)
-	for _, ifc := range ifaces {
-		if !ifc.Up {
-			continue
+// applyPreferencesPatch validates and merges a partial preferences change.
+func applyPreferencesPatch(cur domain.Preferences, patch domain.PreferencesPatch) (domain.Preferences, error) {
+	if patch.Updates != nil {
+		if !patch.Updates.Valid() {
+			return cur, fmt.Errorf("invalid update mode %q (expected auto, notify, or off)", *patch.Updates)
 		}
-		if ifc.IsVPN {
-			cfg.TunnelIfaces = append(cfg.TunnelIfaces, ifc.Name)
-			continue
-		}
-		if ifc.Kind == domain.IfaceKindLoopback {
-			continue
-		}
-		for _, a := range ifc.Addrs {
-			if pfx, err := netip.ParsePrefix(a); err == nil && pfx.Addr().Is4() {
-				cfg.LANSubnets = append(cfg.LANSubnets, pfx.Masked().String())
-			}
-		}
+		cur.Updates = *patch.Updates
 	}
-	if gw, _, err := s.svc.Provider().DefaultGateway(ctx, domain.FamilyV4); err == nil && gw.IsValid() {
-		cfg.Gateway = gw.String()
+	if patch.Telemetry != nil {
+		if !patch.Telemetry.Valid() {
+			return cur, fmt.Errorf("invalid telemetry level %q (expected full, basic, or off)", *patch.Telemetry)
+		}
+		cur.Telemetry = *patch.Telemetry
 	}
-	return cfg
+	return cur, nil
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -820,7 +833,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	// Trim heavy route payloads for the list view; details fetched on demand.
 	// Restorable is derived from the (stripped) profile capture.
 	for i := range snaps {
-		snaps[i].Restorable = snaps[i].Profiles != nil
+		snaps[i].Restorable = snaps[i].Profiles != nil && snaps[i].Format <= store.SnapshotFormat
 		snaps[i].RoutesV4 = nil
 		snaps[i].RoutesV6 = nil
 		snaps[i].Rules = nil
@@ -853,6 +866,11 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 	if snap.Profiles == nil {
 		writeErr(w, http.StatusBadRequest,
 			errors.New("this snapshot predates policy capture and cannot be restored"))
+		return
+	}
+	if snap.Format > store.SnapshotFormat {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf(
+			"this snapshot was made by a newer RiftRoute (format %d) and cannot be restored by this version", snap.Format))
 		return
 	}
 

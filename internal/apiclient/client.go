@@ -143,6 +143,23 @@ func (c *Client) Ping(ctx context.Context) (string, error) {
 	return body.Version, nil
 }
 
+// Health fetches the daemon's identity and liveness (build, binary, restart
+// needed) without the cost of a full State read. A daemon that predates this
+// returns a Health carrying only its version.
+func (c *Client) Health(ctx context.Context) (domain.Health, error) {
+	var body struct {
+		Version string         `json:"version"`
+		Health  *domain.Health `json:"health"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &body); err != nil {
+		return domain.Health{}, err
+	}
+	if body.Health == nil {
+		return domain.Health{Daemon: domain.DaemonOK, Version: body.Version, Build: domain.BuildInfo{Version: body.Version}}, nil
+	}
+	return *body.Health, nil
+}
+
 // State fetches the aggregate daemon state.
 func (c *Client) State(ctx context.Context) (domain.State, error) {
 	var st domain.State
@@ -535,6 +552,28 @@ func (c *Client) SetAutoApply(ctx context.Context, enabled bool) (bool, error) {
 	}
 	err := c.do(ctx, http.MethodPut, "/autoapply", map[string]bool{"enabled": enabled}, &body)
 	return body.AutoApply, err
+}
+
+// BugReport fetches the daemon's redacted diagnostics report. It runs the
+// doctor battery, so allow it several seconds.
+func (c *Client) BugReport(ctx context.Context) (domain.BugReport, error) {
+	var rep domain.BugReport
+	err := c.do(ctx, http.MethodGet, "/bugreport", nil, &rep)
+	return rep, err
+}
+
+// Preferences returns the update mode and telemetry level.
+func (c *Client) Preferences(ctx context.Context) (domain.Preferences, error) {
+	var p domain.Preferences
+	err := c.do(ctx, http.MethodGet, "/preferences", nil, &p)
+	return p, err
+}
+
+// SetPreferences changes the fields set in patch and returns the result.
+func (c *Client) SetPreferences(ctx context.Context, patch domain.PreferencesPatch) (domain.Preferences, error) {
+	var p domain.Preferences
+	err := c.do(ctx, http.MethodPut, "/preferences", patch, &p)
+	return p, err
 }
 
 // SplitDNS returns the persisted per-domain resolver routes.

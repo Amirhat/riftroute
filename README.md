@@ -316,8 +316,34 @@ watchdog
 that probes anchor reachability and, on an interactive apply, requires a
 commit-confirm — if connectivity drops or you don't confirm in time, the change
 auto-reverts atomically. A daemon crash mid-transaction is repaired by an
-ownership reconcile on startup. The kill switch fails closed but always keeps a
-reconnect path (loopback, tunnel, gateway/LAN, DHCP) open.
+ownership reconcile on startup.
+
+The kill switch keeps **your apps** (processes of regular login accounts) off
+the internet except through a VPN tunnel, the LAN, or destinations your exclude
+profiles route around the VPN — so if the VPN drops they're cut off instead of
+leaking. It is a single rule on the **physical** interfaces, scoped to user
+sockets: tunnels are never guarded (whatever the VPN names them), and root/system
+accounts are never blocked — that's where VPN clients' privileged helpers, macOS
+IKEv2/IPsec and kernel WireGuard run, so a VPN can always reconnect. (It can't
+know in advance which server a VPN will pick, so an address allow-list would lock
+the VPN out.) Standard VPN ports (UDP 500/4500/51820/1194, TCP 1194) stay open
+for VPN apps that run as the user. It passes nothing another firewall blocked and
+keeps no connection state. Trade-offs: system services — including the OS
+resolver's DNS lookups — and forwarded traffic (VMs, Internet Sharing) are not
+blocked; captive-portal login pages are unreachable until it's turned off; and
+some VPN apps send their own connection from your user account (Windscribe in
+WireGuard mode does — seen on a real Mac), which the kill switch would cut. It
+never does: it watches its own counters, and if it blocks anything while a tunnel
+is up (apps route through the tunnel, so that's the VPN's own traffic) it refuses
+to turn on, or turns itself off, and says why — use that VPN app's own kill switch
+instead; PPPoE/mobile uplinks named
+`ppp*` are treated as tunnels and not guarded; and turning it on reloads
+`/etc/pf.conf` when the loaded ruleset lacks its hook, which drops rules other
+tools inserted at runtime (some VPN clients' own kill switches may need toggling
+again). Your choice is saved: it's
+restored after a restart or reboot and keeps holding while the service is
+stopped. On macOS it's a pf anchor hooked into `/etc/pf.conf` (removed again when
+turned off); Panic and `daemon uninstall` remove it.
 
 ## Contributing
 

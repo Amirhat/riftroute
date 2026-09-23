@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Amirhat/riftroute/internal/buildinfo"
 	"github.com/Amirhat/riftroute/internal/domain"
 )
 
@@ -36,8 +37,14 @@ func renderStatus(w io.Writer, st domain.State) {
 	if h.Reason != "" {
 		daemon += " (" + h.Reason + ")"
 	}
-	fmt.Fprintf(w, "  Daemon:        %s — version %s, provider %s, pid %d, up %ds\n",
-		daemon, h.Version, h.Provider, h.PID, h.UptimeSeconds)
+	fmt.Fprintf(w, "  Daemon:        %s — %s, provider %s, pid %d, up %ds\n",
+		daemon, buildinfo.Short(h.Build), h.Provider, h.PID, h.UptimeSeconds)
+	if h.RestartRequired {
+		fmt.Fprintf(w, "  ! Restart:     %s\n", h.RestartReason)
+	}
+	if m := buildinfo.Mismatch(buildinfo.Current(version), h.Build); m != "" {
+		fmt.Fprintf(w, "  ! Build:       %s\n", m)
+	}
 
 	if st.VPN.Active {
 		fmt.Fprintf(w, "  VPN:           active — %s\n", strings.Join(st.VPN.Interfaces, ", "))
@@ -102,6 +109,7 @@ func renderStatus(w io.Writer, st domain.State) {
 		fmt.Fprintln(w, "  Drift:         none")
 	}
 	fmt.Fprintf(w, "  Managed:       %d route(s), %d rule(s)\n", st.ManagedRouteCount, st.ManagedRuleCount)
+	renderPreferences(w, st.Preferences)
 
 	c := st.Capabilities
 	fmt.Fprintf(w, "  Capabilities:  platform=%s policy-routing=%s per-app=%s proto-tag=%s ipv6=%s\n",

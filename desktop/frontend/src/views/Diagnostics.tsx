@@ -4,6 +4,8 @@ import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Skeleton, Toggle } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { KILL_SWITCH_SHORT, KillSwitchConfirmMessage } from '../components/KillSwitchCopy'
+import { BugReportModal } from '../components/BugReportModal'
 import { useDaemon } from '../lib/useDaemon'
 import { friendly } from '../lib/format'
 import type { DoctorCheck } from '../types'
@@ -44,7 +46,7 @@ export function Diagnostics() {
   const d = useDaemon()
   const [confirmKill, setConfirmKill] = useState(false)
   const [confirmPanic, setConfirmPanic] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
   const [actionErr, setActionErr] = useState<string | null>(null)
 
   const rerun = () => {
@@ -57,8 +59,11 @@ export function Diagnostics() {
   const [killBusy, setKillBusy] = useState(false)
   async function setKill(enabled: boolean) {
     setKillBusy(true)
+    setActionErr(null)
     try {
       await api.setKillSwitch(enabled)
+    } catch (e) {
+      setActionErr(friendly(e, 'kill switch change failed'))
     } finally {
       setKillBusy(false)
       qc.invalidateQueries({ queryKey: stateKey })
@@ -74,18 +79,6 @@ export function Diagnostics() {
       setActionErr(friendly(e, 'panic flush failed'))
     } finally {
       qc.invalidateQueries()
-    }
-  }
-
-  async function copyReport() {
-    setActionErr(null)
-    try {
-      const payload = { doctor: doctorQ.data, leaks: leaksQ.data, state: stateQ.data }
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch (e) {
-      setActionErr(friendly(e, 'copy failed'))
     }
   }
 
@@ -150,7 +143,7 @@ export function Diagnostics() {
         <div className="divide-y divide-line">
           <ActionRow
             title="Kill switch"
-            desc="Fence all egress to the tunnel; a reconnect path stays open."
+            desc={stateQ.data?.kill_switch_notice || KILL_SWITCH_SHORT}
             control={
               <Toggle
                 on={killOn}
@@ -163,7 +156,7 @@ export function Diagnostics() {
           />
           <ActionRow
             title="Panic flush"
-            desc="Remove every RiftRoute-managed route and restore the baseline immediately."
+            desc="Remove every RiftRoute-managed route, turn the kill switch off, and restore the baseline immediately."
             control={
               <button
                 onClick={() => setConfirmPanic(true)}
@@ -187,14 +180,14 @@ export function Diagnostics() {
             }
           />
           <ActionRow
-            title="Copy report"
-            desc="Copy the full diagnostics (checks, leaks, state) as JSON for a bug report."
+            title="Bug report"
+            desc="Build a redacted report (addresses, domains and names replaced) to review, then attach to an issue. Nothing is uploaded."
             control={
               <button
-                onClick={() => void copyReport()}
+                onClick={() => setReportOpen(true)}
                 className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-default"
               >
-                {copied ? '✓ Copied' : 'Copy JSON'}
+                Create report…
               </button>
             }
           />
@@ -204,11 +197,13 @@ export function Diagnostics() {
         )}
       </Card>
 
+      {reportOpen && <BugReportModal onClose={() => setReportOpen(false)} />}
+
       <ConfirmModal
         open={confirmKill}
         danger
         title="Enable kill switch"
-        message="This blocks all egress except through the tunnel until disabled. A reconnect path (loopback, tunnel, gateway/LAN, DHCP) stays open."
+        message={<KillSwitchConfirmMessage />}
         confirmLabel="Enable"
         onConfirm={() => {
           setConfirmKill(false)
@@ -221,7 +216,7 @@ export function Diagnostics() {
         open={confirmPanic}
         danger
         title="Panic — flush all managed routes"
-        message="Remove ALL RiftRoute-managed routes and restore the baseline. This is immediate and affects every profile."
+        message="Remove ALL RiftRoute-managed routes, turn the kill switch off, and restore the baseline. This is immediate and affects every profile."
         confirmLabel="Flush all"
         onConfirm={() => {
           setConfirmPanic(false)

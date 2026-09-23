@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/core"
@@ -40,6 +41,15 @@ type Server struct {
 
 	// killSwitch fences egress to the tunnel when enabled (nil disables the API).
 	killSwitch killswitch.Manager
+	// ksMu guards the kill switch's wanted state and the config last applied,
+	// which SyncKillSwitch compares against live state.
+	ksMu   sync.Mutex
+	ksWant bool
+	ksLast killswitch.Config
+	// ksBlocked / ksStrikes track the kill switch's blocked-packet counter
+	// across syncs, to notice it cutting a VPN's own connection.
+	ksBlocked uint64
+	ksStrikes int
 	// splitDNS applies per-domain resolver selection (nil = no-op).
 	splitDNS splitdns.Manager
 	// setAutoApply flips the daemon's auto-apply gate at runtime (nil disables
@@ -125,6 +135,8 @@ func (s *Server) routes() {
 	// Local catalogs for the GUI's per-app pickers (users / cgroup units).
 	s.mux.HandleFunc("GET /system/users", s.handleSystemUsers)
 	s.mux.HandleFunc("GET /system/apps", s.handleSystemApps)
+	// Redacted diagnostics report for bug reports (never uploaded).
+	s.mux.HandleFunc("GET /bugreport", s.handleBugReport)
 
 	// Mutating endpoints — peer-credential gated (spec §12). /plan is a dry-run
 	// preview and does not mutate, but lives with its siblings for clarity.
@@ -154,6 +166,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /snapshots/{id}/restore", s.requireWrite(s.handleSnapshotRestore))
 	// Auto-apply: runtime toggle for reconcile-on-network-change (Settings).
 	s.mux.HandleFunc("PUT /autoapply", s.requireWrite(s.handleAutoApply))
+	// Update mode + telemetry level (what RiftRoute may do on the network).
+	s.mux.HandleFunc("GET /preferences", s.handlePreferencesGet)
+	s.mux.HandleFunc("PUT /preferences", s.requireWrite(s.handlePreferencesSet))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
 	s.mux.HandleFunc("POST /debug/vpn", s.requireWrite(s.handleDebugVPN))
 }
@@ -197,7 +212,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // --- handlers ---
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
+	// status+version are the original contract (older clients read only these).
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": s.version, "health": s.svc.Health()})
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {

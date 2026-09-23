@@ -17,6 +17,18 @@ export interface DaemonInfo {
   can_manage: boolean
 }
 
+// BuildInfo mirrors internal/domain/build.go.
+export interface BuildInfo {
+  version: string
+  module_version?: string
+  commit?: string
+  commit_time?: string
+  modified?: boolean
+  go_version?: string
+  platform?: string
+  summary?: string
+}
+
 export interface Health {
   daemon: 'ok' | 'degraded'
   reason?: string
@@ -24,6 +36,13 @@ export interface Health {
   provider: string
   uptime_seconds: number
   pid: number
+  // Absent from daemons that predate build reporting.
+  build?: BuildInfo
+  binary?: string
+  started_at?: string
+  restart_required?: boolean
+  restart_reason?: string
+  schema_version?: number
 }
 
 export interface Capabilities {
@@ -96,7 +115,28 @@ export interface State {
   managed_rule_count: number
   auto_apply: boolean
   kill_switch: boolean
+  // Why the daemon turned the kill switch off by itself (it was cutting the
+  // VPN's own connection); cleared by the next explicit on/off.
+  kill_switch_notice?: string
+  // Absent from daemons that predate update/telemetry preferences.
+  preferences?: Preferences
   generated_at: string
+}
+
+// BugReport mirrors domain.BugReport: redacted text for the user to review.
+export interface BugReport {
+  text: string
+  redactions: number
+  generated_at: string
+}
+
+export type UpdateMode = 'auto' | 'notify' | 'off'
+export type TelemetryLevel = 'full' | 'basic' | 'off'
+
+// Preferences mirrors internal/domain/prefs.go.
+export interface Preferences {
+  updates: UpdateMode
+  telemetry: TelemetryLevel
 }
 
 export interface SystemUser {

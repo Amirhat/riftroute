@@ -567,8 +567,12 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	if p.store == nil {
 		return 0, nil
 	}
+	// Readable entries are recovered even when others are not: an entry this
+	// build can't interpret (a newer format, after an update rollback) stays in
+	// the journal for the binary that wrote it, and the error is returned so
+	// the daemon reports it rather than quietly running on.
 	pend, err := p.store.ListPendingTx()
-	if err != nil {
+	if pend == nil && err != nil {
 		return 0, err
 	}
 	exec := NewExecutor(p.prov)
@@ -583,7 +587,7 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 			"crash recovery: reverted in-flight transaction "+id, nil, true)
 		n++
 	}
-	return n, nil
+	return n, err
 }
 
 // --- internals ---

@@ -116,7 +116,7 @@ export default function App() {
         open={confirmPanic}
         danger
         title="Panic — flush all managed routes"
-        message="Remove ALL RiftRoute-managed routes and restore the baseline. This is immediate and affects every profile."
+        message="Remove ALL RiftRoute-managed routes, turn the kill switch off, and restore the baseline. This is immediate and affects every profile."
         confirmLabel="Flush all"
         onConfirm={async () => {
           setConfirmPanic(false)

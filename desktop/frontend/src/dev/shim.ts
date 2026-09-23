@@ -111,6 +111,19 @@ const App = {
   OpenConfigDialog: () => Promise.resolve({ path: '', name: '', format: 'yaml', content: '' }),
   ExportConfigDialog: () => Promise.resolve(''),
   CheckUpdate: () => Promise.resolve({ available: false, current: 'browser-dev' }),
+  CreateBugReport: () => req('GET', '/bugreport'),
+  SaveBugReport: notInBrowser('Saving a file'),
+  OpenIssuePage: () => {
+    window.open('https://github.com/Amirhat/riftroute/issues/new', '_blank', 'noopener')
+    return Promise.resolve()
+  },
+  GetPreferences: () => req('GET', '/preferences'),
+  SetPreferences: (patch: unknown) => req('PUT', '/preferences', patch),
+  // No app build in browser dev mode: only the daemon's own restart warning.
+  BuildNotes: () =>
+    req('GET', '/healthz').then((b) =>
+      b?.health?.restart_required ? [`Restart needed: ${b.health.restart_reason}`] : [],
+    ),
 }
 
 ;(window as unknown as Record<string, unknown>).go = { main: { App } }
