@@ -39,15 +39,18 @@ func TestPfRulesetIsBlockOnly(t *testing.T) {
 	s := PfRuleset(sample)
 	mustContain(t, s,
 		"table <rr_ks_allow> persist { 192.168.50.254 192.168.50.0/24 2a01:4f8:1:2::/64 185.10.75.0/24 2a02:ec0::/32 169.254.0.0/16 224.0.0.0/4 255.255.255.255 fe80::/10 ff00::/8 }",
-		"block return out on { en0 en4 } proto udp to ! <rr_ks_allow> port { 0:499 501:1193 1195:4499 4501:51819 51821:65535 } user { 499 >< 65534 > 65534 }",
-		"block return out on { en0 en4 } proto tcp to ! <rr_ks_allow> port { 0:1193 1195:65535 } user { 499 >< 65534 > 65534 }",
+		"block return out on { en0 en4 } proto udp to ! <rr_ks_allow> port { 0:499 501:1193 1195:4499 4501:51819 51821:65535 } user { 499 >< 65534 65534 >< 2147483646 }",
+		"block return out on { en0 en4 } proto tcp to ! <rr_ks_allow> port { 0:1193 1195:65535 } user { 499 >< 65534 65534 >< 2147483646 }",
 	)
 	for _, line := range strings.Split(s, "\n") {
 		if strings.HasPrefix(line, "pass") {
 			t.Errorf("the anchor must pass nothing (it would override other firewalls): %q", line)
 		}
 	}
-	for _, bad := range []string{"quick", "block out all", "block drop out all", "utun", "ipsec", "60001"} {
+	// An open-ended range matches UID_MAX, which pf uses when it can't find
+	// the socket owner — a VPN tunnel's own transport — and killed the tunnel
+	// on a real Mac. The range must be bounded.
+	for _, bad := range []string{"quick", "block out all", "block drop out all", "utun", "ipsec", "60001", "> 65534"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("ruleset must not contain %q:\n%s", bad, s)
 		}

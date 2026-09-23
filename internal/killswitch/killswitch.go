@@ -195,11 +195,14 @@ const (
 	enableTO = 10 * time.Second
 
 	// Accounts whose traffic must stay in the tunnel: every non-system uid.
-	// macOS: 500 and up except 65534 ("nobody" is -2 there; blocking it is
-	// harmless). Linux: 1000 and up except systemd's dynamic service users
-	// (61184–65519), "nobody" (65534) and the invalid (u32)-1 — so homed
-	// (60001+) and directory/AD accounts (huge uids) are covered too.
-	pfUsers  = "user { 499 >< 65534 > 65534 }"
+	// macOS: 500 up to pf's largest literal, except 65534. The upper bound is
+	// load-bearing: when pf can't find a packet's socket owner it uses UID_MAX
+	// (4294967295) — the case for a VPN tunnel's own outer transport sent via
+	// the Network Extension framework — and an open-ended "> 65534" matched it,
+	// killing the tunnel and with it everything (seen live on a real Mac).
+	// Linux: 1000 and up except systemd's dynamic service users (61184–65519),
+	// "nobody" (65534) and (u32)-1 — homed and directory accounts included.
+	pfUsers  = "user { 499 >< 65534 65534 >< 2147483646 }"
 	nftUsers = "meta skuid { 1000-61183, 65520-65533, 65535-4294967294 }"
 
 	pfHookBegin = "# >>> riftroute kill switch (managed — do not edit) >>>"
