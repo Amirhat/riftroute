@@ -1,0 +1,40 @@
+{{define "landing.html"}}<!doctype html>
+<html lang="{{.T.Lang}}" dir="{{.T.Dir}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.T.Title}}</title>
+<meta name="description" content="{{.T.Description}}">
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="stylesheet" href="{{asset "site.css"}}">
+<link rel="alternate" hreflang="en" href="https://riftroute.tellnew.tech/">
+<link rel="alternate" hreflang="fa" href="https://riftroute.tellnew.tech/fa">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="{{if eq .T.Lang "fa"}}/fa{{else}}/{{end}}" dir="ltr"><img src="{{asset "favicon.svg"}}" alt="" width="28" height="28">RiftRoute</a>
+  <nav><a class="lang" href="{{.T.Other}}" hreflang="{{if eq .T.Lang "fa"}}en{{else}}fa{{end}}">{{.T.OtherLabel}}</a></nav>
+</header>
+<main>
+  <section class="hero">
+    <h1>{{.T.Hero}}</h1>
+    <p class="sub">{{.T.Sub}}</p>
+    <p class="cta"><a class="btn primary" href="{{.Releases}}">{{.T.Download}}</a><a class="btn" href="{{.SourceURL}}">{{.T.Source}}</a></p>
+    <p class="platforms">{{.T.Platforms}}</p>
+  </section>
+  <figure class="shot" dir="ltr"><img src="{{asset "dashboard.png"}}" alt="{{.T.ShotAlt}}" width="1600" height="1093"></figure>
+  <section class="features">
+    <h2>{{.T.FeaturesTitle}}</h2>
+    <div class="grid">{{range .T.Features}}
+      <article><h3>{{.Title}}</h3><p>{{.Body}}</p></article>{{end}}
+    </div>
+  </section>
+  <section class="privacy" id="privacy">
+    <h2>{{.T.PrivacyTitle}}</h2>
+    <ul>{{range .T.Privacy}}<li>{{.}}</li>{{end}}</ul>
+  </section>
+</main>
+<footer><span dir="ltr">© {{.Year}} RiftRoute</span> · <a href="{{.SourceURL}}/blob/main/LICENSE">{{.T.License}}</a> · <a href="{{.SourceURL}}">GitHub</a></footer>
+</body>
+</html>
+{{end}}
