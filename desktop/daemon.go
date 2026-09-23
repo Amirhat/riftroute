@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Amirhat/riftroute/internal/apiclient"
 	"github.com/Amirhat/riftroute/internal/platform"
 )
 
@@ -62,23 +61,23 @@ func (a *App) privilegedDaemon(sub, extra string) error {
 	if err := runElevated(cli, sub, extra); err != nil {
 		return err
 	}
-	// After install the daemon listens on the SYSTEM socket, not the per-user dev
-	// socket the GUI first bound to — re-resolve and reconnect, else the UI would
-	// stay "offline" even on a perfect install.
+	// The client re-resolves the socket per dial (the daemon moves from the
+	// per-user dev socket to the system socket on install, and removes its socket
+	// when stopped); restart the event stream so it reattaches now instead of
+	// after its retry backoff.
 	a.reconnect()
 	time.Sleep(600 * time.Millisecond)
 	a.emit("rr:connection", map[string]any{"reachable": a.Reachable()})
 	return nil
 }
 
-// reconnect re-resolves the daemon socket (it changes from the per-user dev
-// socket to the system socket once the service is installed) and restarts the
-// live event stream against it, so the UI comes online after an install.
+// reconnect restarts the live event stream, dropping a stream still attached to
+// a stopped daemon (or sleeping in its retry backoff) so the UI reflects a
+// start/stop/install immediately.
 func (a *App) reconnect() {
 	if a.cancelEvents != nil {
 		a.cancelEvents()
 	}
-	a.client = apiclient.New(platform.ClientSocket())
 	ec, cancel := context.WithCancel(a.ctx)
 	a.cancelEvents = cancel
 	go a.streamEvents(ec)

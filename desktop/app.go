@@ -30,7 +30,9 @@ func NewApp() *App { return &App{} }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	a.client = apiclient.New(platform.ClientSocket())
+	// Resolve the socket per dial, not once: the daemon may be down now (so only
+	// the per-user fallback resolves) and come up later on the system socket.
+	a.client = apiclient.NewResolving(platform.ClientSocket)
 
 	ec, cancel := context.WithCancel(ctx)
 	a.cancelEvents = cancel

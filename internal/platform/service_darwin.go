@@ -3,26 +3,43 @@
 package platform
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
+	"os/exec"
 	"time"
 )
 
 const launchdTarget = "system/" + launchdLabel
 
-// bootService (re)loads the daemon into the SYSTEM launchd domain and starts it.
+// startTimeout bounds how long start/restart/install wait for the daemon to
+// accept connections. It exceeds launchd's 10s respawn throttle, so a throttled
+// (not failed) start is waited out rather than reported as a failure.
+const startTimeout = 15 * time.Second
+
+// bootService (re)loads the daemon into the SYSTEM launchd domain and starts it,
+// replacing any loaded copy so a changed plist/binary takes effect.
+func bootService() error {
+	_ = runCmd("launchctl", "bootout", "system", launchdPlist) // clear any prior copy
+	return loadService()
+}
+
+// loadService bootstraps the plist into the system domain; RunAtLoad starts it.
 // Uses the modern verbs — `launchctl load` is legacy and does not reliably load
 // a system LaunchDaemon on macOS 11+ (it was the reason the service "installed
 // but never started"). Falls back to `load -w` only on ancient macOS.
-func bootService() error {
-	_ = runCmd("launchctl", "bootout", "system", launchdPlist) // clear any prior copy
-	_ = runCmd("launchctl", "enable", launchdTarget)           // undo any earlier disable
+func loadService() error {
+	_ = runCmd("launchctl", "enable", launchdTarget) // undo any earlier disable
 	if err := runCmd("launchctl", "bootstrap", "system", launchdPlist); err != nil {
 		if lerr := runCmd("launchctl", "load", "-w", launchdPlist); lerr != nil {
 			return fmt.Errorf("launchctl bootstrap failed: %w", err)
 		}
 	}
-	_ = runCmd("launchctl", "kickstart", "-k", launchdTarget) // ensure it's running now
+	// Ensure it's running now — WITHOUT -k: bootstrap already launched it, and
+	// killing that fresh instance makes launchd throttle the respawn for its 10s
+	// minimum runtime, so the daemon wasn't up yet when start returned.
+	_ = runCmd("launchctl", "kickstart", launchdTarget)
 	return nil
 }
 
@@ -31,19 +48,42 @@ func unbootService() {
 	_ = runCmd("launchctl", "bootout", launchdTarget) // belt-and-suspenders
 }
 
-// waitForSocket blocks until the daemon's socket appears (proof it actually came
-// up), or returns an error with the daemon's log tail so the failure is visible
-// instead of a silent "installed but not running".
+// serviceLoaded reports whether the job is loaded in the system domain. Uses
+// `launchctl print` (works unprivileged) — `launchctl list` only shows the
+// caller's own domain, so run as the desktop user it never saw the daemon.
+func serviceLoaded() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "launchctl", "print", launchdTarget).Run() == nil
+}
+
+// waitForSocket blocks until the daemon accepts a connection on its socket
+// (proof it actually came up), or returns an error with the daemon's log tail so
+// the failure is visible instead of a silent "installed but not running".
 func waitForSocket(socket string) error {
-	deadline := time.Now().Add(8 * time.Second)
-	for time.Now().Before(deadline) {
-		if fileExists(socket) {
+	if err := dialUntil(socket, startTimeout); err != nil {
+		return fmt.Errorf("riftrouted did not come up within %s — recent log (%s/riftrouted.err.log):\n%s",
+			startTimeout, logDir, readTail(logDir+"/riftrouted.err.log", 1200))
+	}
+	return nil
+}
+
+// dialUntil polls until something accepts on the unix socket or timeout passes.
+// It dials rather than stat()ing: a socket file left by a killed daemon exists
+// but refuses connections.
+func dialUntil(socket string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		c, err := net.DialTimeout("unix", socket, 250*time.Millisecond)
+		if err == nil {
+			_ = c.Close()
 			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("riftrouted did not come up within 8s — recent log (%s/riftrouted.err.log):\n%s",
-		logDir, readTail(logDir+"/riftrouted.err.log", 1200))
 }
 
 const (
@@ -65,7 +105,7 @@ func newServiceManager() ServiceManager { return launchdManager{} }
 func (launchdManager) Status() ServiceStatus {
 	st := ServiceStatus{Manager: "launchd", Label: launchdLabel}
 	st.Installed = fileExists(launchdPlist)
-	st.Loaded = cmdContains(launchdLabel, "launchctl", "list")
+	st.Loaded = serviceLoaded()
 	return st
 }
 
@@ -114,7 +154,10 @@ func (launchdManager) Restart() error {
 		return ErrNeedRoot
 	}
 	unbootService()
-	return bootService()
+	if err := loadService(); err != nil {
+		return err
+	}
+	return waitForSocket(systemSocket)
 }
 
 func (launchdManager) Start() error {
@@ -124,7 +167,14 @@ func (launchdManager) Start() error {
 	if !fileExists(launchdPlist) {
 		return fmt.Errorf("service not installed")
 	}
-	return bootService()
+	if serviceLoaded() {
+		// Already loaded (the caller may just have lost track of it): make sure
+		// it runs, but never kill a healthy instance the way a reload would.
+		_ = runCmd("launchctl", "kickstart", launchdTarget)
+	} else if err := loadService(); err != nil {
+		return err
+	}
+	return waitForSocket(systemSocket)
 }
 
 func (launchdManager) Stop() error {
