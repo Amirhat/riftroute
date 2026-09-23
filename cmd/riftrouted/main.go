@@ -107,10 +107,14 @@ func run() error {
 	// Crash recovery, step 1: replay the write-ahead journal. Any transaction that
 	// was in flight (or on probation) at the last shutdown is reverted to its
 	// pre-change state — fail-safe, and the only recovery that works on macOS.
-	if reverted, perr := proto.RecoverPending(context.Background()); perr != nil {
-		logger.Warn("pending-tx recovery on startup failed", "err", perr)
-	} else if reverted > 0 {
+	// Entries this build can't read (written by a newer release before a
+	// rollback) are left journaled and reported, never silently dropped.
+	reverted, perr := proto.RecoverPending(context.Background())
+	if reverted > 0 {
 		logger.Info("reverted in-flight transactions on startup (crash recovery)", "count", reverted)
+	}
+	if perr != nil {
+		logger.Warn("pending-tx recovery incomplete", "err", perr)
 	}
 
 	// Crash recovery, step 2: re-assert/repair owned routes against the kernel

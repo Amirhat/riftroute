@@ -820,7 +820,7 @@ func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {
 	// Trim heavy route payloads for the list view; details fetched on demand.
 	// Restorable is derived from the (stripped) profile capture.
 	for i := range snaps {
-		snaps[i].Restorable = snaps[i].Profiles != nil
+		snaps[i].Restorable = snaps[i].Profiles != nil && snaps[i].Format <= store.SnapshotFormat
 		snaps[i].RoutesV4 = nil
 		snaps[i].RoutesV6 = nil
 		snaps[i].Rules = nil
@@ -853,6 +853,11 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 	if snap.Profiles == nil {
 		writeErr(w, http.StatusBadRequest,
 			errors.New("this snapshot predates policy capture and cannot be restored"))
+		return
+	}
+	if snap.Format > store.SnapshotFormat {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf(
+			"this snapshot was made by a newer RiftRoute (format %d) and cannot be restored by this version", snap.Format))
 		return
 	}
 

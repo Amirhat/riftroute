@@ -20,6 +20,9 @@ type Snapshot struct {
 	Profiles []Profile `json:"profiles"`
 	// Restorable is computed for list responses (payloads are stripped there).
 	Restorable bool `json:"restorable,omitempty"`
+	// Format is the doc format the snapshot was written in (0 = legacy, read
+	// as 1). A snapshot from a newer RiftRoute is shown but never restored.
+	Format int `json:"format,omitempty"`
 }
 
 // OpKind is the kind of a single plan operation.

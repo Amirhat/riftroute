@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
@@ -18,8 +20,6 @@ import (
 
 // ErrNotFound is returned when a requested record does not exist.
 var ErrNotFound = errors.New("store: not found")
-
-const schemaVersion = 1
 
 // Store wraps the SQLite database. It is safe for concurrent use; writes are
 // serialized by limiting the pool to a single connection (desktop-scale load).
@@ -52,8 +52,27 @@ func Open(path string) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-func (s *Store) migrate() error {
-	const ddl = `
+// migration is one schema step. See migrations.
+type migration struct {
+	name string
+	sql  string
+	// breaking marks a CONTRACT step (drop/rename/reshape) that binaries
+	// predating it cannot safely run against. Applying it raises the database's
+	// minimum reader so those binaries refuse to open it instead of misreading.
+	breaking bool
+}
+
+// migrations is APPEND-ONLY. PRAGMA user_version records how many have run, so
+// an edited entry never reaches existing databases and a reordered one skips
+// steps. Never change a shipped entry — add a new one.
+//
+// Every step must be EXPAND-only (new table/column/index, with defaults) so
+// the PREVIOUS release keeps working on the same file: an update rollback
+// restarts the old binary against a database the new one already migrated.
+// Removing or reshaping something happens in a later release, once no
+// supported binary reads it, and must be marked breaking.
+var migrations = []migration{
+	{name: "baseline", sql: `
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -102,16 +121,69 @@ CREATE TABLE IF NOT EXISTS audit (
   doc      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
-`
-	if _, err := s.db.Exec(ddl); err != nil {
-		return fmt.Errorf("migrate: %w", err)
+`},
+	// The journal's doc format. Pre-existing rows (and rows an older binary
+	// inserts without naming the column) are format 1 — today's domain.Plan.
+	{name: "pending_tx.format", sql: `ALTER TABLE pending_tx ADD COLUMN format INTEGER NOT NULL DEFAULT 1`},
+}
+
+// SchemaVersion is the schema this binary migrates databases to.
+func SchemaVersion() int { return len(migrations) }
+
+// minReaderKey records the oldest schema version that can still read the
+// database safely (raised by breaking migrations).
+const minReaderKey = "schema_min_reader"
+
+// ErrSchemaTooNew is returned by Open when the database was migrated by a newer
+// RiftRoute with a breaking change this binary cannot read.
+var ErrSchemaTooNew = errors.New("store: database requires a newer RiftRoute")
+
+func (s *Store) migrate() error {
+	var have int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&have); err != nil {
+		return fmt.Errorf("migrate: read user_version: %w", err)
 	}
-	if _, err := s.db.Exec(
-		`INSERT INTO settings(key,value) VALUES('schema_version',?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-		fmt.Sprint(schemaVersion),
-	); err != nil {
-		return fmt.Errorf("migrate version: %w", err)
+	if have > len(migrations) {
+		// Written by a newer binary (e.g. we are the rollback target of an
+		// update). Expand-only schemas stay readable; refuse only if a breaking
+		// step raised the minimum reader past us.
+		v, ok, err := s.GetSetting(minReaderKey)
+		if err != nil {
+			return fmt.Errorf("migrate: %w", err)
+		}
+		if n, _ := strconv.Atoi(v); ok && n > len(migrations) {
+			return fmt.Errorf("%w: schema %d needs a reader of schema %d+, this build reads %d",
+				ErrSchemaTooNew, have, n, len(migrations))
+		}
+		return nil
+	}
+	for i := have; i < len(migrations); i++ {
+		m := migrations[i]
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("migrate %d (%s): %w", i+1, m.name, err)
+		}
+		if _, err := tx.Exec(m.sql); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migrate %d (%s): %w", i+1, m.name, err)
+		}
+		if m.breaking {
+			if _, err := tx.Exec(
+				`INSERT INTO settings(key,value) VALUES(?,?)
+				 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
+				minReaderKey, strconv.Itoa(i+1)); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("migrate %d (%s): min reader: %w", i+1, m.name, err)
+			}
+		}
+		// PRAGMA takes no bound parameters; i+1 is an int we control.
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("migrate %d (%s): set version: %w", i+1, m.name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migrate %d (%s): commit: %w", i+1, m.name, err)
+		}
 	}
 	return nil
 }
@@ -353,6 +425,9 @@ func (s *Store) ListAudit(since time.Time, limit int) ([]domain.AuditEvent, erro
 
 // SaveSnapshot persists a full-state snapshot.
 func (s *Store) SaveSnapshot(snap domain.Snapshot) error {
+	if snap.Format == 0 {
+		snap.Format = SnapshotFormat
+	}
 	doc, err := json.Marshal(snap)
 	if err != nil {
 		return err
@@ -463,6 +538,21 @@ func (s *Store) ClearOwned() error {
 	return err
 }
 
+// WALFormat and SnapshotFormat are the doc formats this binary writes — and
+// the newest it can read. Bump one (and teach the reader the old shape) when
+// the stored JSON changes incompatibly; an older binary then refuses the entry
+// instead of misreading it.
+const (
+	WALFormat      = 1
+	SnapshotFormat = 1
+)
+
+// ErrPendingUnreadable reports journal entries this binary cannot interpret
+// (written by a newer RiftRoute, or corrupt). They are left in place — never
+// silently skipped, never deleted — so the binary that wrote them can still
+// recover them.
+var ErrPendingUnreadable = errors.New("store: unreadable pending transactions")
+
 // PutPendingTx write-ahead-logs a transaction's plan BEFORE the kernel is
 // mutated, so a crash/power-loss mid-apply (or mid-probation) can be rolled back
 // on the next startup — critical on macOS, where kernel routes carry no owner
@@ -473,9 +563,9 @@ func (s *Store) PutPendingTx(id string, plan domain.Plan) error {
 		return err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO pending_tx(id,created_at,doc) VALUES(?,?,?)
-		 ON CONFLICT(id) DO UPDATE SET doc=excluded.doc`,
-		id, time.Now().UTC().Format(time.RFC3339Nano), string(doc))
+		`INSERT INTO pending_tx(id,created_at,doc,format) VALUES(?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET doc=excluded.doc, format=excluded.format`,
+		id, time.Now().UTC().Format(time.RFC3339Nano), string(doc), WALFormat)
 	return err
 }
 
@@ -486,23 +576,41 @@ func (s *Store) ClearPendingTx(id string) error {
 }
 
 // ListPendingTx returns transactions that were in flight when the daemon last
-// stopped (crash recovery replays their inverse to fail-safe).
+// stopped (crash recovery replays their inverse to fail-safe). Entries it
+// cannot read are omitted from the map AND reported via ErrPendingUnreadable,
+// alongside the readable ones.
 func (s *Store) ListPendingTx() (map[string]domain.Plan, error) {
-	rows, err := s.db.Query(`SELECT id, doc FROM pending_tx`)
+	rows, err := s.db.Query(`SELECT id, format, doc FROM pending_tx`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	out := map[string]domain.Plan{}
+	var bad []string
 	for rows.Next() {
-		var id, doc string
-		if err := rows.Scan(&id, &doc); err != nil {
+		var (
+			id, doc string
+			format  int
+		)
+		if err := rows.Scan(&id, &format, &doc); err != nil {
 			return nil, err
 		}
-		var pl domain.Plan
-		if json.Unmarshal([]byte(doc), &pl) == nil {
-			out[id] = pl
+		if format > WALFormat {
+			bad = append(bad, fmt.Sprintf("%s (format %d, this build reads %d)", id, format, WALFormat))
+			continue
 		}
+		var pl domain.Plan
+		if err := json.Unmarshal([]byte(doc), &pl); err != nil {
+			bad = append(bad, fmt.Sprintf("%s (corrupt: %v)", id, err))
+			continue
+		}
+		out[id] = pl
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(bad) > 0 {
+		return out, fmt.Errorf("%w: %s", ErrPendingUnreadable, strings.Join(bad, "; "))
+	}
+	return out, nil
 }
