@@ -64,8 +64,8 @@ func TestKnownTokensMatchWholeWordsOnly(t *testing.T) {
 	// replace safely.
 	r2 := New()
 	r2.Add(Profile, "J")
-	if out := r2.String(`profile "J" JSON`); out != `profile "J" JSON` {
-		t.Fatalf("1-char token must be ignored, got %q", out)
+	if out := r2.String(`J JSON jq`); out != `J JSON jq` {
+		t.Fatalf("1-char token must not be replaced everywhere, got %q", out)
 	}
 }
 
@@ -128,4 +128,80 @@ func TestUnknownDomainsURLsMACsAndHomePaths(t *testing.T) {
 		"mac aa:bb:cc:dd:ee:ff; open /Users/amir/Library/x and /home/amir/.config; host amirs-macbook-pro.local")
 	mustNotContain(t, out, "secret-corp", "example.org", "lists.example.net", "token=abc", "aa:bb:cc", "/Users/amir", "/home/amir", "macbook")
 	mustContain(t, out, "lookup <domain-1> failed", "list <url-1>", "mac <mac-1>", "/Users/<user>/Library/x", "/home/<user>/.config", "host <host-1>.local")
+}
+
+// Names as the logger prints them: %q-escaped, and escaped again when the
+// error is itself a quoted slog attribute. Persian names carry ZWNJ, which
+// %q writes as \u200c.
+func TestKnownNamesMatchInEscapedForms(t *testing.T) {
+	r := New()
+	r.Add(Profile, "سایت\u200cهای ایرانی", `Mom's "Bank"`)
+	in := `drift — profile "سایت\u200cهای ایرانی": no tunnel
+err="profile \"Mom's \\\"Bank\\\"\": no physical gateway" profile="سایت\u200cهای ایرانی"`
+	out := r.String(in)
+	mustNotContain(t, out, "سایت", "Mom", "Bank")
+	if strings.Count(out, "<profile-1>") != 2 || strings.Count(out, "<profile-2>") != 1 {
+		t.Fatalf("each name must map to ONE placeholder in every spelling:\n%s", out)
+	}
+}
+
+// Nobody registered these names (daemon down, or a profile deleted since the
+// log line was written) — they are caught by where they sit.
+func TestUnregisteredNamesMaskedByPosition(t *testing.T) {
+	r := New()
+	in := `a: profile "Old Bank": gone
+b: err="profile \"Old Bank\": no gateway"
+c: msg="restore: could not remove profile" profile=Tehran-Office list="iran banks"
+d: per-app include rule "alice" has no tunnel
+e: network event type=up iface=nordlynx; iface=en0; iface=utun4
+f: rule=*.example.org keeps its shape; the profile set is empty; nft list table inet riftroute`
+	out := r.String(in)
+	mustNotContain(t, out, "Old Bank", "Tehran", "iran banks", "alice", "nordlynx")
+	mustContain(t, out,
+		`a: profile "<profile-1>": gone`,
+		`b: err="profile \"<profile-1>\": no gateway"`, // same name, same placeholder
+		`profile=<profile-2> list="<list-1>"`,
+		`rule "<rule-1>"`,
+		`iface=<iface-1>; iface=en0; iface=utun4`,
+		`rule=*.<domain-1>`,
+		"the profile set is empty", "nft list table inet riftroute",
+	)
+}
+
+func TestIPv6WithSurroundingPunctuation(t *testing.T) {
+	r := New()
+	out := r.String("add host 2a01:4f8::1: gateway x; route 2a01:4f8:c0c:1::2: file exists; peer 2a01:4f8::77. dst:2a01:4f8::99 tcp 2a01:4f8::2.443")
+	mustNotContain(t, out, "2a01")
+	mustContain(t, out, "add host <ip6-1>: gateway", "route <ip6-2>: file exists", "peer <ip6-3>.", "dst:<ip6-4>", "tcp <ip6-5>.443")
+}
+
+func TestDomainEdgeCases(t *testing.T) {
+	r := New()
+	out := r.String("bank.xn--mgba3a4f16a shop.xn--p1ai evil.md bun.sh foo.new bücher.de 例子.公司 README.md-ish")
+	mustNotContain(t, out, "bank.", "shop.", "evil", "bun", "foo.new", "bücher", "bü", "例子")
+	out = r.String("mail jdoe@example.com; socks5://amir:hunter2@proxy.example.net:1080 ; lists.example.net/iran.txt?token=abc end")
+	mustNotContain(t, out, "jdoe", "hunter2", "iran.txt", "token=abc")
+	mustContain(t, out, "mail <email-1>;", "<url-1>", "<domain-", "/… end")
+}
+
+func TestIPv4EdgeCases(t *testing.T) {
+	r := New()
+	out := r.String("gw_192.168.1.1 10.0.0.1_ext x192.168.1.5 pad 192.168.001.001 short 10.8/16 192.168.88/24 not 1.2.3.4.5 v1.2.3")
+	mustNotContain(t, out, "192.168", "10.0.0.1", "10.8/16")
+	mustContain(t, out, "gw_<ip4-lan-1>", "<ip4-lan-2>_ext", "x<ip4-lan-3>", "pad <ip4-lan-1>", "short <ip4-lan-", "/16", "not 1.2.3.4.5", "v1.2.3")
+}
+
+func TestMACInsideIPv6AndEscapedHomePaths(t *testing.T) {
+	r := New()
+	out := r.String(`fd12:3456:aa:bb:cc:dd:ee:ff and fd00::aa:bb:cc:dd:ee:ff mac aa:bb:cc:dd:ee:ff json "\/Users\/bob\/x"`)
+	mustNotContain(t, out, "fd12", "fd00", "3456", "bob")
+	mustContain(t, out, "<ip6-lan-1> and <ip6-lan-2> mac <mac-1>", `\/Users\/<user>\/x`)
+}
+
+func TestBrandedIfacesAreNotGeneric(t *testing.T) {
+	for _, n := range []string{"ham0", "zt3jnkd3", "nordlynx", "wg-mullvad"} {
+		if GenericIface(n) {
+			t.Errorf("%s names a product", n)
+		}
+	}
 }

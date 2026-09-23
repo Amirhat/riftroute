@@ -7,7 +7,6 @@ package bugreport
 
 import (
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -88,19 +87,34 @@ func NewRedactor(in Input) *redact.Redactor {
 	r.Add(redact.Domain, in.State.DNS.SearchDomains...)
 	r.Add(redact.Host, in.Hosts...)
 	r.Add(redact.User, in.Users...)
+	// Interface names that name a product or provider ("nordlynx",
+	// "wg-mullvad"), wherever the report shows them. Names no longer present
+	// (an old log line) are caught by position (iface=…) in the redactor.
+	ifaces := append([]string(nil), in.State.VPN.Interfaces...)
 	for _, ifc := range in.State.Interfaces {
-		if !GenericIface(ifc.Name) {
-			r.Add(redact.Iface, ifc.Name) // e.g. "nordlynx", "wg-mullvad": names a VPN provider
+		ifaces = append(ifaces, ifc.Name)
+	}
+	for _, rt := range in.Routes {
+		ifaces = append(ifaces, rt.Iface)
+	}
+	for _, d := range in.State.Defaults {
+		ifaces = append(ifaces, d.Iface)
+	}
+	for _, n := range ifaces {
+		if n != "" && !redact.GenericIface(n) {
+			r.Add(redact.Iface, n)
 		}
+	}
+	// Profiles named in recent activity may since have been renamed or deleted.
+	for _, ev := range in.Audit {
+		r.Add(redact.Profile, ev.Profile)
 	}
 	return r
 }
 
-var genericIface = regexp.MustCompile(`^(lo|en|eth|wlan|wlp|wwan|enp|eno|ens|utun|ipsec|ppp|tun|tap|wg|bridge|br|awdl|llw|anpi|ap|gif|stf|docker|veth|virbr|vmnet|vboxnet|p2p|pktap|ham|zt)\d*([a-z]\d+)*$`)
-
-// GenericIface reports whether an interface name is a generic OS/driver name
-// (en0, utun4, wlp2s0) rather than one that names a product or provider.
-func GenericIface(name string) bool { return genericIface.MatchString(name) }
+// GenericIface reports whether an interface name is generic (en0, utun4)
+// rather than one that names a product or provider (see redact.GenericIface).
+func GenericIface(name string) bool { return redact.GenericIface(name) }
 
 func isNumeric(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789") == ""
@@ -204,7 +218,7 @@ func Render(in Input) domain.BugReport {
 
 	section(fmt.Sprintf("Doctor (%d pass, %d warn, %d fail)", in.Doctor.Pass, in.Doctor.Warn, in.Doctor.Fail))
 	for _, ch := range in.Doctor.Checks {
-		line("[%s] %s: %s", ch.Status, ch.Name, rs(ch.Detail))
+		line("[%s] %s: %s", ch.Status, rs(ch.Name), rs(ch.Detail))
 	}
 
 	routes := append([]domain.Route(nil), in.Routes...)
