@@ -11,6 +11,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/apiclient"
 	"github.com/Amirhat/riftroute/internal/buildinfo"
+	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/platform"
 )
 
@@ -169,6 +170,14 @@ func daemonUninstallCmd() *cobra.Command {
 			if err := platform.NewServiceManager().Uninstall(); err != nil {
 				return err
 			}
+			// The kill switch outlives the daemon by design (it keeps holding
+			// while the service is stopped), so remove it here directly — the
+			// panic above may not have reached it.
+			kctx, kcancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+			if kerr := killswitch.New().Disable(kctx); kerr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not remove the kill switch rules: %v\n", kerr)
+			}
+			kcancel()
 			if flushErr == nil {
 				fmt.Fprintln(cmd.OutOrStdout(), "flushed managed routes and uninstalled riftrouted")
 			} else {

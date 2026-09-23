@@ -9,13 +9,17 @@ export function KillSwitchConfirmMessage() {
     <>
       <span className="block">
         While on, apps you run reach the internet only through a VPN tunnel, your local network, or destinations your
-        profiles send around the VPN. If the VPN drops, they are cut off until it reconnects.
+        profiles send around the VPN. If the VPN drops, they are cut off until it reconnects. It stays on across restarts
+        and while the RiftRoute service is stopped; Panic turns it off.
       </span>
       <span className="mt-2 block">
-        Never blocked: VPN helpers running as administrator (most desktop VPNs, macOS IKEv2), standard VPN ports, and
-        system services — so the system resolver’s DNS lookups can still leave outside the tunnel. A VPN app that runs
-        without admin rights on a non-standard port (such as 443) may not reconnect until you turn this off. Panic also
-        turns it off.
+        Never blocked: VPN helpers running as administrator (most desktop VPNs, macOS IKEv2), standard VPN ports, system
+        services — so the system resolver’s DNS lookups can still leave outside the tunnel — and traffic from virtual
+        machines or Internet Sharing.
+      </span>
+      <span className="mt-2 block">
+        Out of reach while on: a VPN app that runs without admin rights on a non-standard port (such as 443), and
+        hotel or café login pages. Turn it off to get through those.
       </span>
     </>
   )

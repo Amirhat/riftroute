@@ -49,38 +49,29 @@ func post(t *testing.T, url, body string) {
 	}
 }
 
-// A VPN that drops and comes back must not stay fenced by the tunnel list
-// captured when the kill switch was turned on (the old behavior).
-func TestKillSwitchFollowsTunnelChanges(t *testing.T) {
+// Tunnels are never guarded, so a VPN dropping and coming back (on any
+// interface) needs no re-render at all — only the physical side matters.
+func TestKillSwitchIgnoresTunnelChurn(t *testing.T) {
 	ks := &killswitch.Fake{}
 	srv, ts, prov := newKillSwitchServer(t, ks)
 	ctx := context.Background()
 
 	post(t, ts.URL+"/killswitch", `{"enabled":true}`)
-	if !slices.Contains(ks.Last().TunnelIfaces, "utun3") || ks.Enables != 1 {
-		t.Fatalf("enable: tunnels=%v enables=%d", ks.Last().TunnelIfaces, ks.Enables)
+	if got := ks.Last().PhysIfaces; !slices.Equal(got, []string{"en0"}) || ks.Enables != 1 {
+		t.Fatalf("enable: guarding %v, enables=%d", got, ks.Enables)
 	}
+	prov.SetVPN(false)
+	srv.SyncKillSwitch(ctx)
+	prov.SetVPN(true)
 	srv.SyncKillSwitch(ctx)
 	if ks.Enables != 1 {
-		t.Fatalf("nothing changed, yet the rules were reloaded (%d)", ks.Enables)
-	}
-
-	prov.SetVPN(false) // tunnel gone
-	srv.SyncKillSwitch(ctx)
-	if ks.Enables != 2 || slices.Contains(ks.Last().TunnelIfaces, "utun3") {
-		t.Fatalf("tunnel drop not followed: tunnels=%v enables=%d", ks.Last().TunnelIfaces, ks.Enables)
-	}
-	prov.SetVPN(true) // …and back
-	srv.SyncKillSwitch(ctx)
-	if ks.Enables != 3 || !slices.Contains(ks.Last().TunnelIfaces, "utun3") {
-		t.Fatalf("returning tunnel not allowed: tunnels=%v enables=%d", ks.Last().TunnelIfaces, ks.Enables)
+		t.Fatalf("tunnel churn reloaded the rules %d times", ks.Enables-1)
 	}
 
 	post(t, ts.URL+"/killswitch", `{"enabled":false}`)
-	prov.SetVPN(false)
 	srv.SyncKillSwitch(ctx)
-	if on, _ := ks.Enabled(ctx); on || ks.Enables != 3 {
-		t.Fatalf("a kill switch turned off must stay off (on=%v enables=%d)", on, ks.Enables)
+	if on, _ := ks.Enabled(ctx); on {
+		t.Fatal("a kill switch turned off must stay off")
 	}
 }
 
@@ -93,6 +84,9 @@ func TestPanicTurnsKillSwitchOff(t *testing.T) {
 	if on, _ := ks.Enabled(context.Background()); on {
 		t.Fatal("panic left the kill switch on")
 	}
+	if v, _, _ := srv.store.GetSetting(killSwitchKey); v != "false" {
+		t.Fatalf("panic must record the kill switch as off (restart would restore it), got %q", v)
+	}
 	srv.SyncKillSwitch(context.Background())
 	if on, _ := ks.Enabled(context.Background()); on {
 		t.Fatal("re-sync turned the kill switch back on after panic")
@@ -100,7 +94,7 @@ func TestPanicTurnsKillSwitchOff(t *testing.T) {
 }
 
 // loadedNotEnforced is the pre-fix macOS state: rules in an anchor pf.conf
-// never referenced.
+// never referenced, and no saved choice.
 type loadedNotEnforced struct {
 	killswitch.Fake
 	disabled bool
@@ -118,25 +112,27 @@ func (l *loadedNotEnforced) Disable(ctx context.Context) error {
 func TestInitKillSwitch(t *testing.T) {
 	ctx := context.Background()
 
-	// Never enforced → cleared, not suddenly enforced after an upgrade.
+	// No saved choice + leftover rules → cleared, not suddenly enforced.
 	legacy := &loadedNotEnforced{}
 	srv, _, _ := newKillSwitchServer(t, legacy)
 	srv.InitKillSwitch(ctx)
 	if !legacy.disabled || legacy.Enables != 0 {
-		t.Fatalf("never-enforced rules: disabled=%v enables=%d", legacy.disabled, legacy.Enables)
+		t.Fatalf("leftover rules: disabled=%v enables=%d", legacy.disabled, legacy.Enables)
 	}
 	srv.SyncKillSwitch(ctx)
 	if legacy.Enables != 0 {
 		t.Fatal("cleared kill switch must not be re-synced on")
 	}
 
-	// In force → re-rendered with current rules and kept in sync.
-	on := &killswitch.Fake{}
-	_ = on.Enable(ctx, killswitch.Config{})
-	srv2, _, _ := newKillSwitchServer(t, on)
+	// Saved "on" (e.g. after a reboot emptied the kernel rules) → restored,
+	// even though nothing is loaded — apps start before the VPN connects.
+	fresh := &killswitch.Fake{}
+	srv2, ts2, _ := newKillSwitchServer(t, fresh)
+	post(t, ts2.URL+"/killswitch", `{"enabled":true}`)
+	_ = fresh.Disable(ctx) // simulate the reboot wiping the kernel rules
 	srv2.InitKillSwitch(ctx)
-	if on.Enables != 2 || !slices.Contains(on.Last().TunnelIfaces, "utun3") {
-		t.Fatalf("active kill switch not re-applied: enables=%d tunnels=%v", on.Enables, on.Last().TunnelIfaces)
+	if on, _ := fresh.Enabled(ctx); !on {
+		t.Fatal("a kill switch the user turned on must come back after a restart/reboot")
 	}
 }
 

@@ -321,17 +321,21 @@ ownership reconcile on startup.
 The kill switch keeps **your apps** (processes of regular login accounts) off
 the internet except through a VPN tunnel, the LAN, or destinations your exclude
 profiles route around the VPN — so if the VPN drops they're cut off instead of
-leaking. It never blocks root or system accounts: that's where VPN clients'
-privileged helpers, macOS IKEv2/IPsec and kernel WireGuard run, so a VPN can
-always reconnect (it can't know in advance which server the VPN will pick, so an
-address allow-list would lock the VPN out). Standard VPN ports (UDP 500/4500/
-51820/1194, TCP 1194) stay open for VPN apps that run as the user. Trade-offs:
-system services — including the OS resolver's DNS lookups — can still leave
-outside the tunnel while it's down, and a user-level VPN app on a non-standard
-port (e.g. 443) may need the kill switch turned off to reconnect. On macOS it is
-a pf anchor hooked into `/etc/pf.conf` (removed again when turned off); the
-tunnel list is re-synced every few seconds as VPNs come and go. Panic turns it
-off.
+leaking. It is a single rule on the **physical** interfaces, scoped to user
+sockets: tunnels are never guarded (whatever the VPN names them), and root/system
+accounts are never blocked — that's where VPN clients' privileged helpers, macOS
+IKEv2/IPsec and kernel WireGuard run, so a VPN can always reconnect. (It can't
+know in advance which server a VPN will pick, so an address allow-list would lock
+the VPN out.) Standard VPN ports (UDP 500/4500/51820/1194, TCP 1194) stay open
+for VPN apps that run as the user. It passes nothing another firewall blocked and
+keeps no connection state. Trade-offs: system services — including the OS
+resolver's DNS lookups — and forwarded traffic (VMs, Internet Sharing) are not
+blocked; a user-level VPN app on a non-standard port (e.g. 443) and captive-portal
+login pages are unreachable until it's turned off; PPPoE/mobile uplinks named
+`ppp*` are treated as tunnels and not guarded. Your choice is saved: it's
+restored after a restart or reboot and keeps holding while the service is
+stopped. On macOS it's a pf anchor hooked into `/etc/pf.conf` (removed again when
+turned off); Panic and `daemon uninstall` remove it.
 
 ## Contributing
 

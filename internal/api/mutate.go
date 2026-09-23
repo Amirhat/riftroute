@@ -132,8 +132,12 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	if !s.mutationEnabled(w) {
 		return
 	}
+	// The kill switch goes FIRST and regardless of the rest: panic is the
+	// "get me back online" button, and a firewall left behind by a failed
+	// route flush would defeat it.
+	ksErr := s.disableKillSwitch(r.Context())
 	if err := s.proto.Panic(r.Context(), domain.ActorUI); err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, errors.Join(err, ksErr))
 		return
 	}
 	// Restore the DNS baseline too: stop the wildcard learner and drop its
@@ -142,10 +146,11 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	if s.onPanic != nil {
 		s.onPanic(r.Context())
 	}
-	// The kill switch is RiftRoute-installed firewall state too: panic means
-	// "back to the baseline, get me online", so it goes off as well.
-	s.disableKillSwitch(r.Context())
 	s.BroadcastState(r.Context())
+	if ksErr != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("routes flushed, but the kill switch could not be removed: %w", ksErr))
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "panicked"})
 }
 
