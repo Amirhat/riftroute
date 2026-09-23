@@ -149,6 +149,15 @@ func TestStaticAssetsAreHashedAndImmutable(t *testing.T) {
 	if w := e.do("GET", "/static/000000000000/site.css", nil); w.Code != 404 {
 		t.Fatalf("stale hash: %d, want 404", w.Code)
 	}
+	// Self-hosted fonts: a fixed type (not the host's mime database) and a
+	// CSP that allows them.
+	font := strings.Replace(m[1], "site.css", "go-bold.ttf", 1)
+	if w := e.do("GET", font, nil); w.Code != 200 || w.Header().Get("Content-Type") != "font/ttf" {
+		t.Fatalf("font: %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	if csp := e.do("GET", "/", nil).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "font-src 'self'") {
+		t.Fatalf("CSP doesn't allow our fonts: %q", csp)
+	}
 }
 
 func TestHealthz(t *testing.T) {

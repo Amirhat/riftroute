@@ -18,7 +18,6 @@ import (
 	"html/template"
 	"io/fs"
 	"log/slog"
-	"mime"
 	"net"
 	"net/http"
 	"path"
@@ -33,7 +32,7 @@ import (
 // Explicit extensions: a stray file in the folder (.DS_Store, an editor's
 // backup) must never ship, let alone under a year-long public cache header.
 //
-//go:embed web/templates/*.html web/static/*.css web/static/*.svg web/static/*.png
+//go:embed web/templates/*.html web/static/*.css web/static/*.svg web/static/*.png web/static/*.ttf
 var webFS embed.FS
 
 const (
@@ -188,7 +187,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Cache-Control", "no-store")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; img-src 'self'; font-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
@@ -224,13 +223,22 @@ func (s *Server) landing(c siteCopy) http.HandlerFunc {
 	}
 }
 
+// staticTypes is fixed rather than read from the host's mime database, which
+// varies (and may not know fonts at all).
+var staticTypes = map[string]string{
+	".css": "text/css; charset=utf-8",
+	".svg": "image/svg+xml",
+	".png": "image/png",
+	".ttf": "font/ttf",
+}
+
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	b, ok := s.static[r.PathValue("file")]
 	if !ok || r.PathValue("hash") != s.assetHash {
 		http.NotFound(w, r)
 		return
 	}
-	if ct := mime.TypeByExtension(path.Ext(r.PathValue("file"))); ct != "" {
+	if ct := staticTypes[path.Ext(r.PathValue("file"))]; ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
