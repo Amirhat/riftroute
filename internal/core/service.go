@@ -506,8 +506,19 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		ManagedRuleCount:  managedRules,
 		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
+		Preferences:       s.Preferences(),
 		GeneratedAt:       s.now(),
 	}, nil
+}
+
+// Preferences returns the user's update/telemetry choices (defaults when
+// unset or unreadable).
+func (s *Service) Preferences() domain.Preferences {
+	if s.store == nil {
+		return domain.DefaultPreferences()
+	}
+	p, _ := s.store.LoadPreferences()
+	return p
 }
 
 // Routes returns the routing table in kernel lookup-precedence order,

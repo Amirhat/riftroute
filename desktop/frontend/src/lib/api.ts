@@ -46,6 +46,8 @@ import {
   ExportConfigDialog,
   CheckUpdate,
   BuildNotes,
+  GetPreferences,
+  SetPreferences,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -69,6 +71,7 @@ import type {
   SystemApp,
   SystemUser,
   UpdateResult,
+  Preferences,
 } from '../types'
 
 export const api = {
@@ -110,6 +113,10 @@ export const api = {
   version: () => Version() as Promise<string>,
   // Warnings about the daemon's build (restart needed / app-daemon mismatch).
   buildNotes: () => BuildNotes() as Promise<string[]>,
+  // Update mode + telemetry level; a patch changes only the fields it sets.
+  preferences: () => GetPreferences() as unknown as Promise<Preferences>,
+  setPreferences: (patch: Partial<Preferences>) =>
+    SetPreferences(patch as unknown as Parameters<typeof SetPreferences>[0]) as unknown as Promise<Preferences>,
   // Declarative config import/export (native dialogs).
   openConfigDialog: () => OpenConfigDialog() as unknown as Promise<ConfigFile>,
   applyConfigContent: (content: string, format: string, dryRun: boolean, yes: boolean) =>

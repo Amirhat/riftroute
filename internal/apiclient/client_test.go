@@ -366,3 +366,64 @@ func TestClientEventsStream(t *testing.T) {
 		}
 	}
 }
+
+func TestClientPreferences(t *testing.T) {
+	c, _, st := serveTest(t)
+	ctx := context.Background()
+
+	p, err := c.Preferences(ctx)
+	if err != nil || p != domain.DefaultPreferences() {
+		t.Fatalf("defaults: %+v err=%v", p, err)
+	}
+	// Partial change: telemetry only; updates keeps its value.
+	off := domain.TelemetryOff
+	p, err = c.SetPreferences(ctx, domain.PreferencesPatch{Telemetry: &off})
+	if err != nil || p.Telemetry != domain.TelemetryOff || p.Updates != domain.UpdateAuto {
+		t.Fatalf("patch telemetry: %+v err=%v", p, err)
+	}
+	notify := domain.UpdateNotify
+	if p, err = c.SetPreferences(ctx, domain.PreferencesPatch{Updates: &notify}); err != nil || p.Updates != domain.UpdateNotify || p.Telemetry != domain.TelemetryOff {
+		t.Fatalf("patch updates: %+v err=%v", p, err)
+	}
+	if s, _ := c.State(ctx); s.Preferences != p {
+		t.Fatalf("state carries %+v, want %+v", s.Preferences, p)
+	}
+	// Persisted — survives a daemon restart.
+	if got, _ := st.LoadPreferences(); got != p {
+		t.Fatalf("persisted %+v, want %+v", got, p)
+	}
+	bad := domain.UpdateMode("yolo")
+	if _, err := c.SetPreferences(ctx, domain.PreferencesPatch{Updates: &bad}); err == nil || !strings.Contains(err.Error(), "invalid update mode") {
+		t.Fatalf("invalid mode: err=%v", err)
+	}
+	if got, _ := st.LoadPreferences(); got != p {
+		t.Fatalf("a rejected change must not persist: %+v", got)
+	}
+}
+
+// A YAML apply sets only the preferences the file mentions; a profiles-only
+// file (or a dry run) leaves them alone.
+func TestClientConfigPrefs(t *testing.T) {
+	c, _, st := serveTest(t)
+	ctx := context.Background()
+
+	if _, err := c.ApplyConfig(ctx, []byte("version: 1\nsettings:\n  telemetry: basic\n"), "yaml", true, true); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if p, _ := st.LoadPreferences(); p != domain.DefaultPreferences() {
+		t.Fatalf("a dry run must not change preferences: %+v", p)
+	}
+	if _, err := c.ApplyConfig(ctx, []byte("version: 1\nsettings:\n  telemetry: basic\n"), "yaml", false, true); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	want := domain.Preferences{Updates: domain.UpdateAuto, Telemetry: domain.TelemetryBasic}
+	if p, _ := st.LoadPreferences(); p != want {
+		t.Fatalf("after apply = %+v, want %+v", p, want)
+	}
+	if _, err := c.ApplyConfig(ctx, []byte("version: 1\nprofiles: []\n"), "yaml", false, true); err != nil {
+		t.Fatalf("profiles-only apply: %v", err)
+	}
+	if p, _ := st.LoadPreferences(); p != want {
+		t.Fatalf("a profiles-only file changed preferences: %+v", p)
+	}
+}

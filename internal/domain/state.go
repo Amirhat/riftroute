@@ -83,6 +83,8 @@ type State struct {
 	// changes (spec §6 v1 / §10 settings.auto_apply_on_change).
 	AutoApply bool `json:"auto_apply"`
 	// KillSwitch reports whether egress is currently fenced to the tunnel.
-	KillSwitch  bool      `json:"kill_switch"`
-	GeneratedAt time.Time `json:"generated_at"`
+	KillSwitch bool `json:"kill_switch"`
+	// Preferences are the user's update/telemetry choices.
+	Preferences Preferences `json:"preferences"`
+	GeneratedAt time.Time   `json:"generated_at"`
 }

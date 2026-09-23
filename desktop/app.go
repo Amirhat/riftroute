@@ -440,6 +440,21 @@ func (a *App) Reachable() bool {
 // Version returns the GUI build version.
 func (a *App) Version() string { return version }
 
+// GetPreferences returns the update mode and telemetry level.
+func (a *App) GetPreferences() (domain.Preferences, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.Preferences(ctx)
+}
+
+// SetPreferences changes the update mode and/or telemetry level (unset fields
+// keep their value) and returns the result.
+func (a *App) SetPreferences(patch domain.PreferencesPatch) (domain.Preferences, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.SetPreferences(ctx, patch)
+}
+
 // BuildNotes lists warnings about the daemon's build as seen from this app:
 // a newer build installed but not yet running, or app and daemon out of step.
 // Empty when all is well (or the daemon is unreachable).

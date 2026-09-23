@@ -66,6 +66,10 @@ export function GetLists() {
   return window['go']['main']['App']['GetLists']();
 }
 
+export function GetPreferences() {
+  return window['go']['main']['App']['GetPreferences']();
+}
+
 export function GetProfiles() {
   return window['go']['main']['App']['GetProfiles']();
 }
@@ -152,6 +156,10 @@ export function SetAutoApply(arg1) {
 
 export function SetKillSwitch(arg1) {
   return window['go']['main']['App']['SetKillSwitch'](arg1);
+}
+
+export function SetPreferences(arg1) {
+  return window['go']['main']['App']['SetPreferences'](arg1);
 }
 
 export function SetProfileEnabled(arg1, arg2) {

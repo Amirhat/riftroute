@@ -104,3 +104,28 @@ func TestOwnershipMap(t *testing.T) {
 		t.Fatalf("expected empty after del, got %d", len(owned))
 	}
 }
+
+func TestPreferencesDefaultsRoundTripAndUnknownValues(t *testing.T) {
+	s := openTest(t)
+	p, err := s.LoadPreferences()
+	if err != nil || p != domain.DefaultPreferences() {
+		t.Fatalf("unset preferences = %+v err=%v, want defaults", p, err)
+	}
+	want := domain.Preferences{Updates: domain.UpdateOff, Telemetry: domain.TelemetryOff}
+	if err := s.SavePreferences(want); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.LoadPreferences(); got != want {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+	if err := s.SavePreferences(domain.Preferences{Updates: "sometimes", Telemetry: domain.TelemetryOff}); err == nil {
+		t.Fatal("invalid mode must be rejected")
+	}
+	// Values from a newer release this build doesn't know: fail conservative.
+	_ = s.SetSetting("updates_mode", "beta-channel")
+	_ = s.SetSetting("telemetry_level", "diagnostic")
+	got, _ := s.LoadPreferences()
+	if got.Updates != domain.UpdateNotify || got.Telemetry != domain.TelemetryOff {
+		t.Fatalf("unknown stored values must fall back conservatively, got %+v", got)
+	}
+}

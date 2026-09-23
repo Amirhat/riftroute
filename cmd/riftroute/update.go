@@ -37,5 +37,6 @@ func updateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.AddCommand(updateModeCmd())
 	return cmd
 }

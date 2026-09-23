@@ -281,6 +281,32 @@ export namespace domain {
 		    return a;
 		}
 	}
+	export class BuildInfo {
+	    version: string;
+	    module_version?: string;
+	    commit?: string;
+	    commit_time?: string;
+	    modified?: boolean;
+	    go_version?: string;
+	    platform?: string;
+	    summary?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new BuildInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.module_version = source["module_version"];
+	        this.commit = source["commit"];
+	        this.commit_time = source["commit_time"];
+	        this.modified = source["modified"];
+	        this.go_version = source["go_version"];
+	        this.platform = source["platform"];
+	        this.summary = source["summary"];
+	    }
+	}
 	export class Capabilities {
 	    platform: string;
 	    policy_routing: boolean;
@@ -556,6 +582,13 @@ export namespace domain {
 	    provider: string;
 	    uptime_seconds: number;
 	    pid: number;
+	    build: BuildInfo;
+	    binary?: string;
+	    // Go type: time
+	    started_at: any;
+	    restart_required?: boolean;
+	    restart_reason?: string;
+	    schema_version?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Health(source);
@@ -569,7 +602,31 @@ export namespace domain {
 	        this.provider = source["provider"];
 	        this.uptime_seconds = source["uptime_seconds"];
 	        this.pid = source["pid"];
+	        this.build = this.convertValues(source["build"], BuildInfo);
+	        this.binary = source["binary"];
+	        this.started_at = this.convertValues(source["started_at"], null);
+	        this.restart_required = source["restart_required"];
+	        this.restart_reason = source["restart_reason"];
+	        this.schema_version = source["schema_version"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Iface {
 	    name: string;
@@ -678,6 +735,34 @@ export namespace domain {
 	        this.proto = source["proto"];
 	        this.route_to_iface = source["route_to_iface"];
 	        this.route_to_gw = source["route_to_gw"];
+	    }
+	}
+	export class Preferences {
+	    updates: string;
+	    telemetry: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Preferences(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.updates = source["updates"];
+	        this.telemetry = source["telemetry"];
+	    }
+	}
+	export class PreferencesPatch {
+	    updates?: string;
+	    telemetry?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new PreferencesPatch(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.updates = source["updates"];
+	        this.telemetry = source["telemetry"];
 	    }
 	}
 	export class Rule {
@@ -850,6 +935,7 @@ export namespace domain {
 	    dns: DNSState;
 	    profiles: Profile[];
 	    restorable?: boolean;
+	    format?: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Snapshot(source);
@@ -867,6 +953,7 @@ export namespace domain {
 	        this.dns = this.convertValues(source["dns"], DNSState);
 	        this.profiles = this.convertValues(source["profiles"], Profile);
 	        this.restorable = source["restorable"];
+	        this.format = source["format"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -930,6 +1017,7 @@ export namespace domain {
 	    managed_rule_count: number;
 	    auto_apply: boolean;
 	    kill_switch: boolean;
+	    preferences: Preferences;
 	    // Go type: time
 	    generated_at: any;
 	
@@ -951,6 +1039,7 @@ export namespace domain {
 	        this.managed_rule_count = source["managed_rule_count"];
 	        this.auto_apply = source["auto_apply"];
 	        this.kill_switch = source["kill_switch"];
+	        this.preferences = this.convertValues(source["preferences"], Preferences);
 	        this.generated_at = this.convertValues(source["generated_at"], null);
 	    }
 	

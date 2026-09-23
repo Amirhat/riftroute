@@ -193,7 +193,7 @@ func TestFromDomainExportRoundTrip(t *testing.T) {
 	lists := []domain.List{{Name: "corp-nets", Static: []string{"172.16.0.0/12"}}}
 	sdns := []domain.SplitDNSRoute{{Domain: "corp.example.com", Resolver: "10.0.0.53"}}
 
-	data, err := FromDomain(profiles, lists, sdns).ToYAML()
+	data, err := FromDomain(profiles, lists, sdns, nil).ToYAML()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,5 +327,47 @@ value = "10.0.0.0/8"
 	}
 	if len(cfg.Profiles) != 1 || len(cfg.Profiles[0].Rules) != 1 {
 		t.Fatalf("TOML parse wrong: %+v", cfg.Profiles)
+	}
+}
+
+func TestPreferencesInConfig(t *testing.T) {
+	src := "version: 1\nsettings:\n  updates: notify\n  telemetry: off\n"
+	cfg, res := ParseBytes([]byte(src), FormatYAML, "darwin")
+	if res.HasErrors() {
+		t.Fatalf("valid preferences rejected: %s", res.String())
+	}
+	patch := cfg.PreferencesPatch()
+	if patch.Updates == nil || *patch.Updates != domain.UpdateNotify || patch.Telemetry == nil || *patch.Telemetry != domain.TelemetryOff {
+		t.Fatalf("patch = %+v", patch)
+	}
+
+	// Absent = leave alone: a profiles-only file carries no preference change.
+	cfg, _ = ParseBytes([]byte("version: 1\nprofiles: []\n"), FormatYAML, "darwin")
+	if p := cfg.PreferencesPatch(); p.Updates != nil || p.Telemetry != nil {
+		t.Fatalf("absent settings must not patch: %+v", p)
+	}
+
+	_, res = ParseBytes([]byte("version: 1\nsettings:\n  updates: sometimes\n  telemetry: lots\n"), FormatYAML, "darwin")
+	if !res.HasErrors() || !strings.Contains(res.String(), "invalid updates") || !strings.Contains(res.String(), "invalid telemetry") {
+		t.Fatalf("invalid values must be line-referenced errors: %s", res.String())
+	}
+
+	// Export round-trip carries them.
+	prefs := domain.Preferences{Updates: domain.UpdateOff, Telemetry: domain.TelemetryBasic}
+	data, err := FromDomain(nil, nil, nil, &prefs).ToYAML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, res = ParseBytes(data, FormatYAML, "darwin")
+	if res.HasErrors() {
+		t.Fatalf("export does not validate: %s\n%s", res.String(), data)
+	}
+	if p := cfg.PreferencesPatch(); p.Updates == nil || *p.Updates != domain.UpdateOff || *p.Telemetry != domain.TelemetryBasic {
+		t.Fatalf("export round trip = %+v\n%s", p, data)
+	}
+	// And a nil export leaves them out entirely.
+	data, _ = FromDomain(nil, nil, nil, nil).ToYAML()
+	if strings.Contains(string(data), "updates") || strings.Contains(string(data), "telemetry") {
+		t.Fatalf("nil prefs must be omitted:\n%s", data)
 	}
 }

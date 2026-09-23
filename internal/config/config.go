@@ -41,6 +41,10 @@ type Settings struct {
 	KillSwitch        bool              `yaml:"kill_switch" toml:"kill_switch"`
 	ConnectivityGuard ConnectivityGuard `yaml:"connectivity_guard" toml:"connectivity_guard"`
 	SplitDNS          []SplitDNSConfig  `yaml:"split_dns" toml:"split_dns"`
+	// Updates (auto|notify|off) and Telemetry (full|basic|off) are applied only
+	// when present, so a profiles-only file never resets them.
+	Updates   string `yaml:"updates,omitempty" toml:"updates,omitempty"`
+	Telemetry string `yaml:"telemetry,omitempty" toml:"telemetry,omitempty"`
 }
 
 // SplitDNSConfig is a per-domain resolver selection (spec §6/§7.6).
@@ -166,8 +170,13 @@ func (c *Config) ToDomain() ([]domain.Profile, []domain.List, error) {
 // FromDomain builds a declarative Config from live domain entities — the inverse
 // of ToDomain, used by the GUI's "Export config" so anything assembled visually
 // round-trips into the same git-committable YAML the CLI applies.
-func FromDomain(profiles []domain.Profile, lists []domain.List, splitDNS []domain.SplitDNSRoute) *Config {
+//
+// prefs may be nil to leave settings.updates/telemetry out of the file.
+func FromDomain(profiles []domain.Profile, lists []domain.List, splitDNS []domain.SplitDNSRoute, prefs *domain.Preferences) *Config {
 	c := &Config{Version: 1}
+	if prefs != nil {
+		c.Settings.Updates, c.Settings.Telemetry = string(prefs.Updates), string(prefs.Telemetry)
+	}
 	for _, sd := range splitDNS {
 		c.Settings.SplitDNS = append(c.Settings.SplitDNS, SplitDNSConfig{Domain: sd.Domain, Resolver: sd.Resolver})
 	}
@@ -198,6 +207,21 @@ func FromDomain(profiles []domain.Profile, lists []domain.List, splitDNS []domai
 // ToYAML renders the config as YAML bytes (export path). Named to avoid any
 // resemblance to yaml.v3's Marshaler interface.
 func (c *Config) ToYAML() ([]byte, error) { return yaml.Marshal(c) }
+
+// PreferencesPatch returns the update/telemetry settings the file sets (a nil
+// field means the file doesn't mention it). Values are validated by Parse.
+func (c *Config) PreferencesPatch() domain.PreferencesPatch {
+	var p domain.PreferencesPatch
+	if v := strings.TrimSpace(c.Settings.Updates); v != "" {
+		m := domain.UpdateMode(v)
+		p.Updates = &m
+	}
+	if v := strings.TrimSpace(c.Settings.Telemetry); v != "" {
+		l := domain.TelemetryLevel(v)
+		p.Telemetry = &l
+	}
+	return p
+}
 
 // SplitDNSRoutes returns the configured split-DNS routes as domain entities.
 func (c *Config) SplitDNSRoutes() []domain.SplitDNSRoute {

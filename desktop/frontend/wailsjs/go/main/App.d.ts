@@ -39,6 +39,8 @@ export function GetLeaks():Promise<Array<domain.Leak>>;
 
 export function GetLists():Promise<Array<domain.List>>;
 
+export function GetPreferences():Promise<domain.Preferences>;
+
 export function GetProfiles():Promise<Array<domain.Profile>>;
 
 export function GetRoutes(arg1:string,arg2:string):Promise<Array<domain.Route>>;
@@ -82,6 +84,8 @@ export function SaveProfile(arg1:domain.Profile,arg2:boolean):Promise<apiclient.
 export function SetAutoApply(arg1:boolean):Promise<boolean>;
 
 export function SetKillSwitch(arg1:boolean):Promise<boolean>;
+
+export function SetPreferences(arg1:domain.PreferencesPatch):Promise<domain.Preferences>;
 
 export function SetProfileEnabled(arg1:string,arg2:boolean):Promise<safety.Result>;
 

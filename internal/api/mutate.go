@@ -515,6 +515,15 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				s.log.Warn("config apply: list not persisted", "list", l.Name, "err", err)
 			}
 		}
+		// settings.updates/telemetry: only what the file mentions (validated
+		// by Parse), so a profiles-only file leaves the user's choices alone.
+		if patch := cfg.PreferencesPatch(); patch.Updates != nil || patch.Telemetry != nil {
+			if p, perr := applyPreferencesPatch(s.svc.Preferences(), patch); perr == nil {
+				if serr := s.store.SavePreferences(p); serr != nil {
+					s.log.Warn("config apply: preferences not persisted", "err", serr)
+				}
+			}
+		}
 	}
 	s.notifyProfilesChanged(r.Context())
 	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
@@ -746,6 +755,53 @@ func (s *Server) handleAutoApply(w http.ResponseWriter, r *http.Request) {
 	}
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, map[string]bool{"auto_apply": req.Enabled})
+}
+
+func (s *Server) handlePreferencesGet(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.svc.Preferences())
+}
+
+// handlePreferencesSet changes the update mode and/or telemetry level; fields
+// left out of the body keep their current value.
+func (s *Server) handlePreferencesSet(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeErr(w, http.StatusNotImplemented, errors.New("no store"))
+		return
+	}
+	var patch domain.PreferencesPatch
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&patch); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	p, err := applyPreferencesPatch(s.svc.Preferences(), patch)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.store.SavePreferences(p); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("preferences changed", "updates", p.Updates, "telemetry", p.Telemetry)
+	s.BroadcastState(r.Context())
+	writeJSON(w, http.StatusOK, p)
+}
+
+// applyPreferencesPatch validates and merges a partial preferences change.
+func applyPreferencesPatch(cur domain.Preferences, patch domain.PreferencesPatch) (domain.Preferences, error) {
+	if patch.Updates != nil {
+		if !patch.Updates.Valid() {
+			return cur, fmt.Errorf("invalid update mode %q (expected auto, notify, or off)", *patch.Updates)
+		}
+		cur.Updates = *patch.Updates
+	}
+	if patch.Telemetry != nil {
+		if !patch.Telemetry.Valid() {
+			return cur, fmt.Errorf("invalid telemetry level %q (expected full, basic, or off)", *patch.Telemetry)
+		}
+		cur.Telemetry = *patch.Telemetry
+	}
+	return cur, nil
 }
 
 func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {

@@ -346,6 +346,52 @@ func (s *Store) DeleteList(name string) error {
 	return err
 }
 
+// --- Preferences (settings-backed) ---
+
+const (
+	updatesModeKey    = "updates_mode"
+	telemetryLevelKey = "telemetry_level"
+)
+
+// LoadPreferences returns the user's update/telemetry choices. Unset keys take
+// the defaults. A value this build doesn't know (written by a newer release)
+// falls back to the conservative choice — notify, telemetry off — never to the
+// permissive default: an unreadable "no" must not turn into a "yes".
+func (s *Store) LoadPreferences() (domain.Preferences, error) {
+	p := domain.DefaultPreferences()
+	if v, ok, err := s.GetSetting(updatesModeKey); err != nil {
+		return p, err
+	} else if ok {
+		if m := domain.UpdateMode(v); m.Valid() {
+			p.Updates = m
+		} else {
+			p.Updates = domain.UpdateNotify
+		}
+	}
+	if v, ok, err := s.GetSetting(telemetryLevelKey); err != nil {
+		return p, err
+	} else if ok {
+		if l := domain.TelemetryLevel(v); l.Valid() {
+			p.Telemetry = l
+		} else {
+			p.Telemetry = domain.TelemetryOff
+		}
+	}
+	return p, nil
+}
+
+// SavePreferences persists the choices (both keys, so an explicit choice that
+// equals today's default stays the user's choice if the default changes).
+func (s *Store) SavePreferences(p domain.Preferences) error {
+	if !p.Updates.Valid() || !p.Telemetry.Valid() {
+		return fmt.Errorf("store: invalid preferences %+v", p)
+	}
+	if err := s.SetSetting(updatesModeKey, string(p.Updates)); err != nil {
+		return err
+	}
+	return s.SetSetting(telemetryLevelKey, string(p.Telemetry))
+}
+
 // --- Split-DNS persistence (settings-backed) ---
 
 const splitDNSKey = "split_dns"

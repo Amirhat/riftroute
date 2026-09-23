@@ -62,6 +62,7 @@ func rootCmd() *cobra.Command {
 	root.AddCommand(snapshotCmd())
 	root.AddCommand(daemonCmd())
 	root.AddCommand(updateCmd())
+	root.AddCommand(telemetryCmd())
 	root.AddCommand(versionCmd())
 	return root
 }

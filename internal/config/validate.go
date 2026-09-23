@@ -111,6 +111,12 @@ func validate(c *Config, lines lineIndex, platform string) Result {
 	if m := c.Settings.DefaultMode; m != "" && m != "exclude" && m != "include" {
 		add(SevError, "settings.default_mode", "settings.default_mode", fmt.Sprintf("invalid default_mode %q (expected exclude or include)", m))
 	}
+	if v := strings.TrimSpace(c.Settings.Updates); v != "" && !domain.UpdateMode(v).Valid() {
+		add(SevError, "settings.updates", "settings.updates", fmt.Sprintf("invalid updates %q (expected auto, notify, or off)", v))
+	}
+	if v := strings.TrimSpace(c.Settings.Telemetry); v != "" && !domain.TelemetryLevel(v).Valid() {
+		add(SevError, "settings.telemetry", "settings.telemetry", fmt.Sprintf("invalid telemetry %q (expected full, basic, or off)", v))
+	}
 	cg := c.Settings.ConnectivityGuard
 	checkDuration(add, "settings.connectivity_guard.confirm_timeout", "confirm_timeout", cg.ConfirmTimeout)
 	checkDuration(add, "settings.connectivity_guard.guard_window", "guard_window", cg.GuardWindow)

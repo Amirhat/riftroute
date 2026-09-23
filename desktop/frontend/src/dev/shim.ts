@@ -111,6 +111,8 @@ const App = {
   OpenConfigDialog: () => Promise.resolve({ path: '', name: '', format: 'yaml', content: '' }),
   ExportConfigDialog: () => Promise.resolve(''),
   CheckUpdate: () => Promise.resolve({ available: false, current: 'browser-dev' }),
+  GetPreferences: () => req('GET', '/preferences'),
+  SetPreferences: (patch: unknown) => req('PUT', '/preferences', patch),
   // No app build in browser dev mode: only the daemon's own restart warning.
   BuildNotes: () =>
     req('GET', '/healthz').then((b) =>

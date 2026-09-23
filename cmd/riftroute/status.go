@@ -109,6 +109,7 @@ func renderStatus(w io.Writer, st domain.State) {
 		fmt.Fprintln(w, "  Drift:         none")
 	}
 	fmt.Fprintf(w, "  Managed:       %d route(s), %d rule(s)\n", st.ManagedRouteCount, st.ManagedRuleCount)
+	renderPreferences(w, st.Preferences)
 
 	c := st.Capabilities
 	fmt.Fprintf(w, "  Capabilities:  platform=%s policy-routing=%s per-app=%s proto-tag=%s ipv6=%s\n",

@@ -554,6 +554,20 @@ func (c *Client) SetAutoApply(ctx context.Context, enabled bool) (bool, error) {
 	return body.AutoApply, err
 }
 
+// Preferences returns the update mode and telemetry level.
+func (c *Client) Preferences(ctx context.Context) (domain.Preferences, error) {
+	var p domain.Preferences
+	err := c.do(ctx, http.MethodGet, "/preferences", nil, &p)
+	return p, err
+}
+
+// SetPreferences changes the fields set in patch and returns the result.
+func (c *Client) SetPreferences(ctx context.Context, patch domain.PreferencesPatch) (domain.Preferences, error) {
+	var p domain.Preferences
+	err := c.do(ctx, http.MethodPut, "/preferences", patch, &p)
+	return p, err
+}
+
 // SplitDNS returns the persisted per-domain resolver routes.
 func (c *Client) SplitDNS(ctx context.Context) ([]domain.SplitDNSRoute, error) {
 	var routes []domain.SplitDNSRoute

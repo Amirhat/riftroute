@@ -115,7 +115,18 @@ export interface State {
   managed_rule_count: number
   auto_apply: boolean
   kill_switch: boolean
+  // Absent from daemons that predate update/telemetry preferences.
+  preferences?: Preferences
   generated_at: string
+}
+
+export type UpdateMode = 'auto' | 'notify' | 'off'
+export type TelemetryLevel = 'full' | 'basic' | 'off'
+
+// Preferences mirrors internal/domain/prefs.go.
+export interface Preferences {
+  updates: UpdateMode
+  telemetry: TelemetryLevel
 }
 
 export interface SystemUser {

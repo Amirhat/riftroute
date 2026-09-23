@@ -154,6 +154,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /snapshots/{id}/restore", s.requireWrite(s.handleSnapshotRestore))
 	// Auto-apply: runtime toggle for reconcile-on-network-change (Settings).
 	s.mux.HandleFunc("PUT /autoapply", s.requireWrite(s.handleAutoApply))
+	// Update mode + telemetry level (what RiftRoute may do on the network).
+	s.mux.HandleFunc("GET /preferences", s.handlePreferencesGet)
+	s.mux.HandleFunc("PUT /preferences", s.requireWrite(s.handlePreferencesSet))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
 	s.mux.HandleFunc("POST /debug/vpn", s.requireWrite(s.handleDebugVPN))
 }
