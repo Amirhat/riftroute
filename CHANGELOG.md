@@ -4,6 +4,65 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-09-23
+
+Fixes VPNs failing to connect while exclude profiles are on, makes the kill
+switch real — and unable to lock a VPN out — and lays the groundwork for safe
+automatic updates, telemetry you control, and private bug reports.
+
+### Fixed
+- **VPN + exclude profiles.** With a point-to-point VPN whose default route has
+  no gateway address (e.g. Windscribe over IKEv2, `ipsec0`), RiftRoute couldn't
+  find the physical gateway ("no physical gateway for v4"): exclude profiles
+  stopped applying and auto-apply was refused by a safety guardrail. The
+  physical default is now read straight from the routing table. Verified on
+  the reporting machine.
+- **Kill switch: actually enforced on macOS, and it never cuts your VPN.** Its
+  rules used to go into a pf anchor nothing referenced, so it said "on" and
+  enforced nothing; and its allow-list (tunnels up at the time, gateway, LAN)
+  blocked a VPN's handshake to its server so it could never reconnect. It is
+  now one rule on the physical interfaces: *your apps* can't leave outside a
+  tunnel except to the LAN or destinations your exclude profiles route around
+  the VPN; tunnels are never guarded and root/system accounts never blocked. It
+  passes nothing another firewall blocked and keeps no connection state.
+  **Safe mode:** some VPN apps send their own connection from your user account
+  (Windscribe in WireGuard mode does — found on a real Mac), which the rule
+  would cut. RiftRoute watches its own counters and, when it blocks anything
+  while a tunnel is up, refuses to turn on or turns itself off and says why —
+  use that VPN app's own kill switch then. Your choice survives restarts and
+  reboots; Panic and `daemon uninstall` remove it. Verified live on real pf,
+  including `pf.conf` restored byte-identical.
+- **Install/restart races.** launchd `bootout` was followed immediately by
+  `bootstrap`, which could fail or leave the old daemon running; install now
+  waits for the old job to unload. Linux reinstalls restart the service instead
+  of leaving the old binary running. `daemon status` no longer reports a running
+  daemon as "not loaded" to non-root users.
+
+### Added
+- **Which build is running.** The daemon reports its commit, build date, binary
+  and start time; CLI and app warn when a newer build is installed but not yet
+  running, or when app and daemon are out of step.
+- **Downgrade protection.** `daemon install` refuses to replace a newer daemon
+  with an older one (`--allow-downgrade` to override) and verifies afterwards
+  that the installed build is the one running.
+- **Update and telemetry preferences** (Settings, `riftroute update mode`,
+  `riftroute telemetry`, YAML `settings.updates` / `settings.telemetry`). This
+  version neither auto-updates nor sends telemetry; your choice is kept for when
+  it does.
+- **Private bug reports.** `riftroute bugreport` and Diagnostics → Bug report
+  build a report with addresses, domains, names, home paths and your time zone
+  replaced by placeholders; nothing is uploaded. Replaces "Copy JSON", which put
+  unredacted state on the clipboard.
+- `scripts/diagnose-vpn-conflict.sh` (read-only VPN-conflict diagnostics) and
+  `scripts/live-killswitch-test.sh` (root test of the kill switch on real pf).
+
+### Changed
+- Database migrations are versioned and expand-only, so a previous release can
+  run on a migrated database (the basis for update rollback); the crash journal
+  and snapshots carry a format version, and entries a build can't read are kept
+  and reported instead of silently skipped.
+- Local builds are labelled from `git describe` instead of `0.0.1-dev`.
+
 ## [0.2.3] — 2026-07-08
 
 Makes wildcard domain rules cover subdomains reliably, and sets honest
