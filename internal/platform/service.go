@@ -41,6 +41,10 @@ type ServiceManager interface {
 // NewServiceManager returns the per-OS service manager.
 func NewServiceManager() ServiceManager { return newServiceManager() }
 
+// InstalledDaemonPath is where install places the root-run daemon binary
+// ("" where service install is unsupported).
+func InstalledDaemonPath() string { return installedBin }
+
 // FindDaemonBinary locates the riftrouted binary: next to the running CLI, then
 // on PATH.
 func FindDaemonBinary() (string, error) {
