@@ -19,6 +19,17 @@ type Health struct {
 	Provider      string       `json:"provider"` // "fake" | "macos" | "linux" | "unsupported"
 	UptimeSeconds int64        `json:"uptime_seconds"`
 	PID           int          `json:"pid"`
+	// Build identifies the running daemon binary (commit, commit time, dirty).
+	Build BuildInfo `json:"build"`
+	// Binary is the executable the daemon was started from.
+	Binary    string    `json:"binary,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	// RestartRequired is set when a different build now sits at Binary than the
+	// one running — installed, but the old process is still serving.
+	RestartRequired bool   `json:"restart_required,omitempty"`
+	RestartReason   string `json:"restart_reason,omitempty"`
+	// SchemaVersion is the database schema version on disk.
+	SchemaVersion int `json:"schema_version,omitempty"`
 }
 
 // VPNStatus summarizes detected tunnels.

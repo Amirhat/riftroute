@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Amirhat/riftroute/internal/buildinfo"
 	"github.com/Amirhat/riftroute/internal/platform"
 )
 
@@ -29,21 +30,32 @@ func daemonStatusCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			svc := platform.NewServiceManager().Status()
-			version, perr := client().Ping(cmd.Context())
+			h, perr := client().Health(cmd.Context())
 			reachable := perr == nil
 			if g.json {
-				return printJSON(cmd.OutOrStdout(), map[string]any{
+				out := map[string]any{
 					"service":   svc,
 					"reachable": reachable,
-					"version":   version,
-				})
+					"version":   h.Version,
+				}
+				if reachable {
+					out["health"] = h
+				}
+				return printJSON(cmd.OutOrStdout(), out)
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Service manager: %s\n", svc.Manager)
 			fmt.Fprintf(out, "  installed: %s\n", yesno(svc.Installed))
 			fmt.Fprintf(out, "  loaded:    %s\n", yesno(svc.Loaded))
 			if reachable {
-				fmt.Fprintf(out, "  API:       reachable (riftrouted %s)\n", version)
+				fmt.Fprintf(out, "  API:       reachable (riftrouted %s)\n", buildinfo.Short(h.Build))
+				if h.Binary != "" {
+					fmt.Fprintf(out, "  binary:    %s\n", h.Binary)
+				}
+				if !h.StartedAt.IsZero() {
+					fmt.Fprintf(out, "  started:   %s\n", h.StartedAt.Local().Format("2006-01-02 15:04:05"))
+				}
+				printBuildNotes(out, buildinfo.Current(version), h)
 			} else {
 				fmt.Fprintf(out, "  API:       not reachable\n")
 			}

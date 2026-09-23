@@ -17,6 +17,18 @@ export interface DaemonInfo {
   can_manage: boolean
 }
 
+// BuildInfo mirrors internal/domain/build.go.
+export interface BuildInfo {
+  version: string
+  module_version?: string
+  commit?: string
+  commit_time?: string
+  modified?: boolean
+  go_version?: string
+  platform?: string
+  summary?: string
+}
+
 export interface Health {
   daemon: 'ok' | 'degraded'
   reason?: string
@@ -24,6 +36,13 @@ export interface Health {
   provider: string
   uptime_seconds: number
   pid: number
+  // Absent from daemons that predate build reporting.
+  build?: BuildInfo
+  binary?: string
+  started_at?: string
+  restart_required?: boolean
+  restart_reason?: string
+  schema_version?: number
 }
 
 export interface Capabilities {

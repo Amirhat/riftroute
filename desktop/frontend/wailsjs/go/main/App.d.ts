@@ -11,6 +11,8 @@ export function Apply(arg1:boolean,arg2:number):Promise<safety.Result>;
 
 export function ApplyConfigContent(arg1:string,arg2:string,arg3:boolean,arg4:boolean):Promise<apiclient.ConfigResult>;
 
+export function BuildNotes():Promise<Array<string>>;
+
 export function CheckUpdate():Promise<update.Result>;
 
 export function Confirm(arg1:string):Promise<domain.TxResult>;

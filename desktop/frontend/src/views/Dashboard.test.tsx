@@ -30,8 +30,10 @@ const base: State = {
 }
 
 let current: State = base
+let notes: string[] = []
 vi.mock('../lib/queries', () => ({
   useStateQuery: () => ({ data: current, isLoading: false, isError: false, error: null, refetch: () => {} }),
+  useBuildNotesQuery: () => ({ data: notes }),
 }))
 
 describe('Dashboard with real-provider (null-bearing) data', () => {
@@ -49,5 +51,24 @@ describe('Dashboard with real-provider (null-bearing) data', () => {
     const { Dashboard } = await import('./Dashboard')
     expect(() => render(<Dashboard />)).not.toThrow()
     expect(screen.getByText('Interfaces')).toBeInTheDocument() // header still renders (0/0 up)
+  })
+
+  // "I installed the fix but nothing changed": the daemon card must show which
+  // commit is actually running and say plainly when a restart is needed.
+  it('shows the running build and restart/mismatch warnings', async () => {
+    current = {
+      ...base,
+      health: {
+        ...base.health,
+        build: { version: '0.2.3', commit: '260b2e780ff88915', commit_time: '2026-07-08T15:47:47Z' },
+        binary: '/Library/PrivilegedHelperTools/riftrouted',
+      },
+    }
+    notes = ['Restart needed: a different build is installed at /Library/PrivilegedHelperTools/riftrouted']
+    const { Dashboard } = await import('./Dashboard')
+    render(<Dashboard />)
+    expect(screen.getByText('build 260b2e7 · 2026-07-08')).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Restart needed')
+    notes = []
   })
 })

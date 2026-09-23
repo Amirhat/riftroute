@@ -143,6 +143,23 @@ func (c *Client) Ping(ctx context.Context) (string, error) {
 	return body.Version, nil
 }
 
+// Health fetches the daemon's identity and liveness (build, binary, restart
+// needed) without the cost of a full State read. A daemon that predates this
+// returns a Health carrying only its version.
+func (c *Client) Health(ctx context.Context) (domain.Health, error) {
+	var body struct {
+		Version string         `json:"version"`
+		Health  *domain.Health `json:"health"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &body); err != nil {
+		return domain.Health{}, err
+	}
+	if body.Health == nil {
+		return domain.Health{Daemon: domain.DaemonOK, Version: body.Version, Build: domain.BuildInfo{Version: body.Version}}, nil
+	}
+	return *body.Health, nil
+}
+
 // State fetches the aggregate daemon state.
 func (c *Client) State(ctx context.Context) (domain.State, error) {
 	var st domain.State

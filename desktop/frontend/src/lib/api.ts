@@ -45,6 +45,7 @@ import {
   GetSystemUsers,
   ExportConfigDialog,
   CheckUpdate,
+  BuildNotes,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -107,6 +108,8 @@ export const api = {
   deleteProfile: (name: string) => DeleteProfile(name) as unknown as Promise<ConfigImportResult>,
   reachable: () => Reachable() as Promise<boolean>,
   version: () => Version() as Promise<string>,
+  // Warnings about the daemon's build (restart needed / app-daemon mismatch).
+  buildNotes: () => BuildNotes() as Promise<string[]>,
   // Declarative config import/export (native dialogs).
   openConfigDialog: () => OpenConfigDialog() as unknown as Promise<ConfigFile>,
   applyConfigContent: (content: string, format: string, dryRun: boolean, yes: boolean) =>

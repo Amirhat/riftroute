@@ -6,7 +6,8 @@ import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge, Toggle } from '../co
 import { ConfirmModal } from '../components/ConfirmModal'
 import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
-import { fmtUptime, friendly } from '../lib/format'
+import { BuildNotes } from '../components/BuildNotes'
+import { fmtBuildMeta, fmtUptime, friendly } from '../lib/format'
 import type { UpdateResult } from '../types'
 
 type Theme = 'dark' | 'light'
@@ -173,6 +174,29 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
             <Stat label="Uptime" value={fmtUptime(s.health.uptime_seconds)} />
           </div>
         )}
+        {s && (s.health.binary || fmtBuildMeta(s.health.build)) && (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 px-4 pb-4 font-mono text-[11px] text-muted">
+            {fmtBuildMeta(s.health.build) && (
+              <>
+                <dt>build</dt>
+                <dd className="break-all">{fmtBuildMeta(s.health.build)}</dd>
+              </>
+            )}
+            {s.health.binary && (
+              <>
+                <dt>binary</dt>
+                <dd className="break-all">{s.health.binary}</dd>
+              </>
+            )}
+            {s.health.started_at && (
+              <>
+                <dt>started</dt>
+                <dd>{new Date(s.health.started_at).toLocaleString()}</dd>
+              </>
+            )}
+          </dl>
+        )}
+        <BuildNotes />
       </Card>
 
       <SplitDNSEditor />

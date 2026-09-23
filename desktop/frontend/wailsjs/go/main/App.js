@@ -10,6 +10,10 @@ export function ApplyConfigContent(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['ApplyConfigContent'](arg1, arg2, arg3, arg4);
 }
 
+export function BuildNotes() {
+  return window['go']['main']['App']['BuildNotes']();
+}
+
 export function CheckUpdate() {
   return window['go']['main']['App']['CheckUpdate']();
 }

@@ -188,6 +188,14 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+// UserVersion is the schema version recorded in the database file (it can
+// exceed SchemaVersion when a newer release migrated it).
+func (s *Store) UserVersion() (int, error) {
+	var v int
+	err := s.db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	return v, err
+}
+
 // --- Settings ---
 
 // GetSetting returns a setting value and whether it exists.

@@ -197,7 +197,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // --- handlers ---
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": s.version})
+	// status+version are the original contract (older clients read only these).
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "version": s.version, "health": s.svc.Health()})
 }
 
 func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {

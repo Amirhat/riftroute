@@ -111,6 +111,11 @@ const App = {
   OpenConfigDialog: () => Promise.resolve({ path: '', name: '', format: 'yaml', content: '' }),
   ExportConfigDialog: () => Promise.resolve(''),
   CheckUpdate: () => Promise.resolve({ available: false, current: 'browser-dev' }),
+  // No app build in browser dev mode: only the daemon's own restart warning.
+  BuildNotes: () =>
+    req('GET', '/healthz').then((b) =>
+      b?.health?.restart_required ? [`Restart needed: ${b.health.restart_reason}`] : [],
+    ),
 }
 
 ;(window as unknown as Record<string, unknown>).go = { main: { App } }

@@ -2,33 +2,52 @@ package main
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Amirhat/riftroute/internal/buildinfo"
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Print client (and, if reachable, daemon) version",
+		Short: "Print client (and, if reachable, daemon) version and build",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			// Daemon version is best-effort; `version` never fails on an
+			self := buildinfo.Current(version)
+			// Daemon info is best-effort; `version` never fails on an
 			// unreachable daemon.
-			daemonVer, _ := client().Ping(cmd.Context())
+			h, herr := client().Health(cmd.Context())
 			if g.json {
-				out := map[string]string{"client": version}
-				if daemonVer != "" {
-					out["daemon"] = daemonVer
+				out := map[string]any{"client": self}
+				if herr == nil {
+					out["daemon"] = h
 				}
 				return printJSON(cmd.OutOrStdout(), out)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "riftroute %s\n", version)
-			if daemonVer != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "riftrouted %s\n", daemonVer)
-			} else {
-				fmt.Fprintln(cmd.OutOrStdout(), "riftrouted (not reachable)")
+			w := cmd.OutOrStdout()
+			fmt.Fprintf(w, "riftroute  %s\n", buildinfo.Short(self))
+			if herr != nil {
+				fmt.Fprintln(w, "riftrouted (not reachable)")
+				return nil
 			}
+			fmt.Fprintf(w, "riftrouted %s\n", buildinfo.Short(h.Build))
+			printBuildNotes(w, self, h)
 			return nil
 		},
+	}
+}
+
+// printBuildNotes warns when the daemon is running something other than what
+// is installed or what this client expects — the classic "I updated, but the
+// fix doesn't work" trap.
+func printBuildNotes(w io.Writer, self domain.BuildInfo, h domain.Health) {
+	if h.RestartRequired {
+		fmt.Fprintf(w, "\n! restart needed: %s\n  run: sudo riftroute daemon restart\n", h.RestartReason)
+	}
+	if m := buildinfo.Mismatch(self, h.Build); m != "" {
+		fmt.Fprintf(w, "\n! %s\n", m)
 	}
 }

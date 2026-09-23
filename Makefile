@@ -2,7 +2,13 @@
 # The daemon + CLI are cgo-free (pure-Go SQLite); only the Wails GUI needs cgo
 # and a per-OS toolchain (AGENTS §8). See README for prerequisites.
 
-VERSION ?= 0.0.1-dev
+# Releases pass VERSION explicitly (CI: the tag). Local builds are labelled from
+# git — e.g. 0.2.3-4-ga5e49c2-dirty — so a dev daemon never claims to be a
+# release. The commit/commit-time/dirty flag are also embedded by the Go
+# toolchain and reported by `riftroute version`.
+ifeq ($(origin VERSION), undefined)
+VERSION := $(or $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//'),0.0.0-dev)
+endif
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
