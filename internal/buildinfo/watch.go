@@ -1,7 +1,10 @@
 package buildinfo
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -17,6 +20,7 @@ import (
 type Watcher struct {
 	path     string
 	start    stamp
+	hash     []byte // content of the executable at startup (nil if unreadable)
 	running  domain.BuildInfo
 	readFile func(string) (domain.BuildInfo, error)
 
@@ -48,6 +52,7 @@ func newWatcher(path string, running domain.BuildInfo, read func(string) (domain
 	w := &Watcher{path: path, running: running, readFile: read}
 	if st, err := statOf(path); err == nil {
 		w.start, w.last = st, st
+		w.hash, _ = hashFile(path)
 	}
 	return w
 }
@@ -81,19 +86,39 @@ func (w *Watcher) Check() (bool, string) {
 		return w.required, w.reason
 	}
 	w.last = st
+	// Same bytes = same program, however it got there (touch, reinstall of
+	// an identical build). Build metadata alone can't tell two dirty builds
+	// of one commit apart, nor a link-stamped app from its unstamped copy.
+	if h, err := hashFile(w.path); err == nil && w.hash != nil && bytes.Equal(h, w.hash) {
+		w.required, w.reason = false, ""
+		return w.required, w.reason
+	}
 	disk, err := w.readFile(w.path)
 	switch {
 	case err != nil:
 		w.required, w.reason = true, fmt.Sprintf(
 			"the daemon binary at %s was replaced since it started — restart the daemon to run it", w.path)
 	case SameBuild(w.running, disk):
-		w.required, w.reason = false, "" // same build reinstalled
+		w.required, w.reason = false, "" // same clean commit rebuilt
 	default:
 		w.required, w.reason = true, fmt.Sprintf(
 			"a different build is installed at %s (%s; running %s) — restart the daemon to run it",
 			w.path, Short(disk), Short(w.running))
 	}
 	return w.required, w.reason
+}
+
+func hashFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
 }
 
 func statOf(path string) (stamp, error) {

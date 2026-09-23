@@ -21,9 +21,12 @@ func versionCmd() *cobra.Command {
 			// unreachable daemon.
 			h, herr := client().Health(cmd.Context())
 			if g.json {
-				out := map[string]any{"client": self}
+				// "client"/"daemon" stay version strings (scripts read them);
+				// the build details ride alongside.
+				out := map[string]any{"client": version, "client_build": self}
 				if herr == nil {
-					out["daemon"] = h
+					out["daemon"] = h.Version
+					out["daemon_health"] = h
 				}
 				return printJSON(cmd.OutOrStdout(), out)
 			}

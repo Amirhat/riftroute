@@ -80,3 +80,11 @@ func TestRunningMatchesOldDaemonByVersion(t *testing.T) {
 		t.Fatal("0.2.3 still serving after installing a newer build must fail verification")
 	}
 }
+
+// An old dev daemon that reports only a git-describe version can't be
+// ordered: a restart we can't judge must not be reported as a failure.
+func TestRunningMatchesUnorderableDaemon(t *testing.T) {
+	if !runningMatches(domain.BuildInfo{Version: "0.2.3-4-ga5e49c2-dirty"}, devFix) {
+		t.Fatal("unorderable pair must not fail verification")
+	}
+}

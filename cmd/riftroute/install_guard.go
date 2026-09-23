@@ -38,7 +38,9 @@ func runningMatches(running, want domain.BuildInfo) bool {
 	}
 	if running.Commit == "" {
 		c, ok := buildinfo.Compare(running, want)
-		return ok && c == 0
+		// Nothing to compare (e.g. an old dev daemon reporting only a
+		// git-describe version): don't fail a restart we can't judge.
+		return !ok || c == 0
 	}
 	return running.Commit == want.Commit && running.Modified == want.Modified
 }

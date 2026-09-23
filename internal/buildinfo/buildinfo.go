@@ -137,7 +137,11 @@ func SameBuild(a, b domain.BuildInfo) bool {
 // same release. ok is false when neither the module versions nor the commit
 // times allow an ordering (e.g. a build without VCS information).
 func Compare(a, b domain.BuildInfo) (cmp int, ok bool) {
-	if c, ok := compareSemver(semverOf(a), semverOf(b)); ok && c != 0 {
+	// A build made where no tag was reachable (shallow clone, fork, manual
+	// CI run) is stamped v0.0.0-<time>-<rev>, which semver would rank below
+	// every release. Its version says nothing; order such pairs by commit time.
+	untaggedPair := untagged(a) || untagged(b)
+	if c, ok := compareSemver(semverOf(a), semverOf(b)); ok && c != 0 && !untaggedPair {
 		return c, true
 	}
 	ta, errA := time.Parse(time.RFC3339, a.CommitTime)
@@ -151,10 +155,16 @@ func Compare(a, b domain.BuildInfo) (cmp int, ok bool) {
 		}
 		return 0, true
 	}
-	if c, ok := compareSemver(semverOf(a), semverOf(b)); ok {
+	if c, ok := compareSemver(semverOf(a), semverOf(b)); ok && !untaggedPair {
 		return c, true
 	}
 	return 0, false
+}
+
+// untagged reports a pseudo-version with no tag behind it (v0.0.0-…).
+func untagged(b domain.BuildInfo) bool {
+	m := pseudoVersion.FindStringSubmatch(b.ModuleVersion)
+	return m != nil && m[1] == "0.0.0"
 }
 
 // semverOf is the build's orderable version: the toolchain's module version,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Amirhat/riftroute/internal/apiclient"
 	"github.com/Amirhat/riftroute/internal/buildinfo"
 	"github.com/Amirhat/riftroute/internal/platform"
 )
@@ -116,7 +117,7 @@ func daemonInstallCmd() *cobra.Command {
 				return err
 			}
 			if cerr == nil {
-				if err := verifyRunning(cmd.Context(), candidate, client().Health); err != nil {
+				if err := verifyRunning(cmd.Context(), candidate, systemClient().Health); err != nil {
 					return err
 				}
 			}
@@ -129,6 +130,11 @@ func daemonInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allowDowngrade, "allow-downgrade", false, "install even if the binary is older than the installed daemon")
 	return cmd
 }
+
+// systemClient talks to the installed service's socket — the daemon install
+// and restart just acted on — regardless of --socket / RIFTROUTE_SOCKET, which
+// may point at a dev daemon (e.g. under `sudo -E`).
+func systemClient() *apiclient.Client { return apiclient.New(platform.SystemSocket()) }
 
 // invokingUID returns the real user behind a privileged invocation: SUDO_UID if
 // present (run via sudo), else the current uid.
@@ -184,7 +190,7 @@ func daemonRestartCmd() *cobra.Command {
 			}
 			// Confirm the restarted daemon runs what is installed on disk.
 			if want, err := buildinfo.ReadFile(platform.InstalledDaemonPath()); err == nil {
-				if err := verifyRunning(cmd.Context(), want, client().Health); err != nil {
+				if err := verifyRunning(cmd.Context(), want, systemClient().Health); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "restarted riftrouted %s\n", buildinfo.Short(want))

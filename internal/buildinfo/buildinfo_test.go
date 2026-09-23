@@ -247,3 +247,33 @@ func TestCurrentFallsBackToLinkTimeCommit(t *testing.T) {
 		t.Fatalf("summary = %q", got.Summary)
 	}
 }
+
+// Untagged builds (shallow clone, fork, manual CI run) are stamped v0.0.0-…;
+// that must not make them "older" than every release.
+func TestCompareUntaggedBuildsByCommitTime(t *testing.T) {
+	untaggedNew := domain.BuildInfo{ModuleVersion: "v0.0.0-20260920101010-abcdefabcdef", Commit: "abcdef", CommitTime: "2026-09-20T10:10:10Z"}
+	release := domain.BuildInfo{ModuleVersion: "v0.2.3", Commit: "260b2e7", CommitTime: "2026-07-08T15:47:47Z"}
+	if c, ok := Compare(untaggedNew, release); !ok || c != 1 {
+		t.Fatalf("untagged newer build vs release = %d ok=%v, want +1 (by commit time)", c, ok)
+	}
+}
+
+// Identical bytes are the same program even when build metadata can't prove
+// it (two dirty builds of one commit look alike either way).
+func TestWatcherUsesContentForDirtyBuilds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "riftrouted")
+	if err := os.WriteFile(path, []byte("dirty-build-A"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirty := domain.BuildInfo{Commit: "abc", Modified: true}
+	w := newWatcher(path, dirty, func(string) (domain.BuildInfo, error) { return dirty, nil })
+
+	replace(t, path, "dirty-build-A") // touched / reinstalled identical bytes
+	if req, why := w.Check(); req {
+		t.Fatalf("identical bytes must not need a restart: %s", why)
+	}
+	replace(t, path, "dirty-build-B") // same commit, dirty, different code
+	if req, _ := w.Check(); !req {
+		t.Fatal("different bytes of a dirty build must need a restart")
+	}
+}
