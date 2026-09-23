@@ -69,3 +69,14 @@ func TestVerifyRunningReportsOldProcessStillServing(t *testing.T) {
 		t.Fatalf("want 'still runs <old build>' error, got %v", err)
 	}
 }
+
+// Daemons that predate build reporting answer with a bare version.
+func TestRunningMatchesOldDaemonByVersion(t *testing.T) {
+	old := domain.BuildInfo{Version: "0.2.3"} // what a v0.2.3 daemon reports
+	if !runningMatches(old, release023) {
+		t.Fatal("restarting an installed 0.2.3 must verify against the 0.2.3 that answers")
+	}
+	if runningMatches(old, devFix) {
+		t.Fatal("0.2.3 still serving after installing a newer build must fail verification")
+	}
+}

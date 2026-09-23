@@ -29,8 +29,18 @@ func guardDowngrade(candidate, current domain.BuildInfo, from string, allow bool
 
 // runningMatches reports whether the daemon now serving is the build that was
 // just installed (same commit and dirty flag — the most a dirty build allows).
+// A daemon that predates build reporting sends only its version; it matches
+// when that version equals the installed one — so reinstalling/restarting
+// 0.2.3 passes, while 0.2.3 still serving after an upgrade does not.
 func runningMatches(running, want domain.BuildInfo) bool {
-	return want.Commit == "" || (running.Commit == want.Commit && running.Modified == want.Modified)
+	if want.Commit == "" {
+		return true
+	}
+	if running.Commit == "" {
+		c, ok := buildinfo.Compare(running, want)
+		return ok && c == 0
+	}
+	return running.Commit == want.Commit && running.Modified == want.Modified
 }
 
 // verifyWindow bounds how long verifyRunning waits for the new daemon.
