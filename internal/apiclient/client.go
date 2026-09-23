@@ -554,6 +554,14 @@ func (c *Client) SetAutoApply(ctx context.Context, enabled bool) (bool, error) {
 	return body.AutoApply, err
 }
 
+// BugReport fetches the daemon's redacted diagnostics report. It runs the
+// doctor battery, so allow it several seconds.
+func (c *Client) BugReport(ctx context.Context) (domain.BugReport, error) {
+	var rep domain.BugReport
+	err := c.do(ctx, http.MethodGet, "/bugreport", nil, &rep)
+	return rep, err
+}
+
 // Preferences returns the update mode and telemetry level.
 func (c *Client) Preferences(ctx context.Context) (domain.Preferences, error) {
 	var p domain.Preferences

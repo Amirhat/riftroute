@@ -120,6 +120,13 @@ export interface State {
   generated_at: string
 }
 
+// BugReport mirrors domain.BugReport: redacted text for the user to review.
+export interface BugReport {
+  text: string
+  redactions: number
+  generated_at: string
+}
+
 export type UpdateMode = 'auto' | 'notify' | 'off'
 export type TelemetryLevel = 'full' | 'basic' | 'off'
 

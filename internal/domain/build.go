@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // BuildInfo identifies one binary build: the version stamped at link time plus
 // the VCS facts the Go toolchain embeds. It answers "is the code I just built
 // actually what's running?" and lets install refuse accidental downgrades.
@@ -17,4 +19,12 @@ type BuildInfo struct {
 	Platform  string `json:"platform,omitempty"` // GOOS/GOARCH
 	// Summary is the one-line human form, e.g. "0.2.3 (260b2e7, 2026-07-08)".
 	Summary string `json:"summary,omitempty"`
+}
+
+// BugReport is a redacted, plain-text diagnostics report for the user to
+// review and attach to an issue (see internal/bugreport). Never uploaded.
+type BugReport struct {
+	Text        string    `json:"text"`
+	Redactions  int       `json:"redactions"`
+	GeneratedAt time.Time `json:"generated_at"`
 }

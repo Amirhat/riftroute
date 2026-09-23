@@ -22,6 +22,10 @@ export function Confirm(arg1) {
   return window['go']['main']['App']['Confirm'](arg1);
 }
 
+export function CreateBugReport() {
+  return window['go']['main']['App']['CreateBugReport']();
+}
+
 export function DeleteList(arg1) {
   return window['go']['main']['App']['DeleteList'](arg1);
 }
@@ -110,6 +114,10 @@ export function OpenConfigDialog() {
   return window['go']['main']['App']['OpenConfigDialog']();
 }
 
+export function OpenIssuePage() {
+  return window['go']['main']['App']['OpenIssuePage']();
+}
+
 export function PanicFlush() {
   return window['go']['main']['App']['PanicFlush']();
 }
@@ -140,6 +148,10 @@ export function Rollback(arg1) {
 
 export function RouteOp(arg1, arg2, arg3) {
   return window['go']['main']['App']['RouteOp'](arg1, arg2, arg3);
+}
+
+export function SaveBugReport(arg1) {
+  return window['go']['main']['App']['SaveBugReport'](arg1);
 }
 
 export function SaveList(arg1) {

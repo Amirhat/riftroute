@@ -125,6 +125,8 @@ func (s *Server) routes() {
 	// Local catalogs for the GUI's per-app pickers (users / cgroup units).
 	s.mux.HandleFunc("GET /system/users", s.handleSystemUsers)
 	s.mux.HandleFunc("GET /system/apps", s.handleSystemApps)
+	// Redacted diagnostics report for bug reports (never uploaded).
+	s.mux.HandleFunc("GET /bugreport", s.handleBugReport)
 
 	// Mutating endpoints — peer-credential gated (spec §12). /plan is a dry-run
 	// preview and does not mutate, but lives with its siblings for clarity.

@@ -427,3 +427,34 @@ func TestClientConfigPrefs(t *testing.T) {
 		t.Fatalf("a profiles-only file changed preferences: %+v", p)
 	}
 }
+
+// End to end over the real socket: the daemon's report redacts what the
+// user configured.
+func TestClientBugReport(t *testing.T) {
+	c, _, _ := serveTest(t)
+	ctx := context.Background()
+	p := domain.Profile{
+		ID: "p-bank", Name: "Private Bank", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "*.secret-bank.example"}, {Type: domain.RuleCIDR, Value: "185.10.75.0/24"}},
+	}
+	if _, err := c.SaveProfile(ctx, p, false, true); err != nil {
+		t.Fatalf("save profile: %v", err)
+	}
+	rep, err := c.BugReport(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leak := range []string{"Private Bank", "secret-bank", "185.10.75"} {
+		if strings.Contains(rep.Text, leak) {
+			t.Errorf("report leaks %q:\n%s", leak, rep.Text)
+		}
+	}
+	for _, want := range []string{"REVIEW BEFORE SHARING", "## Profiles (1)", "domain  *.<domain-1>", "## Doctor"} {
+		if !strings.Contains(rep.Text, want) {
+			t.Errorf("report lacks %q", want)
+		}
+	}
+	if rep.Redactions == 0 || rep.GeneratedAt.IsZero() {
+		t.Errorf("metadata missing: %d redactions, generated %v", rep.Redactions, rep.GeneratedAt)
+	}
+}

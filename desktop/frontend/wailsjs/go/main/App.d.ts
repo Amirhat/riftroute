@@ -17,6 +17,8 @@ export function CheckUpdate():Promise<update.Result>;
 
 export function Confirm(arg1:string):Promise<domain.TxResult>;
 
+export function CreateBugReport():Promise<domain.BugReport>;
+
 export function DeleteList(arg1:string):Promise<void>;
 
 export function DeleteProfile(arg1:string):Promise<apiclient.ConfigResult>;
@@ -61,6 +63,8 @@ export function InstallDaemon():Promise<void>;
 
 export function OpenConfigDialog():Promise<main.ConfigFile>;
 
+export function OpenIssuePage():Promise<void>;
+
 export function PanicFlush():Promise<void>;
 
 export function PlanPreview():Promise<domain.Plan>;
@@ -76,6 +80,8 @@ export function RestoreSnapshot(arg1:string):Promise<apiclient.ConfigResult>;
 export function Rollback(arg1:string):Promise<domain.TxResult>;
 
 export function RouteOp(arg1:string,arg2:domain.Route,arg3:domain.Route):Promise<apiclient.ConfigResult>;
+
+export function SaveBugReport(arg1:string):Promise<string>;
 
 export function SaveList(arg1:domain.List):Promise<domain.List>;
 

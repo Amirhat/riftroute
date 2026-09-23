@@ -48,6 +48,9 @@ import {
   BuildNotes,
   GetPreferences,
   SetPreferences,
+  CreateBugReport,
+  SaveBugReport,
+  OpenIssuePage,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -72,6 +75,7 @@ import type {
   SystemUser,
   UpdateResult,
   Preferences,
+  BugReport,
 } from '../types'
 
 export const api = {
@@ -113,6 +117,10 @@ export const api = {
   version: () => Version() as Promise<string>,
   // Warnings about the daemon's build (restart needed / app-daemon mismatch).
   buildNotes: () => BuildNotes() as Promise<string[]>,
+  // Redacted bug report: build (preview) → save/copy; nothing is uploaded.
+  createBugReport: () => CreateBugReport() as unknown as Promise<BugReport>,
+  saveBugReport: (text: string) => SaveBugReport(text) as Promise<string>,
+  openIssuePage: () => OpenIssuePage() as Promise<void>,
   // Update mode + telemetry level; a patch changes only the fields it sets.
   preferences: () => GetPreferences() as unknown as Promise<Preferences>,
   setPreferences: (patch: Partial<Preferences>) =>
