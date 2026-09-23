@@ -40,13 +40,18 @@ export function Sidebar({
 }) {
   return (
     <aside className="no-select flex h-full w-56 shrink-0 flex-col border-e border-line bg-surface">
-      <div className="flex items-center gap-2 px-4 py-4">
-        <span className="text-accent">
-          <ShieldIcon width={22} height={22} />
-        </span>
-        <div>
-          <div className="text-sm font-semibold leading-none text-default">RiftRoute</div>
-          <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted">split-tunnel control</div>
+      {/* Window chrome: on macOS the traffic lights sit in the reserved top band
+          and this whole block drags the window (index.css .app-drag). */}
+      <div className="app-drag">
+        <div aria-hidden className="hidden h-[var(--titlebar-h)] mac:block" />
+        <div className="flex items-center gap-2 px-4 py-4 mac:pt-1">
+          <span className="text-accent">
+            <ShieldIcon width={22} height={22} />
+          </span>
+          <div>
+            <div className="text-sm font-semibold leading-none text-default">RiftRoute</div>
+            <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted">split-tunnel control</div>
+          </div>
         </div>
       </div>
 
