@@ -122,7 +122,7 @@ func SameBuild(a, b domain.BuildInfo) bool {
 // same release. ok is false when neither the module versions nor the commit
 // times allow an ordering (e.g. a build without VCS information).
 func Compare(a, b domain.BuildInfo) (cmp int, ok bool) {
-	if c, ok := compareSemver(a.ModuleVersion, b.ModuleVersion); ok && c != 0 {
+	if c, ok := compareSemver(semverOf(a), semverOf(b)); ok && c != 0 {
 		return c, true
 	}
 	ta, errA := time.Parse(time.RFC3339, a.CommitTime)
@@ -136,11 +136,28 @@ func Compare(a, b domain.BuildInfo) (cmp int, ok bool) {
 		}
 		return 0, true
 	}
-	if c, ok := compareSemver(a.ModuleVersion, b.ModuleVersion); ok {
+	if c, ok := compareSemver(semverOf(a), semverOf(b)); ok {
 		return c, true
 	}
 	return 0, false
 }
+
+// semverOf is the build's orderable version: the toolchain's module version,
+// else — for daemons that predate build reporting and send only their
+// link-time stamp — a plain release version like "0.2.3". A git-describe
+// stamp ("0.2.3-4-gabc") is NOT used: semver would read it as a pre-release
+// of 0.2.3, i.e. older, when it is actually newer.
+func semverOf(b domain.BuildInfo) string {
+	if b.ModuleVersion != "" {
+		return b.ModuleVersion
+	}
+	if v := "v" + b.Version; releaseOnly.MatchString(v) {
+		return v
+	}
+	return ""
+}
+
+var releaseOnly = regexp.MustCompile(`^v\d+\.\d+\.\d+$`)
 
 // compareSemver implements semver 2.0 precedence, including pre-release
 // identifiers — which is what orders Go pseudo-versions

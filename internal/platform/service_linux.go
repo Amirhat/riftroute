@@ -43,7 +43,12 @@ func (systemdManager) Install(daemonBin, socket string, allowUID int) error {
 	if err := runCmd("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
-	return runCmd("systemctl", "enable", "--now", systemdUnitName)
+	if err := runCmd("systemctl", "enable", systemdUnitName); err != nil {
+		return err
+	}
+	// restart, not `enable --now`: on a reinstall the old daemon is already
+	// running and `--now` leaves it serving the previous binary.
+	return runCmd("systemctl", "restart", systemdUnitName)
 }
 
 func (systemdManager) Uninstall() error {

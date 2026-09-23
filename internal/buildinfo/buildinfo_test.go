@@ -56,6 +56,23 @@ func TestCompareDetectsReleaseOverNewerDevBuild(t *testing.T) {
 	}
 }
 
+// Daemons that predate build reporting send only "0.2.3" — still orderable
+// against a newer client, so the "old daemon still running" note appears.
+func TestCompareUsesPlainReleaseStampOfOldDaemons(t *testing.T) {
+	oldDaemon := domain.BuildInfo{Version: "0.2.3"}
+	client := domain.BuildInfo{ModuleVersion: "v0.2.4-0.20260923022032-4c7deb0177d6+dirty"}
+	if c, ok := Compare(oldDaemon, client); !ok || c != -1 {
+		t.Fatalf("Compare(old 0.2.3 daemon, newer client) = %d ok=%v, want -1", c, ok)
+	}
+	if m := Mismatch(client, oldDaemon); !strings.Contains(m, "daemon (0.2.3) is older") {
+		t.Fatalf("mismatch note = %q", m)
+	}
+	// A git-describe stamp must not be misread as a pre-release of its tag.
+	if _, ok := Compare(domain.BuildInfo{Version: "0.2.3-4-gabc1234"}, domain.BuildInfo{Version: "0.2.3"}); ok {
+		t.Fatal("git-describe stamps must be unorderable, not older than their tag")
+	}
+}
+
 func TestCompareFallsBackToCommitTimeAndReportsUnknown(t *testing.T) {
 	older := domain.BuildInfo{Commit: "a", CommitTime: "2026-01-01T00:00:00Z"}
 	newer := domain.BuildInfo{Commit: "b", CommitTime: "2026-02-01T00:00:00Z"}

@@ -46,7 +46,11 @@ func daemonStatusCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Service manager: %s\n", svc.Manager)
 			fmt.Fprintf(out, "  installed: %s\n", yesno(svc.Installed))
-			fmt.Fprintf(out, "  loaded:    %s\n", yesno(svc.Loaded))
+			if svc.Loaded && svc.Detail != "" {
+				fmt.Fprintf(out, "  loaded:    yes (%s)\n", svc.Detail)
+			} else {
+				fmt.Fprintf(out, "  loaded:    %s\n", yesno(svc.Loaded))
+			}
 			if reachable {
 				fmt.Fprintf(out, "  API:       reachable (riftrouted %s)\n", buildinfo.Short(h.Build))
 				if h.Binary != "" {

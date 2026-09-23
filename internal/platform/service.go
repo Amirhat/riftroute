@@ -176,6 +176,15 @@ func runCmd(name string, args ...string) error {
 	return nil
 }
 
+// cmdOutput runs a command and returns its combined output (error on non-zero
+// exit), bounded by a short timeout.
+func cmdOutput(name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	return string(out), err
+}
+
 func cmdContains(needle string, name string, args ...string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
