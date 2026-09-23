@@ -4,13 +4,23 @@ import { friendly } from '../lib/format'
 import type { BugReport } from '../types'
 import { Modal } from './Modal'
 
+// copyText uses the Wails runtime clipboard inside the app (the webview's
+// navigator.clipboard isn't reliable on a wails:// origin), and the browser
+// API elsewhere (dev harness).
+async function copyText(text: string): Promise<boolean> {
+  const rt = (window as unknown as { runtime?: { ClipboardSetText?: (t: string) => Promise<boolean> } }).runtime
+  if (rt?.ClipboardSetText) return rt.ClipboardSetText(text)
+  await navigator.clipboard.writeText(text)
+  return true
+}
+
 // BugReportModal builds the redacted diagnostics report and shows it in full
 // BEFORE anything else can happen: the user reads it, then copies or saves it
 // and attaches it to an issue themselves. Nothing is uploaded from here.
 export function BugReportModal({ onClose }: { onClose: () => void }) {
   const [rep, setRep] = useState<BugReport | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [note, setNote] = useState<string | null>(null)
+  const [note, setNote] = useState<{ text: string; ok: boolean } | null>(null)
 
   useEffect(() => {
     let live = true
@@ -26,10 +36,10 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
   async function copy() {
     if (!rep) return
     try {
-      await navigator.clipboard.writeText(rep.text)
-      setNote('Copied to the clipboard.')
+      if (!(await copyText(rep.text))) throw new Error('the clipboard refused the text')
+      setNote({ text: 'Copied to the clipboard.', ok: true })
     } catch (e) {
-      setNote(friendly(e, 'copy failed'))
+      setNote({ text: friendly(e, 'copy failed'), ok: false })
     }
   }
 
@@ -37,9 +47,9 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
     if (!rep) return
     try {
       const path = await api.saveBugReport(rep.text)
-      if (path) setNote(`Saved to ${path}`)
+      if (path) setNote({ text: `Saved to ${path}`, ok: true })
     } catch (e) {
-      setNote(friendly(e, 'save failed'))
+      setNote({ text: friendly(e, 'save failed'), ok: false })
     }
   }
 
@@ -69,7 +79,7 @@ export function BugReportModal({ onClose }: { onClose: () => void }) {
             </pre>
           </>
         )}
-        {note && <p className="ltr break-all text-xs text-success">{note}</p>}
+        {note && <p className={`ltr break-all text-xs ${note.ok ? 'text-success' : 'text-danger'}`}>{note.text}</p>}
       </div>
       <div className="flex flex-wrap justify-end gap-2 border-t border-line px-4 py-3">
         <button

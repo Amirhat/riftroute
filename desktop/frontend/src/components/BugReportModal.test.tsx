@@ -37,6 +37,18 @@ describe('BugReportModal', () => {
     expect(await screen.findByText('Saved to /tmp/report.txt')).toBeInTheDocument()
   })
 
+  it('copies through the Wails clipboard and shows a refusal as an error', async () => {
+    const set = vi.fn().mockResolvedValue(false)
+    ;(window as unknown as { runtime: unknown }).runtime = { ClipboardSetText: set }
+    render(<BugReportModal onClose={() => {}} />)
+    await screen.findByLabelText('Report preview')
+    fireEvent.click(screen.getByText('Copy'))
+    const msg = await screen.findByText(/clipboard refused/)
+    expect(set).toHaveBeenCalledWith(text)
+    expect(msg.className).toContain('text-danger')
+    delete (window as unknown as { runtime?: unknown }).runtime
+  })
+
   it('reports a failure instead of an empty preview', async () => {
     mockApi.createBugReport.mockRejectedValue(new Error('boom'))
     render(<BugReportModal onClose={() => {}} />)
