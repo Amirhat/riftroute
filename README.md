@@ -332,7 +332,10 @@ keeps no connection state. Trade-offs: system services — including the OS
 resolver's DNS lookups — and forwarded traffic (VMs, Internet Sharing) are not
 blocked; a user-level VPN app on a non-standard port (e.g. 443) and captive-portal
 login pages are unreachable until it's turned off; PPPoE/mobile uplinks named
-`ppp*` are treated as tunnels and not guarded. Your choice is saved: it's
+`ppp*` are treated as tunnels and not guarded; and turning it on reloads
+`/etc/pf.conf` when the loaded ruleset lacks its hook, which drops rules other
+tools inserted at runtime (some VPN clients' own kill switches may need toggling
+again). Your choice is saved: it's
 restored after a restart or reboot and keeps holding while the service is
 stopped. On macOS it's a pf anchor hooked into `/etc/pf.conf` (removed again when
 turned off); Panic and `daemon uninstall` remove it.
