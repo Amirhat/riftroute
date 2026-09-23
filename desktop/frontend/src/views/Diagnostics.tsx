@@ -4,6 +4,7 @@ import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Skeleton, Toggle } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { KILL_SWITCH_SHORT, KillSwitchConfirmMessage } from '../components/KillSwitchCopy'
 import { BugReportModal } from '../components/BugReportModal'
 import { useDaemon } from '../lib/useDaemon'
 import { friendly } from '../lib/format'
@@ -139,7 +140,7 @@ export function Diagnostics() {
         <div className="divide-y divide-line">
           <ActionRow
             title="Kill switch"
-            desc="Fence all egress to the tunnel; a reconnect path stays open."
+            desc={KILL_SWITCH_SHORT}
             control={
               <Toggle
                 on={killOn}
@@ -152,7 +153,7 @@ export function Diagnostics() {
           />
           <ActionRow
             title="Panic flush"
-            desc="Remove every RiftRoute-managed route and restore the baseline immediately."
+            desc="Remove every RiftRoute-managed route, turn the kill switch off, and restore the baseline immediately."
             control={
               <button
                 onClick={() => setConfirmPanic(true)}
@@ -199,7 +200,7 @@ export function Diagnostics() {
         open={confirmKill}
         danger
         title="Enable kill switch"
-        message="This blocks all egress except through the tunnel until disabled. A reconnect path (loopback, tunnel, gateway/LAN, DHCP) stays open."
+        message={<KillSwitchConfirmMessage />}
         confirmLabel="Enable"
         onConfirm={() => {
           setConfirmKill(false)
@@ -212,7 +213,7 @@ export function Diagnostics() {
         open={confirmPanic}
         danger
         title="Panic — flush all managed routes"
-        message="Remove ALL RiftRoute-managed routes and restore the baseline. This is immediate and affects every profile."
+        message="Remove ALL RiftRoute-managed routes, turn the kill switch off, and restore the baseline. This is immediate and affects every profile."
         confirmLabel="Flush all"
         onConfirm={() => {
           setConfirmPanic(false)

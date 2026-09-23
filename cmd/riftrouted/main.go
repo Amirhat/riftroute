@@ -164,6 +164,7 @@ func run() error {
 		on, _ := ks.Enabled(context.Background())
 		return on
 	})
+	srv.InitKillSwitch(context.Background())
 
 	// Wildcard DNS learner (spec §5.1 "*.domain"): a loopback forwarder the
 	// wildcard apexes are pointed at via split-DNS resolver files. Answers
@@ -468,6 +469,20 @@ func run() error {
 					default:
 					}
 				}
+			}
+		}
+	})
+	// Kill switch re-sync: follow VPNs onto new interfaces and the bypass set
+	// as profiles change (no-op while the kill switch is off).
+	go supervise(ctx, logger, "killswitch-sync", func(c context.Context) {
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-c.Done():
+				return
+			case <-t.C:
+				srv.SyncKillSwitch(c)
 			}
 		}
 	})

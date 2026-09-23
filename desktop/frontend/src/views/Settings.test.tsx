@@ -79,4 +79,14 @@ describe('Settings — updates & telemetry preferences', () => {
     expect(telemetry.querySelector('input[value="off"]')).toBeDisabled()
     expect(screen.getAllByText(/too old to store/).length).toBe(2)
   })
+
+  // The old copy promised "a reconnect path stays open" — false: the VPN's
+  // own server was blocked. The description must say what it really does.
+  it('describes the kill switch accurately', async () => {
+    current = { ...base, preferences: { updates: 'auto', telemetry: 'full' } }
+    await renderSettings()
+    expect(screen.getByText(/Your apps reach the internet only through the VPN tunnel/)).toBeInTheDocument()
+    expect(screen.getByText(/VPN clients can still reconnect/)).toBeInTheDocument()
+    expect(screen.queryByText(/reconnect path stays open/)).toBeNull()
+  })
 })

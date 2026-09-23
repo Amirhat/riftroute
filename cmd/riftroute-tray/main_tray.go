@@ -55,7 +55,7 @@ func (t *tray) onReady() {
 	t.mVPN = systray.AddMenuItem("VPN: —", "")
 	t.mVPN.Disable()
 	systray.AddSeparator()
-	t.mKill = systray.AddMenuItemCheckbox("Kill switch", "Fence all egress to the tunnel", false)
+	t.mKill = systray.AddMenuItemCheckbox("Kill switch", "Keep your apps' traffic inside the VPN tunnel", false)
 	systray.AddSeparator()
 	t.mProfile = map[string]*systray.MenuItem{}
 	t.mPanic = systray.AddMenuItem("Panic — flush all routes", "Remove every managed route immediately")

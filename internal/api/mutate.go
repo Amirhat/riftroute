@@ -14,7 +14,6 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
-	"github.com/Amirhat/riftroute/internal/killswitch"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
@@ -143,6 +142,9 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	if s.onPanic != nil {
 		s.onPanic(r.Context())
 	}
+	// The kill switch is RiftRoute-installed firewall state too: panic means
+	// "back to the baseline, get me online", so it goes off as well.
+	s.disableKillSwitch(r.Context())
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "panicked"})
 }
@@ -806,62 +808,6 @@ func applyPreferencesPatch(cur domain.Preferences, patch domain.PreferencesPatch
 		cur.Telemetry = *patch.Telemetry
 	}
 	return cur, nil
-}
-
-func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
-	if s.killSwitch == nil {
-		writeErr(w, http.StatusNotImplemented, errors.New("kill switch unavailable"))
-		return
-	}
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	var err error
-	if req.Enabled {
-		err = s.killSwitch.Enable(r.Context(), s.killSwitchConfig(r.Context()))
-	} else {
-		err = s.killSwitch.Disable(r.Context())
-	}
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
-	}
-	on, _ := s.killSwitch.Enabled(r.Context())
-	s.BroadcastState(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"kill_switch": on, "backend": s.killSwitch.Backend()})
-}
-
-// killSwitchConfig derives the kill switch allow-list from current state: the
-// up tunnel interfaces, the physical gateway, and the LAN subnets (so the VPN
-// can still reconnect — never a permanent lockout).
-func (s *Server) killSwitchConfig(ctx context.Context) killswitch.Config {
-	cfg := killswitch.Config{}
-	ifaces, _ := s.svc.Interfaces(ctx)
-	for _, ifc := range ifaces {
-		if !ifc.Up {
-			continue
-		}
-		if ifc.IsVPN {
-			cfg.TunnelIfaces = append(cfg.TunnelIfaces, ifc.Name)
-			continue
-		}
-		if ifc.Kind == domain.IfaceKindLoopback {
-			continue
-		}
-		for _, a := range ifc.Addrs {
-			if pfx, err := netip.ParsePrefix(a); err == nil && pfx.Addr().Is4() {
-				cfg.LANSubnets = append(cfg.LANSubnets, pfx.Masked().String())
-			}
-		}
-	}
-	if gw, _, err := s.svc.Provider().DefaultGateway(ctx, domain.FamilyV4); err == nil && gw.IsValid() {
-		cfg.Gateway = gw.String()
-	}
-	return cfg
 }
 
 func (s *Server) handleSnapshots(w http.ResponseWriter, r *http.Request) {

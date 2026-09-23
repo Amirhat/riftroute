@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/core"
@@ -40,6 +41,12 @@ type Server struct {
 
 	// killSwitch fences egress to the tunnel when enabled (nil disables the API).
 	killSwitch killswitch.Manager
+	// ksMu guards the kill switch's wanted state and the config last applied,
+	// which SyncKillSwitch compares against live state.
+	ksMu   sync.Mutex
+	ksWant bool
+	ksLast killswitch.Config
+	ksTick int
 	// splitDNS applies per-domain resolver selection (nil = no-op).
 	splitDNS splitdns.Manager
 	// setAutoApply flips the daemon's auto-apply gate at runtime (nil disables

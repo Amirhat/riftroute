@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/pfconf"
 )
 
 // PF policy routing (route-to) on macOS — the Darwin analogue of Linux Model B.
@@ -222,6 +223,8 @@ func (p *Provider) releaseEnableToken(ctx context.Context) {
 // runs the first time an include/per-app rule is applied — a host that never uses
 // macOS policy routing never has its pf.conf touched.
 func (p *Provider) ensureHook(ctx context.Context) error {
+	pfconf.Mu.Lock() // the kill switch hooks its own anchor into the same file
+	defer pfconf.Mu.Unlock()
 	conf, err := os.ReadFile(pfConfPath)
 	if err != nil {
 		return fmt.Errorf("macos: read %s: %w", pfConfPath, err)
@@ -245,6 +248,8 @@ func (p *Provider) ensureHook(ctx context.Context) error {
 // teardown leaves the packet filter exactly as we found it. Best-effort and
 // idempotent (missing file / absent block are non-errors).
 func (p *Provider) dropHook(ctx context.Context) error {
+	pfconf.Mu.Lock()
+	defer pfconf.Mu.Unlock()
 	conf, err := os.ReadFile(pfConfPath)
 	if err != nil {
 		return nil // nothing to restore

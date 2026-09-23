@@ -4,6 +4,7 @@ import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge, Toggle } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
+import { KILL_SWITCH_SHORT, KillSwitchConfirmMessage } from '../components/KillSwitchCopy'
 import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
 import { BuildNotes } from '../components/BuildNotes'
@@ -98,7 +99,7 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
             <div className="flex items-center justify-between px-4 py-3">
               <div>
                 <div className="text-sm text-default">Kill switch</div>
-                <div className="text-xs text-muted">Fence all egress to the tunnel; a reconnect path stays open.</div>
+                <div className="text-xs text-muted">{KILL_SWITCH_SHORT}</div>
               </div>
               <Toggle
                 on={killOn}
@@ -228,7 +229,7 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
         open={confirmKill}
         danger
         title="Enable kill switch"
-        message="This blocks all egress except through the tunnel until disabled. A reconnect path (loopback, tunnel, gateway/LAN, DHCP) stays open."
+        message={<KillSwitchConfirmMessage />}
         confirmLabel="Enable"
         onConfirm={() => {
           setConfirmKill(false)

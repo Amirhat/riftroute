@@ -9,7 +9,7 @@ import (
 func panicCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "panic",
-		Short: "Flush ALL RiftRoute-managed routes and restore baseline (idempotent)",
+		Short: "Flush ALL RiftRoute-managed routes, turn the kill switch off, and restore baseline (idempotent)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := client().Panic(cmd.Context()); err != nil {
@@ -18,7 +18,7 @@ func panicCmd() *cobra.Command {
 			if g.json {
 				return printJSON(cmd.OutOrStdout(), map[string]string{"status": "panicked"})
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "panic complete — all managed routes removed, baseline restored")
+			fmt.Fprintln(cmd.OutOrStdout(), "panic complete — all managed routes removed, kill switch off, baseline restored")
 			return nil
 		},
 	}
