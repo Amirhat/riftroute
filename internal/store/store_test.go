@@ -129,3 +129,34 @@ func TestPreferencesDefaultsRoundTripAndUnknownValues(t *testing.T) {
 		t.Fatalf("unknown stored values must fall back conservatively, got %+v", got)
 	}
 }
+
+// An unreadable choice must never turn into permission.
+func TestPreferencesReadErrorIsConservative(t *testing.T) {
+	s := openTest(t)
+	if err := s.SavePreferences(domain.Preferences{Updates: domain.UpdateOff, Telemetry: domain.TelemetryOff}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.db.Close()
+	p, err := s.LoadPreferences()
+	if err == nil || p != ConservativePreferences() {
+		t.Fatalf("read error: got %+v err=%v, want %+v with an error", p, err, ConservativePreferences())
+	}
+}
+
+// A patch writes only its own key: an untouched key keeps what's stored,
+// even a value from a newer release this build can't interpret.
+func TestSavePreferencesPatchTouchesOnlyItsKey(t *testing.T) {
+	s := openTest(t)
+	_ = s.SetSetting("updates_mode", "beta-channel")
+	off := domain.TelemetryOff
+	if err := s.SavePreferencesPatch(domain.PreferencesPatch{Telemetry: &off}); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := s.GetSetting("updates_mode"); v != "beta-channel" {
+		t.Fatalf("untouched key rewritten to %q", v)
+	}
+	bad := domain.UpdateMode("sometimes")
+	if err := s.SavePreferencesPatch(domain.PreferencesPatch{Updates: &bad}); err == nil {
+		t.Fatal("invalid value accepted")
+	}
+}

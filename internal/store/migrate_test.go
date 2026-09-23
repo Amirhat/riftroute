@@ -205,3 +205,42 @@ func TestSnapshotIsStampedWithFormat(t *testing.T) {
 		t.Fatalf("snapshot format = %d, want %d", got.Format, SnapshotFormat)
 	}
 }
+
+// A non-integer format value must not blind crash recovery to the rest.
+func TestMalformedFormatValueDoesNotHideOtherEntries(t *testing.T) {
+	s := openTest(t)
+	if err := s.PutPendingTx("good", domain.Plan{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO pending_tx(id,created_at,doc,format) VALUES('weird','t','{}','2.1')`); err != nil {
+		t.Fatal(err)
+	}
+	pend, err := s.ListPendingTx()
+	if !errors.Is(err, ErrPendingUnreadable) || !strings.Contains(err.Error(), "weird") {
+		t.Fatalf("err = %v, want the malformed row reported", err)
+	}
+	if _, ok := pend["good"]; !ok {
+		t.Fatalf("readable entry lost: %+v", pend)
+	}
+}
+
+// Migrations must survive a reset user_version (restored dump, external tool).
+func TestMigrationsAreIdempotentAfterVersionReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "rr.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen after user_version reset: %v", err)
+	}
+	defer s.Close()
+	if got := userVersion(t, s.db); got != SchemaVersion() {
+		t.Fatalf("user_version = %d, want %d", got, SchemaVersion())
+	}
+}

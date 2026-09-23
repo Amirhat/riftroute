@@ -511,11 +511,11 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 	}, nil
 }
 
-// Preferences returns the user's update/telemetry choices (defaults when
-// unset or unreadable).
+// Preferences returns the user's update/telemetry choices: defaults when
+// unset, the conservative choices (notify, telemetry off) when unreadable.
 func (s *Service) Preferences() domain.Preferences {
 	if s.store == nil {
-		return domain.DefaultPreferences()
+		return store.ConservativePreferences()
 	}
 	p, _ := s.store.LoadPreferences()
 	return p
@@ -753,6 +753,7 @@ func (s *Service) degraded(err error) domain.State {
 	h.Daemon, h.Reason = domain.DaemonDegraded, err.Error()
 	return domain.State{
 		Health:       h,
+		Preferences:  s.Preferences(),
 		Capabilities: s.prov.Capabilities(),
 		GeneratedAt:  s.now(),
 	}

@@ -52,10 +52,12 @@ func Open(path string) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
-// migration is one schema step. See migrations.
+// migration is one schema step (sql, or apply for steps that must inspect
+// the schema first). See migrations.
 type migration struct {
-	name string
-	sql  string
+	name  string
+	sql   string
+	apply func(*sql.Tx) error
 	// breaking marks a CONTRACT step (drop/rename/reshape) that binaries
 	// predating it cannot safely run against. Applying it raises the database's
 	// minimum reader so those binaries refuse to open it instead of misreading.
@@ -124,7 +126,34 @@ CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit(ts);
 `},
 	// The journal's doc format. Pre-existing rows (and rows an older binary
 	// inserts without naming the column) are format 1 — today's domain.Plan.
-	{name: "pending_tx.format", sql: `ALTER TABLE pending_tx ADD COLUMN format INTEGER NOT NULL DEFAULT 1`},
+	// Idempotent: a user_version reset (a restored dump, an external tool)
+	// must not stop the daemon with "duplicate column".
+	{name: "pending_tx.format", apply: func(tx *sql.Tx) error {
+		return addColumnIfMissing(tx, "pending_tx", "format", "INTEGER NOT NULL DEFAULT 1")
+	}},
+}
+
+// addColumnIfMissing adds a column unless the table already has it.
+func addColumnIfMissing(tx *sql.Tx, table, column, decl string) error {
+	rows, err := tx.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = tx.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl))
+	return err
 }
 
 // SchemaVersion is the schema this binary migrates databases to.
@@ -163,9 +192,15 @@ func (s *Store) migrate() error {
 		if err != nil {
 			return fmt.Errorf("migrate %d (%s): %w", i+1, m.name, err)
 		}
-		if _, err := tx.Exec(m.sql); err != nil {
+		var serr error
+		if m.apply != nil {
+			serr = m.apply(tx)
+		} else {
+			_, serr = tx.Exec(m.sql)
+		}
+		if serr != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("migrate %d (%s): %w", i+1, m.name, err)
+			return fmt.Errorf("migrate %d (%s): %w", i+1, m.name, serr)
 		}
 		if m.breaking {
 			if _, err := tx.Exec(
@@ -357,10 +392,12 @@ const (
 // the defaults. A value this build doesn't know (written by a newer release)
 // falls back to the conservative choice — notify, telemetry off — never to the
 // permissive default: an unreadable "no" must not turn into a "yes".
+//
+// A read error returns the conservative choices too, with the error.
 func (s *Store) LoadPreferences() (domain.Preferences, error) {
 	p := domain.DefaultPreferences()
 	if v, ok, err := s.GetSetting(updatesModeKey); err != nil {
-		return p, err
+		return ConservativePreferences(), err
 	} else if ok {
 		if m := domain.UpdateMode(v); m.Valid() {
 			p.Updates = m
@@ -369,7 +406,7 @@ func (s *Store) LoadPreferences() (domain.Preferences, error) {
 		}
 	}
 	if v, ok, err := s.GetSetting(telemetryLevelKey); err != nil {
-		return p, err
+		return ConservativePreferences(), err
 	} else if ok {
 		if l := domain.TelemetryLevel(v); l.Valid() {
 			p.Telemetry = l
@@ -380,8 +417,33 @@ func (s *Store) LoadPreferences() (domain.Preferences, error) {
 	return p, nil
 }
 
-// SavePreferences persists the choices (both keys, so an explicit choice that
-// equals today's default stays the user's choice if the default changes).
+// ConservativePreferences is what RiftRoute assumes when it can't read the
+// user's choice: tell, don't install; send nothing.
+func ConservativePreferences() domain.Preferences {
+	return domain.Preferences{Updates: domain.UpdateNotify, Telemetry: domain.TelemetryOff}
+}
+
+// SavePreferencesPatch persists only the fields set in patch, leaving the
+// other key exactly as stored (including a value a newer release wrote).
+func (s *Store) SavePreferencesPatch(patch domain.PreferencesPatch) error {
+	if patch.Updates != nil {
+		if !patch.Updates.Valid() {
+			return fmt.Errorf("store: invalid update mode %q", *patch.Updates)
+		}
+		if err := s.SetSetting(updatesModeKey, string(*patch.Updates)); err != nil {
+			return err
+		}
+	}
+	if patch.Telemetry != nil {
+		if !patch.Telemetry.Valid() {
+			return fmt.Errorf("store: invalid telemetry level %q", *patch.Telemetry)
+		}
+		return s.SetSetting(telemetryLevelKey, string(*patch.Telemetry))
+	}
+	return nil
+}
+
+// SavePreferences persists both choices.
 func (s *Store) SavePreferences(p domain.Preferences) error {
 	if !p.Updates.Valid() || !p.Telemetry.Valid() {
 		return fmt.Errorf("store: invalid preferences %+v", p)
@@ -596,6 +658,11 @@ func (s *Store) ClearOwned() error {
 // the newest it can read. Bump one (and teach the reader the old shape) when
 // the stored JSON changes incompatibly; an older binary then refuses the entry
 // instead of misreading it.
+//
+// v0.2.3 and earlier don't read the format column: they json.Unmarshal the
+// doc as a domain.Plan, which is lenient. So when WALFormat is bumped, the new
+// doc must also FAIL to decode as the old Plan (e.g. make "ops"/"inverse" a
+// different JSON type), or those binaries will half-apply it.
 const (
 	WALFormat      = 1
 	SnapshotFormat = 1
@@ -644,13 +711,16 @@ func (s *Store) ListPendingTx() (map[string]domain.Plan, error) {
 	for rows.Next() {
 		var (
 			id, doc string
-			format  int
+			rawFmt  any
 		)
-		if err := rows.Scan(&id, &format, &doc); err != nil {
+		if err := rows.Scan(&id, &rawFmt, &doc); err != nil {
 			return nil, err
 		}
-		if format > WALFormat {
-			bad = append(bad, fmt.Sprintf("%s (format %d, this build reads %d)", id, format, WALFormat))
+		// One malformed format value must not hide every other entry from
+		// crash recovery: treat it as unreadable, like a too-new format.
+		format, ok := rawFmt.(int64)
+		if !ok || format > WALFormat {
+			bad = append(bad, fmt.Sprintf("%s (format %v, this build reads %d)", id, rawFmt, WALFormat))
 			continue
 		}
 		var pl domain.Plan

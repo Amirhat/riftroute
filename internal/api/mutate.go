@@ -518,10 +518,8 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		// settings.updates/telemetry: only what the file mentions (validated
 		// by Parse), so a profiles-only file leaves the user's choices alone.
 		if patch := cfg.PreferencesPatch(); patch.Updates != nil || patch.Telemetry != nil {
-			if p, perr := applyPreferencesPatch(s.svc.Preferences(), patch); perr == nil {
-				if serr := s.store.SavePreferences(p); serr != nil {
-					s.log.Warn("config apply: preferences not persisted", "err", serr)
-				}
+			if serr := s.store.SavePreferencesPatch(patch); serr != nil {
+				s.log.Warn("config apply: preferences not persisted", "err", serr)
 			}
 		}
 	}
@@ -773,12 +771,18 @@ func (s *Server) handlePreferencesSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	p, err := applyPreferencesPatch(s.svc.Preferences(), patch)
+	cur, err := s.store.LoadPreferences()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("read preferences: %w", err))
+		return
+	}
+	p, err := applyPreferencesPatch(cur, patch)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.store.SavePreferences(p); err != nil {
+	// Only the changed key is written: the other keeps exactly what's stored.
+	if err := s.store.SavePreferencesPatch(patch); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
