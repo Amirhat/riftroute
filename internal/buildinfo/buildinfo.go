@@ -17,13 +17,28 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 )
 
+// Set with -X at link time for builds where the toolchain's VCS stamp is
+// missing — Wails builds the desktop app without it — so every binary still
+// identifies its commit (see the Makefile's BUILDINFO_LDFLAGS).
+var (
+	linkCommit     string
+	linkCommitTime string // RFC 3339, UTC
+	linkModified   string // "true" | "false"
+)
+
 // Current describes the running binary. version is its link-time stamp.
 func Current(version string) domain.BuildInfo {
-	bi, ok := debug.ReadBuildInfo()
-	if !ok {
-		return domain.BuildInfo{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH}
+	var out domain.BuildInfo
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		out = fromGo(bi, version)
+	} else {
+		out = domain.BuildInfo{Version: version, Platform: runtime.GOOS + "/" + runtime.GOARCH}
 	}
-	return fromGo(bi, version)
+	if out.Commit == "" && linkCommit != "" {
+		out.Commit, out.CommitTime, out.Modified = linkCommit, linkCommitTime, linkModified == "true"
+		out.Summary = Short(out)
+	}
+	return out
 }
 
 // ReadFile describes the Go binary at path without running it. The link-time

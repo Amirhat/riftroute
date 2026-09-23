@@ -10,6 +10,14 @@ ifeq ($(origin VERSION), undefined)
 VERSION := $(or $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//'),0.0.0-dev)
 endif
 LDFLAGS := -s -w -X main.version=$(VERSION)
+# Wails builds the GUI without the toolchain's VCS stamp; pass the commit in
+# explicitly so the app can tell which build it is (and whether the daemon
+# it talks to is older or newer). The Go toolchain stamps daemon/CLI itself.
+BI := github.com/Amirhat/riftroute/internal/buildinfo
+COMMIT      := $(shell git rev-parse HEAD 2>/dev/null)
+COMMIT_TIME := $(shell TZ=UTC0 git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd 2>/dev/null)
+MODIFIED    := $(if $(shell git status --porcelain 2>/dev/null),true,false)
+BUILDINFO_LDFLAGS := -X $(BI).linkCommit=$(COMMIT) -X $(BI).linkCommitTime=$(COMMIT_TIME) -X $(BI).linkModified=$(MODIFIED)
 GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
@@ -30,12 +38,12 @@ cli:
 
 ## desktop: build the native GUI app (RiftRoute.app / binary) via Wails
 desktop:
-	cd desktop && $(WAILS) build -trimpath -ldflags "-X main.version=$(VERSION)"
+	cd desktop && $(WAILS) build -trimpath -ldflags "-X main.version=$(VERSION) $(BUILDINFO_LDFLAGS)"
 
 ## desktop-universal: build the macOS GUI as a universal (arm64 + x86_64) app so
 ## it runs on every Mac — Apple Silicon and Intel. Used by the release DMG.
 desktop-universal:
-	cd desktop && $(WAILS) build -platform darwin/universal -trimpath -ldflags "-X main.version=$(VERSION)"
+	cd desktop && $(WAILS) build -platform darwin/universal -trimpath -ldflags "-X main.version=$(VERSION) $(BUILDINFO_LDFLAGS)"
 
 ## tray: build the menu-bar/system-tray companion (cgo + native tray libs).
 ## Linux also needs libayatana-appindicator3-dev (or libappindicator3-dev).
@@ -44,7 +52,7 @@ tray:
 
 ## dev: run the GUI with hot reload (rebuilds + restarts on change)
 dev:
-	cd desktop && $(WAILS) dev -ldflags "-X main.version=$(VERSION)"
+	cd desktop && $(WAILS) dev -ldflags "-X main.version=$(VERSION) $(BUILDINFO_LDFLAGS)"
 
 ## bindings: regenerate the typed Wails TS bindings from bound Go methods
 bindings:

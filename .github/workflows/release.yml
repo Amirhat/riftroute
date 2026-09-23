@@ -116,7 +116,10 @@ jobs:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           V="${VERSION#v}"
-          cd desktop && "$(go env GOPATH)/bin/wails" build -tags webkit2_41 -trimpath -ldflags "-X main.version=$V"
+          BI=github.com/Amirhat/riftroute/internal/buildinfo
+          CT=$(TZ=UTC0 git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)
+          cd desktop && "$(go env GOPATH)/bin/wails" build -tags webkit2_41 -trimpath \
+            -ldflags "-X main.version=$V -X $BI.linkCommit=$GITHUB_SHA -X $BI.linkCommitTime=$CT -X $BI.linkModified=false"
           cd "$GITHUB_WORKSPACE"
           VERSION="$V" packaging/appimage/build-appimage.sh
       - uses: actions/upload-artifact@v4

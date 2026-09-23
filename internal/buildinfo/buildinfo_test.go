@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -222,5 +223,27 @@ func TestMismatchNamesTheOlderSide(t *testing.T) {
 	}
 	if m := Mismatch(domain.BuildInfo{}, old); m != "" {
 		t.Fatalf("unorderable builds must not guess: %q", m)
+	}
+}
+
+// Wails-built apps carry no toolchain VCS stamp; link-time values fill in.
+func TestCurrentFallsBackToLinkTimeCommit(t *testing.T) {
+	oc, ot, om := linkCommit, linkCommitTime, linkModified
+	t.Cleanup(func() { linkCommit, linkCommitTime, linkModified = oc, ot, om })
+	linkCommit, linkCommitTime, linkModified = "1e3a0c21e2c56270", "2026-09-23T02:51:56Z", "true"
+
+	got := Current("0.2.3-9-g1e3a0c2")
+	if bi, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range bi.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				t.Skip("test binary is VCS-stamped; the toolchain value wins")
+			}
+		}
+	}
+	if got.Commit != linkCommit || got.CommitTime != linkCommitTime || !got.Modified {
+		t.Fatalf("link-time identity not used: %+v", got)
+	}
+	if got.Summary != "0.2.3-9-g1e3a0c2 (1e3a0c2-dirty, 2026-09-23)" {
+		t.Fatalf("summary = %q", got.Summary)
 	}
 }
