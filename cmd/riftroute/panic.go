@@ -1,18 +1,32 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Amirhat/riftroute/internal/apiclient"
+	"github.com/Amirhat/riftroute/internal/killswitch"
 )
 
 func panicCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "panic",
 		Short: "Flush ALL RiftRoute-managed routes, turn the kill switch off, and restore baseline (idempotent)",
-		Args:  cobra.NoArgs,
+		Long: "Flushes every RiftRoute-managed route and rule, turns the kill switch off, and\n" +
+			"restores the baseline. If the daemon is down, run it with sudo: the kill switch\n" +
+			"(which keeps holding while the service is stopped) is then removed directly.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if err := client().Panic(cmd.Context()); err != nil {
+			err := client().Panic(cmd.Context())
+			if errors.Is(err, apiclient.ErrDaemonUnreachable) {
+				return offlinePanic(cmd, err)
+			}
+			if err != nil {
 				return err
 			}
 			if g.json {
@@ -22,6 +36,23 @@ func panicCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// offlinePanic is the way out when the daemon can't be reached: the kill
+// switch outlives the daemon by design, so as root remove it directly. Routes
+// need the daemon's ownership records and are flushed on its next start.
+func offlinePanic(cmd *cobra.Command, reachErr error) error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("%w\nthe daemon is down; run `sudo riftroute panic` to remove the kill switch without it", reachErr)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := killswitch.New().Disable(ctx); err != nil {
+		return fmt.Errorf("daemon unreachable, and removing the kill switch directly failed: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "daemon unreachable — removed the kill switch directly.\n"+
+		"Start the daemon (sudo riftroute daemon start) and run panic again to flush managed routes.")
+	return nil
 }
 
 func snapshotCmd() *cobra.Command {

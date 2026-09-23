@@ -33,10 +33,14 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
   // Guards the switches while a mutation is in flight (double-click race).
   const [busyToggle, setBusyToggle] = useState(false)
 
+  const [killErr, setKillErr] = useState<string | null>(null)
   async function setKill(enabled: boolean) {
     setBusyToggle(true)
+    setKillErr(null)
     try {
       await api.setKillSwitch(enabled)
+    } catch (e) {
+      setKillErr(friendly(e, 'kill switch change failed'))
     } finally {
       setBusyToggle(false)
       qc.invalidateQueries({ queryKey: stateKey })
@@ -109,6 +113,7 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
                 onClick={() => (killOn ? void setKill(false) : setConfirmKill(true))}
               />
             </div>
+            {killErr && <p className="px-4 py-2 text-xs text-danger">{killErr}</p>}
           </div>
         )}
       </Card>

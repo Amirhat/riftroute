@@ -46,7 +46,6 @@ type Server struct {
 	ksMu   sync.Mutex
 	ksWant bool
 	ksLast killswitch.Config
-	ksTick int
 	// splitDNS applies per-domain resolver selection (nil = no-op).
 	splitDNS splitdns.Manager
 	// setAutoApply flips the daemon's auto-apply gate at runtime (nil disables

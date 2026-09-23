@@ -59,8 +59,11 @@ export function Diagnostics() {
   const [killBusy, setKillBusy] = useState(false)
   async function setKill(enabled: boolean) {
     setKillBusy(true)
+    setActionErr(null)
     try {
       await api.setKillSwitch(enabled)
+    } catch (e) {
+      setActionErr(friendly(e, 'kill switch change failed'))
     } finally {
       setKillBusy(false)
       qc.invalidateQueries({ queryKey: stateKey })

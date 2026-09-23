@@ -14,8 +14,9 @@ export function KillSwitchConfirmMessage() {
       </span>
       <span className="mt-2 block">
         Never blocked: VPN helpers running as administrator (most desktop VPNs, macOS IKEv2), standard VPN ports, system
-        services — so the system resolver’s DNS lookups can still leave outside the tunnel — and traffic from virtual
-        machines or Internet Sharing.
+        services — so the system resolver’s DNS lookups can still leave outside the tunnel — and bridged virtual machines
+        or Internet Sharing. Apps that share your Mac’s connection (Docker Desktop, most VMs using NAT) count as your
+        apps. A network extension running as administrator (such as a corporate proxy) can carry apps’ traffic around it.
       </span>
       <span className="mt-2 block">
         Out of reach while on: a VPN app that runs without admin rights on a non-standard port (such as 443), and

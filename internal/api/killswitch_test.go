@@ -124,6 +124,19 @@ func TestInitKillSwitch(t *testing.T) {
 		t.Fatal("cleared kill switch must not be re-synced on")
 	}
 
+	// In force without a saved choice (Linux before this version: the nft
+	// table was enforced but never persisted) → kept on, not cleared.
+	legacyLinux := &killswitch.Fake{}
+	_ = legacyLinux.Enable(ctx, killswitch.Config{PhysIfaces: []string{"eth0"}})
+	srv3, _, _ := newKillSwitchServer(t, legacyLinux)
+	srv3.InitKillSwitch(ctx)
+	if on, _ := legacyLinux.Enabled(ctx); !on {
+		t.Fatal("an enforced kill switch must survive the upgrade")
+	}
+	if v, _, _ := srv3.store.GetSetting(killSwitchKey); v != "true" {
+		t.Fatalf("its choice must now be saved, got %q", v)
+	}
+
 	// Saved "on" (e.g. after a reboot emptied the kernel rules) → restored,
 	// even though nothing is loaded — apps start before the VPN connects.
 	fresh := &killswitch.Fake{}

@@ -37,12 +37,15 @@ echo "-- 0. preflight"
 VER=$(rr version 2>&1)
 echo "$VER" | sed 's/^/  /'
 cli=$(echo "$VER" | awk '/^riftroute /{print $3}'); dmn=$(echo "$VER" | awk '/^riftrouted /{print $3}')
-[[ -n "$dmn" && "$cli" == "$dmn" ]] || { echo "  the installed daemon isn't this build — run: sudo ./bin/riftroute daemon install"; exit 1; }
+[[ -n "$dmn" && "$cli" == "$dmn" ]] && ! echo "$VER" | grep -q '^!' || { echo "  the installed daemon isn't this build — run: sudo ./bin/riftroute daemon install"; exit 1; }
 [[ "$(rr killswitch status 2>&1)" == *off* ]] || { echo "  turn the kill switch off first (riftroute killswitch off)"; exit 1; }
-trap 'rr killswitch off >/dev/null 2>&1' EXIT INT TERM
+trap 'rr killswitch off >/dev/null 2>&1' EXIT
+trap 'echo "  interrupted"; exit 130' INT TERM
 PF_BEFORE=$(shasum -a 256 /etc/pf.conf | cut -d' ' -f1)
 PF_STATE_BEFORE=$(pfctl -si 2>/dev/null | head -1 | grep -o "Enabled\|Disabled" | head -1)
+[[ -n "$PF_STATE_BEFORE" ]] || { echo "  could not read pf state (pfctl -si)"; exit 1; }
 VIA=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2}')
+VIA6=$(route -n get -inet6 2606:4700:4700::1111 2>/dev/null | awk '/interface:/{print $2}')
 echo "  pf.conf ${PF_BEFORE:0:16}…  |  pf: $PF_STATE_BEFORE  |  1.1.1.1 routes via: ${VIA:-none}"
 B_T=$(as_user tcp4); B_U=$(as_user udp4); B_6=$(as_user tcp6); R_T=$(tcp4)
 echo "  baseline — $SUDO_USER: tcp4=$B_T udp4=$B_U tcp6=$B_6 | root: tcp4=$R_T"
@@ -51,7 +54,7 @@ echo "  baseline — $SUDO_USER: tcp4=$B_T udp4=$B_U tcp6=$B_6 | root: tcp4=$R_T
 echo "-- 1. turn it on — is it really enforced?"
 ck "kill switch reports on" "$(rr killswitch on 2>&1)" "ON"
 ck "loaded ruleset references the anchor" "$(pfctl -sr 2>/dev/null)" 'anchor "riftroute_ks"'
-ck "anchor holds the user-scoped block" "$(pfctl -a riftroute_ks -sr 2>/dev/null)" "user 499 >< 60001"
+ck "anchor holds the user-scoped block" "$(pfctl -a riftroute_ks -sr 2>/dev/null)" "user 499 >< 65534"
 ck "pf is running" "$(pfctl -si 2>/dev/null | head -1)" "Enabled"
 
 echo "-- 2. who can still get out?"
@@ -64,7 +67,11 @@ case "$VIA" in
 esac
 [[ "$B_T" == ok ]] && ck "your apps (TCP) $what" "$O_T" "$expect"
 [[ "$B_U" == ok ]] && ck "your apps (UDP) $what" "$O_U" "$expect"
-[[ "$B_6" == ok && "$expect" == blocked ]] && ck "your apps (IPv6) refused outside the tunnel" "$O_6" "blocked"
+case "$VIA6" in
+  utun*|ipsec*|ppp*|tun*|wg*) e6=ok ;;
+  *)                          e6=blocked ;;
+esac
+[[ "$B_6" == ok ]] && ck "your apps (IPv6) via ${VIA6:-none}" "$O_6" "$e6"
 
 echo "-- 3. turn it off — back exactly as before?"
 ck "kill switch reports off" "$(rr killswitch off 2>&1)" "off"

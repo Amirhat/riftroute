@@ -21,10 +21,9 @@
 //     VPN can always (re)connect.
 //   - Tunnels are never guarded, whatever they're called, so there's no
 //     tunnel list to go stale and nothing to identify by name.
-//   - Nothing is ever passed that another firewall blocked: the only passes
-//     re-allow user traffic this very rule blocked (standard VPN ports), and
-//     nothing creates state, so enabling it resets no existing connection
-//     that it doesn't mean to cut.
+//   - It only ever blocks: nothing another firewall blocked is passed, and no
+//     state is created, so enabling it resets no connection it doesn't mean
+//     to cut. Standard VPN ports are carved out of the block, not passed.
 //
 // Trade-offs, stated in the UI too: system services (the OS resolver's DNS
 // lookups, update checks) and forwarded traffic (VMs, Internet Sharing) are
@@ -95,20 +94,25 @@ func sorted(v []string) []string {
 	return out
 }
 
-// Derive computes the config from live state. uplink is the interface of the
-// physical default route (guarded even if its name isn't a typical physical
-// one, e.g. a USB-tethered "usb0").
+// Derive computes the config from live state. uplinks are the interfaces of
+// the physical IPv4 and IPv6 default routes (guarded even if their names
+// aren't typical physical ones); a tunnel is never guarded, even when it holds
+// a default route.
 //
 // Bypass takes ONLY main-table, non-default routes that leave through a
 // guarded interface: a route kept for a tunnel that has since vanished (an
 // include-mode 0.0.0.0/0 via wg0 in table 5252) must never become "allowed
 // everywhere" — which is exactly when the kill switch has to hold.
-func Derive(ifaces []domain.Iface, gateway netip.Addr, uplink string, owned []domain.ManagedRoute) Config {
+func Derive(ifaces []domain.Iface, gateway netip.Addr, uplinks []string, owned []domain.ManagedRoute) Config {
 	var cfg Config
+	isUplink := map[string]bool{}
+	for _, u := range uplinks {
+		isUplink[u] = u != ""
+	}
 	phys := map[string]bool{}
 	seenLAN := map[string]bool{}
 	for _, ifc := range ifaces {
-		if !ifc.Up || ifc.IsVPN || ifc.Kind != domain.IfaceKindPhysical && ifc.Name != uplink {
+		if !ifc.Up || ifc.IsVPN || !(guardable(ifc) || isUplink[ifc.Name]) {
 			continue
 		}
 		phys[ifc.Name] = true
@@ -148,6 +152,15 @@ func Derive(ifaces []domain.Iface, gateway netip.Addr, uplink string, owned []do
 // ErrNoInterface: there is no physical interface up to guard.
 var ErrNoInterface = errors.New("kill switch: no physical network interface is up to guard")
 
+// guardable: an interface that is (or can be) a physical path out — typical
+// Ethernet/Wi-Fi names, plus mobile-broadband and USB-tethering modems.
+func guardable(ifc domain.Iface) bool {
+	if ifc.Kind == domain.IfaceKindPhysical {
+		return true
+	}
+	return strings.HasPrefix(ifc.Name, "wwan") || strings.HasPrefix(ifc.Name, "usb")
+}
+
 // Status is what's installed and whether the packet filter enforces it.
 type Status struct {
 	Loaded    bool // our rules are installed
@@ -181,10 +194,13 @@ const (
 	pfAnchor = "riftroute_ks"
 	enableTO = 10 * time.Second
 
-	// Regular login accounts — whose traffic must stay in the tunnel. Below
-	// are root and system accounts; above, "nobody" (65534, or -2 on macOS).
-	darwinFirstUser, linuxFirstUser = 500, 1000
-	lastUser                        = 60000
+	// Accounts whose traffic must stay in the tunnel: every non-system uid.
+	// macOS: 500 and up except 65534 ("nobody" is -2 there; blocking it is
+	// harmless). Linux: 1000 and up except systemd's dynamic service users
+	// (61184–65519), "nobody" (65534) and the invalid (u32)-1 — so homed
+	// (60001+) and directory/AD accounts (huge uids) are covered too.
+	pfUsers  = "user { 499 >< 65534 > 65534 }"
+	nftUsers = "meta skuid { 1000-61183, 65520-65533, 65535-4294967294 }"
 
 	pfHookBegin = "# >>> riftroute kill switch (managed — do not edit) >>>"
 	pfHookEnd   = "# <<< riftroute kill switch (managed — do not edit) <<<"
@@ -203,20 +219,37 @@ var (
 	localV6 = []string{"fe80::/10", "ff00::/8"}
 )
 
-// PfRuleset renders the pf anchor: one user-scoped block on the physical
-// interfaces, plus passes that only re-allow what that block refused (VPN
-// ports). Nothing here passes traffic another firewall blocked, and nothing
-// keeps state. Callers must not render an Empty config (no interface list).
+// PfRuleset renders the pf anchor: block rules only — user sockets leaving a
+// guarded interface for anywhere outside the allow table, on every port but
+// the standard VPN ones (carved out of the block rather than passed, so the
+// anchor never passes anything and can't override another firewall or its
+// state handling). Callers must not render an Empty config.
 func PfRuleset(cfg Config) string {
 	var b strings.Builder
 	b.WriteString("# RiftRoute kill switch: your apps reach the internet only through a VPN tunnel.\n")
 	fmt.Fprintf(&b, "table <rr_ks_allow> persist { %s }\n", strings.Join(allowList(cfg), " "))
 	on := strings.Join(cfg.PhysIfaces, " ")
-	users := fmt.Sprintf("user %d >< %d", darwinFirstUser-1, lastUser+1)
-	fmt.Fprintf(&b, "block return out on { %s } proto { tcp udp } to ! <rr_ks_allow> %s\n", on, users)
-	fmt.Fprintf(&b, "pass out on { %s } proto udp to ! <rr_ks_allow> port { %s } %s no state\n", on, joinInts(vpnUDPPorts, " "), users)
-	fmt.Fprintf(&b, "pass out on { %s } proto tcp to ! <rr_ks_allow> port { %s } %s flags any no state\n", on, joinInts(vpnTCPPorts, " "), users)
+	fmt.Fprintf(&b, "block return out on { %s } proto udp to ! <rr_ks_allow> port { %s } %s\n", on, portsExcept(vpnUDPPorts), pfUsers)
+	fmt.Fprintf(&b, "block return out on { %s } proto tcp to ! <rr_ks_allow> port { %s } %s\n", on, portsExcept(vpnTCPPorts), pfUsers)
 	return b.String()
+}
+
+// portsExcept renders pf port ranges covering 0–65535 minus the given ports.
+func portsExcept(skip []int) string {
+	sk := append([]int(nil), skip...)
+	sort.Ints(sk)
+	var parts []string
+	lo := 0
+	for _, p := range sk {
+		if p > lo {
+			parts = append(parts, fmt.Sprintf("%d:%d", lo, p-1))
+		}
+		lo = p + 1
+	}
+	if lo <= 65535 {
+		parts = append(parts, fmt.Sprintf("%d:65535", lo))
+	}
+	return strings.Join(parts, " ")
 }
 
 // NftRuleset renders an nftables script that atomically (re)creates the kill
@@ -256,7 +289,10 @@ func NftRuleset(cfg Config) string {
 	b.WriteString("    ip6 daddr @allow6 accept\n")
 	fmt.Fprintf(&b, "    udp dport { %s } accept\n", joinInts(vpnUDPPorts, ", "))
 	fmt.Fprintf(&b, "    tcp dport { %s } accept\n", joinInts(vpnTCPPorts, ", "))
-	fmt.Fprintf(&b, "    meta skuid %d-%d meta l4proto { tcp, udp } reject\n", linuxFirstUser, lastUser)
+	// Policy-based IPsec (strongSwan, libreswan) has no tunnel interface: the
+	// plaintext leaves "via eth0" before encryption. Let it through.
+	b.WriteString("    rt ipsec exists accept\n")
+	fmt.Fprintf(&b, "    %s meta l4proto { tcp, udp } reject\n", nftUsers)
 	b.WriteString("  }\n}\n")
 	return b.String()
 }
@@ -390,12 +426,14 @@ func (m *realManager) Status(ctx context.Context) Status {
 		st.Loaded = err == nil
 		st.Effective = st.Loaded // a base chain with a hook is always evaluated
 	case "pf":
-		if out, err := run(ctx, "pfctl", "-a", pfAnchor, "-s", "rules"); err == nil {
+		// stdout only: pfctl prints "No ALTQ support in kernel" on stderr,
+		// which would make an empty anchor look loaded.
+		if out, err := runStdout(ctx, "pfctl", "-a", pfAnchor, "-s", "rules"); err == nil {
 			st.Loaded = strings.TrimSpace(out) != ""
 		}
 		if st.Loaded {
-			main, _ := run(ctx, "pfctl", "-s", "rules")
-			info, _ := run(ctx, "pfctl", "-s", "info")
+			main, _ := runStdout(ctx, "pfctl", "-s", "rules")
+			info, _ := runStdout(ctx, "pfctl", "-s", "info")
 			st.Effective = PfHooked(main) && PfRunning(info)
 		}
 	}
@@ -451,7 +489,7 @@ func (m *realManager) ensureHook(ctx context.Context) error {
 	}
 	// Reload even when the file already had the hook: something (a VPN
 	// client, an admin) may have loaded a ruleset without it since.
-	main, _ := run(ctx, "pfctl", "-s", "rules")
+	main, _ := runStdout(ctx, "pfctl", "-s", "rules")
 	if !PfHooked(main) {
 		if _, err := run(ctx, "pfctl", "-f", path); err != nil {
 			return fmt.Errorf("reload %s: %w", path, err)
@@ -487,7 +525,7 @@ var reEnableToken = regexp.MustCompile(`(?i)token\s*:\s*(\d+)`)
 // enforced again.
 func (m *realManager) ensurePFEnabled(ctx context.Context) {
 	if _, err := os.Stat(m.token()); err == nil {
-		if info, _ := run(ctx, "pfctl", "-s", "info"); PfRunning(info) {
+		if info, _ := runStdout(ctx, "pfctl", "-s", "info"); PfRunning(info) {
 			return
 		}
 		m.releasePF(ctx)
@@ -517,6 +555,14 @@ func run(ctx context.Context, name string, args ...string) (string, error) {
 		return string(out), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+// runStdout returns only stdout (queries whose stderr carries noise).
+func runStdout(ctx context.Context, name string, args ...string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, enableTO)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, name, args...).Output()
+	return string(out), err
 }
 
 func runStdin(ctx context.Context, stdin, name string, args ...string) error {

@@ -16,17 +16,21 @@ import (
 func (s *Server) killSwitchConfig(ctx context.Context) killswitch.Config {
 	ifaces, _ := s.svc.Interfaces(ctx)
 	var (
-		gw     netip.Addr
-		uplink string
+		gw      netip.Addr
+		uplinks []string
 	)
 	if g, ifn, err := s.svc.Provider().DefaultGateway(ctx, domain.FamilyV4); err == nil {
-		gw, uplink = g, ifn
+		gw, uplinks = g, append(uplinks, ifn)
+	}
+	// The IPv6 default can leave through a different interface than IPv4.
+	if _, ifn, err := s.svc.Provider().DefaultGateway(ctx, domain.FamilyV6); err == nil {
+		uplinks = append(uplinks, ifn)
 	}
 	var owned []domain.ManagedRoute
 	if s.store != nil {
 		owned, _ = s.store.ListOwned()
 	}
-	return killswitch.Derive(ifaces, gw, uplink, owned)
+	return killswitch.Derive(ifaces, gw, uplinks, owned)
 }
 
 // killSwitchKey persists the user's on/off choice: rules don't survive a
@@ -109,23 +113,32 @@ func (s *Server) InitKillSwitch(ctx context.Context) {
 		s.log.Info("kill switch restored on startup")
 		return
 	}
-	if s.killSwitch.Status(ctx).Loaded {
+	switch st := s.killSwitch.Status(ctx); {
+	case st.Effective:
+		// In force without a saved choice: a previous version that never
+		// persisted it (Linux's nftables table was always enforced). Keep it.
+		s.ksWant = true
+		s.persistKillSwitch(true)
+		cfg := s.killSwitchConfig(ctx)
+		if err := s.killSwitch.Enable(ctx, cfg); err == nil {
+			s.ksLast = cfg
+		}
+		s.log.Info("kill switch in force from a previous version; kept on")
+		return
+	case st.Loaded:
 		if err := s.killSwitch.Disable(ctx); err != nil {
 			s.log.Warn("kill switch: clearing leftover rules failed", "err", err)
 			return
 		}
-		s.log.Warn("kill switch rules were loaded without a saved choice to keep them (never enforced before this version); cleared — turn the kill switch on again to use it")
+		s.log.Warn("kill switch rules were loaded but not enforced (the old unreferenced macOS anchor); cleared — turn the kill switch on again to use it")
 	}
 }
 
-// ksVerifyEvery: every Nth sync also checks the kill switch is still in force
-// (a VPN client or admin reloading pf.conf can drop our hook).
-const ksVerifyEvery = 10
-
-// SyncKillSwitch re-renders the kill switch when what it must allow changed —
-// a VPN came back on a new interface, the gateway moved, profiles changed the
-// bypass set — so reconnecting VPNs and exclude routes are never fenced by a
-// stale list. The daemon calls it every few seconds; it's a no-op while off.
+// SyncKillSwitch re-renders the kill switch when what it guards or allows
+// changed (an interface came up, the gateway moved, profiles changed the
+// bypass set), and re-asserts it when something dropped it (a VPN client or
+// admin reloading pf.conf, `pfctl -d`). The daemon calls it every few seconds
+// (Status is cached, so the check is cheap); it's a no-op while off.
 func (s *Server) SyncKillSwitch(ctx context.Context) {
 	if s.killSwitch == nil {
 		return
@@ -135,12 +148,11 @@ func (s *Server) SyncKillSwitch(ctx context.Context) {
 	if !s.ksWant {
 		return
 	}
-	s.ksTick++
 	cfg := s.killSwitchConfig(ctx)
 	if cfg.Empty() {
 		return // no uplink right now (e.g. Wi-Fi off): keep the last rules
 	}
-	lost := s.ksTick%ksVerifyEvery == 0 && !s.killSwitch.Status(ctx).Effective
+	lost := !s.killSwitch.Status(ctx).Effective
 	if cfg.Equal(s.ksLast) && !lost {
 		return
 	}

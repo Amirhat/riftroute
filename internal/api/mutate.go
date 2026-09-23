@@ -135,7 +135,9 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	// The kill switch goes FIRST and regardless of the rest: panic is the
 	// "get me back online" button, and a firewall left behind by a failed
 	// route flush would defeat it.
-	ksErr := s.disableKillSwitch(r.Context())
+	// Detached from the request: a client giving up (uninstall's timeout)
+	// must not cut the removal off half-way.
+	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
 	if err := s.proto.Panic(r.Context(), domain.ActorUI); err != nil {
 		writeErr(w, http.StatusInternalServerError, errors.Join(err, ksErr))
 		return
