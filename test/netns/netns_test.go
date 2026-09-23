@@ -244,7 +244,7 @@ func TestNetnsModelBInclude(t *testing.T) {
 func TestNetnsKillSwitch(t *testing.T) {
 	m := killswitch.New() // nftables backend on Linux
 	ctx := context.Background()
-	cfg := killswitch.Config{TunnelIfaces: []string{"dummy0"}, Gateway: "10.0.0.1", LANSubnets: []string{"10.0.0.0/24"}}
+	cfg := killswitch.Config{PhysIfaces: []string{"dummy0"}, Gateway: "10.0.0.1", LANSubnets: []string{"10.0.0.0/24"}}
 	if err := m.Enable(ctx, cfg); err != nil {
 		t.Skipf("nftables unavailable in this environment: %v", err)
 	}

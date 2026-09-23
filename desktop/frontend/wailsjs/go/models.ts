@@ -1052,6 +1052,7 @@ export namespace domain {
 	    managed_rule_count: number;
 	    auto_apply: boolean;
 	    kill_switch: boolean;
+	    kill_switch_notice?: string;
 	    preferences: Preferences;
 	    // Go type: time
 	    generated_at: any;
@@ -1074,6 +1075,7 @@ export namespace domain {
 	        this.managed_rule_count = source["managed_rule_count"];
 	        this.auto_apply = source["auto_apply"];
 	        this.kill_switch = source["kill_switch"];
+	        this.kill_switch_notice = source["kill_switch_notice"];
 	        this.preferences = this.convertValues(source["preferences"], Preferences);
 	        this.generated_at = this.convertValues(source["generated_at"], null);
 	    }
