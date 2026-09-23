@@ -46,6 +46,10 @@ type Server struct {
 	ksMu   sync.Mutex
 	ksWant bool
 	ksLast killswitch.Config
+	// ksBlocked / ksStrikes track the kill switch's blocked-packet counter
+	// across syncs, to notice it cutting a VPN's own connection.
+	ksBlocked uint64
+	ksStrikes int
 	// splitDNS applies per-domain resolver selection (nil = no-op).
 	splitDNS splitdns.Manager
 	// setAutoApply flips the daemon's auto-apply gate at runtime (nil disables

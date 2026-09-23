@@ -35,6 +35,9 @@ func (l TelemetryLevel) Valid() bool {
 	return l == TelemetryFull || l == TelemetryBasic || l == TelemetryOff
 }
 
+// SettingKillSwitchNotice is the settings key holding State.KillSwitchNotice.
+const SettingKillSwitchNotice = "kill_switch_notice"
+
 // Preferences are the user's choices about what RiftRoute does over the
 // network on its own. Each is one switch away from off.
 type Preferences struct {

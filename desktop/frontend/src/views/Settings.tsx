@@ -114,6 +114,9 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
               />
             </div>
             {killErr && <p className="px-4 py-2 text-xs text-danger">{killErr}</p>}
+            {!killErr && s.kill_switch_notice && (
+              <p role="status" className="px-4 py-2 text-xs text-warning">{s.kill_switch_notice}</p>
+            )}
           </div>
         )}
       </Card>

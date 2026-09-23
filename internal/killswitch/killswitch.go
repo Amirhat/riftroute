@@ -174,6 +174,11 @@ type Manager interface {
 	// Enabled reports whether the kill switch is actually in force.
 	Enabled(ctx context.Context) (bool, error)
 	Status(ctx context.Context) Status
+	// Blocked is how many packets the kill switch has refused since its rules
+	// were last (re)loaded. While a tunnel is up, apps route through it, so
+	// user traffic blocked on a physical interface is the VPN's OWN
+	// connection — the signal the daemon uses to never cut a working VPN.
+	Blocked(ctx context.Context) (uint64, error)
 	Backend() string // "nftables" | "pf" | "fake" | "unsupported"
 }
 
@@ -295,7 +300,7 @@ func NftRuleset(cfg Config) string {
 	// Policy-based IPsec (strongSwan, libreswan) has no tunnel interface: the
 	// plaintext leaves "via eth0" before encryption. Let it through.
 	b.WriteString("    rt ipsec exists accept\n")
-	fmt.Fprintf(&b, "    %s meta l4proto { tcp, udp } reject\n", nftUsers)
+	fmt.Fprintf(&b, "    %s meta l4proto { tcp, udp } counter reject\n", nftUsers)
 	b.WriteString("  }\n}\n")
 	return b.String()
 }
@@ -406,6 +411,41 @@ func (m *realManager) Disable(ctx context.Context) error {
 	default:
 		return nil
 	}
+}
+
+func (m *realManager) Blocked(ctx context.Context) (uint64, error) {
+	switch m.backend {
+	case "pf":
+		out, err := runStdout(ctx, "pfctl", "-a", pfAnchor, "-v", "-s", "rules")
+		return ParsePfBlocked(out), err
+	case "nftables":
+		out, err := runStdout(ctx, "nft", "list", "table", "inet", nftTable)
+		return ParseNftBlocked(out), err
+	}
+	return 0, nil
+}
+
+var (
+	rePfPackets  = regexp.MustCompile(`Packets:\s*(\d+)`)
+	reNftCounter = regexp.MustCompile(`counter packets (\d+)`)
+)
+
+// ParsePfBlocked sums the per-rule packet counters of `pfctl -v -s rules`
+// for our anchor (it holds only block rules).
+func ParsePfBlocked(out string) uint64 { return sumMatches(rePfPackets, out) }
+
+// ParseNftBlocked sums the counters in `nft list table` (only the reject
+// rule carries one).
+func ParseNftBlocked(out string) uint64 { return sumMatches(reNftCounter, out) }
+
+func sumMatches(re *regexp.Regexp, out string) uint64 {
+	var n uint64
+	for _, m := range re.FindAllStringSubmatch(out, -1) {
+		var v uint64
+		fmt.Sscan(m[1], &v)
+		n += v
+	}
+	return n
 }
 
 func (m *realManager) Enabled(ctx context.Context) (bool, error) {
@@ -587,6 +627,11 @@ type Fake struct {
 	on      bool
 	last    Config
 	Enables int // how many times Enable ran (re-syncs included)
+	// BlockedPackets is what Blocked reports; reloading rules resets it, as
+	// with the real backends — to BlockAfterEnable, which simulates a VPN
+	// whose own connection the rules start cutting.
+	BlockedPackets   uint64
+	BlockAfterEnable uint64
 }
 
 func (f *Fake) Backend() string { return "fake" }
@@ -599,6 +644,7 @@ func (f *Fake) Enable(_ context.Context, cfg Config) error {
 	defer f.mu.Unlock()
 	f.on, f.last = true, cfg
 	f.Enables++
+	f.BlockedPackets = f.BlockAfterEnable
 	return nil
 }
 
@@ -613,6 +659,14 @@ func (f *Fake) Enabled(_ context.Context) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.on, nil
+}
+
+// Blocked returns BlockedPackets (tests set it to simulate traffic hitting
+// the rules).
+func (f *Fake) Blocked(_ context.Context) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.BlockedPackets, nil
 }
 
 func (f *Fake) Status(_ context.Context) Status {

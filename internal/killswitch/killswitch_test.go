@@ -96,7 +96,7 @@ func TestNftRulesetGuardsOnlyPhysicalUserTraffic(t *testing.T) {
 		"ip daddr @allow4 accept", "ip6 daddr @allow6 accept",
 		"udp dport { 500, 4500, 51820, 1194 } accept",
 		"rt ipsec exists accept", // policy-based IPsec (strongSwan/libreswan) has no tunnel interface
-		"meta skuid { 1000-61183, 65520-65533, 65535-4294967294 } meta l4proto { tcp, udp } reject",
+		"meta skuid { 1000-61183, 65520-65533, 65535-4294967294 } meta l4proto { tcp, udp } counter reject",
 	)
 	for _, bad := range []string{"policy drop", "ct state established", "oifname \"wg*\""} {
 		if strings.Contains(s, bad) {
@@ -231,5 +231,27 @@ func TestDeriveGuardsModems(t *testing.T) {
 	got := Derive(ifaces, netip.Addr{}, nil, nil).PhysIfaces
 	if !slices.Equal(got, []string{"eth0", "usb0", "wwan0"}) {
 		t.Fatalf("guarded %v", got)
+	}
+}
+
+func TestBlockedCounterParsers(t *testing.T) {
+	pf := `block return out on en0 proto udp from any to ! <rr_ks_allow> port 0:499 user 499 >< 65534
+  [ Evaluations: 12553     Packets: 979       Bytes: 810676      States: 0     ]
+  [ Inserted: uid 0 pid 89714 State Creations: 0     ]
+block return out on en0 proto tcp from any to ! <rr_ks_allow> port 0:1193 user 499 >< 65534
+  [ Evaluations: 100       Packets: 21        Bytes: 1200        States: 0     ]`
+	if got := ParsePfBlocked(pf); got != 1000 {
+		t.Fatalf("pf blocked = %d, want 1000", got)
+	}
+	nft := `table inet riftroute_ks {
+	chain output {
+		meta skuid { 1000-61183 } meta l4proto { tcp, udp } counter packets 37 bytes 2960 reject
+	}
+}`
+	if got := ParseNftBlocked(nft); got != 37 {
+		t.Fatalf("nft blocked = %d, want 37", got)
+	}
+	if !strings.Contains(NftRuleset(sample), "counter reject") {
+		t.Fatal("the nft reject rule must carry a counter")
 	}
 }

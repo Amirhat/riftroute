@@ -89,4 +89,16 @@ describe('Settings — updates & telemetry preferences', () => {
     expect(screen.getByText(/VPN clients can still reconnect/)).toBeInTheDocument()
     expect(screen.queryByText(/reconnect path stays open/)).toBeNull()
   })
+
+  // When the daemon had to turn the kill switch off (it was cutting the VPN's
+  // own connection), Settings says so next to the toggle.
+  it('shows why the kill switch turned itself off', async () => {
+    current = {
+      ...base,
+      preferences: { updates: 'auto', telemetry: 'full' },
+      kill_switch_notice: "Turned the kill switch off: your VPN's own connection runs as your user account",
+    }
+    await renderSettings()
+    expect(screen.getByText(/Turned the kill switch off/)).toBeInTheDocument()
+  })
 })

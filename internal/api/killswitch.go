@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/killswitch"
@@ -38,6 +39,70 @@ func (s *Server) killSwitchConfig(ctx context.Context) killswitch.Config {
 // them from this at startup.
 const killSwitchKey = "kill_switch"
 
+// ksCheckDelay is how long turning the kill switch on waits before reading
+// its counters to see whether it cut the VPN's own connection.
+var ksCheckDelay = 2 * time.Second
+
+// ksCutNotice is shown when the kill switch had to give way to the VPN.
+const ksCutNotice = "Turned the kill switch off: your VPN's own connection runs as your user " +
+	"account (for example Windscribe in WireGuard mode), so the kill switch was cutting it. " +
+	"Use your VPN app's own kill switch or firewall, or a VPN protocol whose connection runs " +
+	"as administrator (such as IKEv2)."
+
+// errCutsVPN is returned when turning the kill switch on would cut the VPN.
+var errCutsVPN = errors.New(ksCutNotice)
+
+// tunnelUp reports whether any VPN interface is up — then apps route through
+// it, and user traffic blocked on a physical interface is the VPN's own.
+func (s *Server) tunnelUp(ctx context.Context) bool {
+	ifaces, _ := s.svc.Interfaces(ctx)
+	for _, ifc := range ifaces {
+		if ifc.Up && ifc.IsVPN {
+			return true
+		}
+	}
+	return false
+}
+
+// cutsVPN gives the kill switch a moment after (re)loading and reports
+// whether, with a tunnel up, it has blocked anything — i.e. the VPN's own
+// connection. Caller holds ksMu.
+func (s *Server) cutsVPN(ctx context.Context) bool {
+	if !s.tunnelUp(ctx) {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(ksCheckDelay):
+	}
+	n, err := s.killSwitch.Blocked(ctx)
+	return err == nil && n > 0
+}
+
+// giveWayToVPN turns the kill switch off because it was cutting the VPN,
+// and records why (Settings/Diagnostics show it; History logs it). Caller
+// holds ksMu.
+func (s *Server) giveWayToVPN(ctx context.Context) {
+	if err := s.killSwitch.Disable(ctx); err != nil {
+		s.log.Warn("kill switch: turning off after it cut the VPN failed", "err", err)
+	}
+	s.ksWant = false
+	s.persistKillSwitch(false)
+	s.setKillSwitchNotice(ksCutNotice)
+	if s.store != nil {
+		_, _ = s.store.AppendAudit(domain.AuditEvent{Actor: domain.ActorDaemon, Action: "killswitch",
+			Result: "disabled", Reason: ksCutNotice})
+	}
+	s.log.Warn("kill switch turned off: it was cutting the VPN's own connection (user-level VPN transport)")
+}
+
+func (s *Server) setKillSwitchNotice(v string) {
+	if s.store != nil {
+		_ = s.store.SetSetting(domain.SettingKillSwitchNotice, v)
+	}
+}
+
 func (s *Server) persistKillSwitch(on bool) {
 	if s.store == nil {
 		return
@@ -64,12 +129,21 @@ func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ksMu.Lock()
+	s.setKillSwitchNotice("") // an explicit choice clears the last notice
 	var err error
+	status := http.StatusInternalServerError
 	if req.Enabled {
 		cfg := s.killSwitchConfig(r.Context())
 		if err = s.killSwitch.Enable(r.Context(), cfg); err == nil {
-			s.ksWant, s.ksLast = true, cfg
-			s.persistKillSwitch(true)
+			if s.cutsVPN(r.Context()) {
+				// Never cut a working VPN: roll back and say why.
+				_ = s.killSwitch.Disable(context.WithoutCancel(r.Context()))
+				s.persistKillSwitch(false)
+				err, status = errCutsVPN, http.StatusConflict
+			} else {
+				s.ksWant, s.ksLast, s.ksBlocked, s.ksStrikes = true, cfg, 0, 0
+				s.persistKillSwitch(true)
+			}
 		}
 	} else if err = s.killSwitch.Disable(r.Context()); err == nil {
 		s.ksWant = false
@@ -77,7 +151,8 @@ func (s *Server) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.ksMu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		s.BroadcastState(r.Context())
+		writeErr(w, status, err)
 		return
 	}
 	on, _ := s.killSwitch.Enabled(r.Context())
@@ -154,14 +229,41 @@ func (s *Server) SyncKillSwitch(ctx context.Context) {
 	}
 	lost := !s.killSwitch.Status(ctx).Effective
 	if cfg.Equal(s.ksLast) && !lost {
+		s.watchForVPNCut(ctx)
 		return
 	}
 	if err := s.killSwitch.Enable(ctx, cfg); err != nil {
 		s.log.Warn("kill switch re-sync failed", "err", err)
 		return
 	}
-	s.ksLast = cfg
+	s.ksLast, s.ksBlocked, s.ksStrikes = cfg, 0, 0
 	s.log.Info("kill switch re-synced", "guarding", cfg.PhysIfaces, "bypass", len(cfg.Bypass), "reasserted", lost)
+}
+
+// ksStrikesToYield: consecutive syncs that must see blocked traffic while a
+// tunnel is up before the kill switch gives way (one stray packet from an app
+// bound to the physical interface shouldn't turn it off).
+const ksStrikesToYield = 2
+
+// watchForVPNCut turns the kill switch off if, with a tunnel up, it keeps
+// blocking traffic — the VPN's own connection (e.g. after the user switched
+// their VPN to a protocol whose transport runs as their account). Caller
+// holds ksMu.
+func (s *Server) watchForVPNCut(ctx context.Context) {
+	n, err := s.killSwitch.Blocked(ctx)
+	if err != nil {
+		return
+	}
+	grew := n > s.ksBlocked
+	s.ksBlocked = n
+	if !grew || !s.tunnelUp(ctx) {
+		s.ksStrikes = 0
+		return
+	}
+	s.ksStrikes++
+	if s.ksStrikes >= ksStrikesToYield {
+		s.giveWayToVPN(ctx)
+	}
 }
 
 // disableKillSwitch turns the kill switch off and records that choice (panic:

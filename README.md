@@ -330,8 +330,13 @@ the VPN out.) Standard VPN ports (UDP 500/4500/51820/1194, TCP 1194) stay open
 for VPN apps that run as the user. It passes nothing another firewall blocked and
 keeps no connection state. Trade-offs: system services — including the OS
 resolver's DNS lookups — and forwarded traffic (VMs, Internet Sharing) are not
-blocked; a user-level VPN app on a non-standard port (e.g. 443) and captive-portal
-login pages are unreachable until it's turned off; PPPoE/mobile uplinks named
+blocked; captive-portal login pages are unreachable until it's turned off; and
+some VPN apps send their own connection from your user account (Windscribe in
+WireGuard mode does — seen on a real Mac), which the kill switch would cut. It
+never does: it watches its own counters, and if it blocks anything while a tunnel
+is up (apps route through the tunnel, so that's the VPN's own traffic) it refuses
+to turn on, or turns itself off, and says why — use that VPN app's own kill switch
+instead; PPPoE/mobile uplinks named
 `ppp*` are treated as tunnels and not guarded; and turning it on reloads
 `/etc/pf.conf` when the loaded ruleset lacks its hook, which drops rules other
 tools inserted at runtime (some VPN clients' own kill switches may need toggling

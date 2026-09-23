@@ -84,6 +84,10 @@ type State struct {
 	AutoApply bool `json:"auto_apply"`
 	// KillSwitch reports whether egress is currently fenced to the tunnel.
 	KillSwitch bool `json:"kill_switch"`
+	// KillSwitchNotice explains why the daemon turned the kill switch off by
+	// itself (it was cutting the VPN's own connection). Cleared on the next
+	// explicit on/off.
+	KillSwitchNotice string `json:"kill_switch_notice,omitempty"`
 	// Preferences are the user's update/telemetry choices.
 	Preferences Preferences `json:"preferences"`
 	GeneratedAt time.Time   `json:"generated_at"`

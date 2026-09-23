@@ -115,6 +115,9 @@ export interface State {
   managed_rule_count: number
   auto_apply: boolean
   kill_switch: boolean
+  // Why the daemon turned the kill switch off by itself (it was cutting the
+  // VPN's own connection); cleared by the next explicit on/off.
+  kill_switch_notice?: string
   // Absent from daemons that predate update/telemetry preferences.
   preferences?: Preferences
   generated_at: string

@@ -19,8 +19,10 @@ export function KillSwitchConfirmMessage() {
         apps. A network extension running as administrator (such as a corporate proxy) can carry apps’ traffic around it.
       </span>
       <span className="mt-2 block">
-        Out of reach while on: a VPN app that runs without admin rights on a non-standard port (such as 443), and
-        hotel or café login pages. Turn it off to get through those.
+        Some VPN apps send their own connection from your user account (for example Windscribe in WireGuard mode). The
+        kill switch would cut that, so RiftRoute checks: it won’t turn on — or turns itself off — when it sees it cutting
+        your VPN, and tells you why. Use that VPN app’s own kill switch instead. Hotel or café login pages are out of
+        reach while it’s on.
       </span>
     </>
   )

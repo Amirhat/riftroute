@@ -507,8 +507,17 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		Preferences:       s.Preferences(),
+		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
 		GeneratedAt:       s.now(),
 	}, nil
+}
+
+func (s *Service) setting(key string) string {
+	if s.store == nil {
+		return ""
+	}
+	v, _, _ := s.store.GetSetting(key)
+	return v
 }
 
 // Preferences returns the user's update/telemetry choices: defaults when

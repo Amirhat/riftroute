@@ -143,7 +143,7 @@ export function Diagnostics() {
         <div className="divide-y divide-line">
           <ActionRow
             title="Kill switch"
-            desc={KILL_SWITCH_SHORT}
+            desc={stateQ.data?.kill_switch_notice || KILL_SWITCH_SHORT}
             control={
               <Toggle
                 on={killOn}

@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -29,6 +31,9 @@ func newKillSwitchServer(t *testing.T, ks killswitch.Manager) (*Server, *httptes
 		func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
 	srv := NewServer(svc, st, proto, uint32(0), "test", nil)
 	srv.SetKillSwitch(ks)
+	old := ksCheckDelay
+	ksCheckDelay = 0
+	t.Cleanup(func() { ksCheckDelay = old })
 	h := srv.Handler()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, peerInfo{uid: 0})))
@@ -166,5 +171,92 @@ func TestKillSwitchAllowsExcludeRoutes(t *testing.T) {
 	srv.SyncKillSwitch(context.Background())
 	if !slices.Contains(ks.Last().Bypass, "185.10.75.0/24") {
 		t.Fatalf("exclude route not allowed through the kill switch: %v", ks.Last().Bypass)
+	}
+}
+
+func postStatus(t *testing.T, url, body string) int {
+	t.Helper()
+	resp, err := http.Post(url, "application/json", bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp.StatusCode
+}
+
+// Seen live: Windscribe in WireGuard mode sends its tunnel from the user's
+// account, so the user-scoped block cut the VPN and with it everything.
+// Turning it on while that happens must be refused, not left cutting.
+func TestKillSwitchRefusesToCutAConnectedVPN(t *testing.T) {
+	ks := &killswitch.Fake{BlockAfterEnable: 979} // the VPN's own packets hit the block
+	srv, ts, _ := newKillSwitchServer(t, ks)
+	if code := postStatus(t, ts.URL+"/killswitch", `{"enabled":true}`); code != http.StatusConflict {
+		t.Fatalf("status %d, want 409", code)
+	}
+	if on, _ := ks.Enabled(context.Background()); on {
+		t.Fatal("the kill switch must be rolled back")
+	}
+	if v, _, _ := srv.store.GetSetting(killSwitchKey); v == "true" {
+		t.Fatal("a refused kill switch must not be saved as on")
+	}
+}
+
+func TestKillSwitchStaysOnWhenTheVPNIsUnaffected(t *testing.T) {
+	ks := &killswitch.Fake{} // root/kernel VPN: nothing of the user's hits the block
+	_, ts, _ := newKillSwitchServer(t, ks)
+	if code := postStatus(t, ts.URL+"/killswitch", `{"enabled":true}`); code != http.StatusOK {
+		t.Fatalf("status %d, want 200", code)
+	}
+	if on, _ := ks.Enabled(context.Background()); !on {
+		t.Fatal("kill switch should be on")
+	}
+}
+
+// Later on (the user switched their VPN's protocol), sustained blocking while
+// a tunnel is up makes the kill switch give way — and say why.
+func TestKillSwitchGivesWayWhenItStartsCuttingTheVPN(t *testing.T) {
+	ks := &killswitch.Fake{}
+	srv, ts, _ := newKillSwitchServer(t, ks)
+	ctx := context.Background()
+	post(t, ts.URL+"/killswitch", `{"enabled":true}`)
+
+	ks.BlockedPackets = 5
+	srv.SyncKillSwitch(ctx) // strike 1
+	if on, _ := ks.Enabled(ctx); !on {
+		t.Fatal("one strike must not turn it off")
+	}
+	ks.BlockedPackets = 40
+	srv.SyncKillSwitch(ctx) // strike 2
+	if on, _ := ks.Enabled(ctx); on {
+		t.Fatal("sustained blocking with a tunnel up must turn it off")
+	}
+	st, err := srv.svc.State(ctx)
+	if err != nil || !strings.Contains(st.KillSwitchNotice, "your VPN's own connection") {
+		t.Fatalf("notice = %q (err %v)", st.KillSwitchNotice, err)
+	}
+	evs, _ := srv.store.ListAudit(time.Time{}, 10)
+	if len(evs) == 0 || evs[0].Action != "killswitch" {
+		t.Fatalf("give-way not in History: %+v", evs)
+	}
+	// An explicit choice clears the notice.
+	post(t, ts.URL+"/killswitch", `{"enabled":false}`)
+	if st, _ := srv.svc.State(ctx); st.KillSwitchNotice != "" {
+		t.Fatalf("notice not cleared: %q", st.KillSwitchNotice)
+	}
+}
+
+// With no tunnel up, blocking IS the job (apps would leak) — never give way.
+func TestKillSwitchHoldsWhenNoTunnelIsUp(t *testing.T) {
+	ks := &killswitch.Fake{}
+	srv, ts, prov := newKillSwitchServer(t, ks)
+	ctx := context.Background()
+	post(t, ts.URL+"/killswitch", `{"enabled":true}`)
+	prov.SetVPN(false)
+	for i, n := range []uint64{10, 50, 200} {
+		ks.BlockedPackets = n
+		srv.SyncKillSwitch(ctx)
+		if on, _ := ks.Enabled(ctx); !on {
+			t.Fatalf("sync %d: turned off although no tunnel is up", i)
+		}
 	}
 }
