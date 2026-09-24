@@ -27,8 +27,8 @@ func tunnelCmd() *cobra.Command {
 		Long: "RiftRoute can run an OpenVPN profile itself as a split tunnel: only the routes you\n" +
 			"list go into it. The server's redirect-gateway, pushed routes and pushed DNS are\n" +
 			"ignored, so a VPN that already carries everything else (Windscribe, …) stays up.\n" +
-			"Needs the openvpn program (macOS: brew install openvpn); the OpenVPN Connect app\n" +
-			"is not used.",
+			"Needs the openvpn program, which you install yourself (the OpenVPN Connect app\n" +
+			"doesn't include it): `riftroute tunnel list` shows how on this system.",
 	}
 	cmd.AddCommand(tunnelListCmd(), tunnelAddCmd(), tunnelEditCmd(), tunnelUpCmd(), tunnelDownCmd(), tunnelRmCmd(), tunnelLogCmd())
 	return cmd
@@ -48,6 +48,7 @@ func tunnelListCmd() *cobra.Command {
 			if g.json {
 				return printJSON(cmd.OutOrStdout(), ts)
 			}
+			defer printEngineProblem(cmd)
 			if len(ts) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no tunnels — add one with: riftroute tunnel add <name> <profile.ovpn> --route <cidr>")
 				return nil
@@ -363,13 +364,46 @@ func saveTunnel(cmd *cobra.Command, spec domain.TunnelSpec, connect bool) error 
 	if connect {
 		return connectTunnel(cmd, t.Name, true)
 	}
+	printEngineProblem(cmd)
 	return nil
+}
+
+// printEngineProblem tells the user, when openvpn isn't usable on the
+// daemon's machine, what's wrong and how to install it there. It says
+// nothing when tunnels can run (or the daemon predates the check).
+func printEngineProblem(cmd *cobra.Command) bool {
+	e, err := client().TunnelEngine(cmd.Context())
+	if err != nil || e.Available {
+		return false
+	}
+	w := cmd.ErrOrStderr()
+	fmt.Fprintf(w, "\n%s — tunnels can't connect until it's fixed.\n", e.Problem)
+	if in := e.Install; in != nil {
+		if len(in.Commands) > 0 {
+			fmt.Fprintf(w, "On %s, run:\n\n", in.System)
+			for _, c := range in.Commands {
+				fmt.Fprintf(w, "  %s\n", c)
+			}
+			fmt.Fprintln(w)
+		}
+		if in.Note != "" {
+			fmt.Fprintln(w, in.Note)
+		}
+		if in.URL != "" {
+			fmt.Fprintln(w, in.URL)
+		}
+	}
+	fmt.Fprintln(w, "RiftRoute picks it up as soon as it's installed; no restart needed.")
+	return true
 }
 
 // connectTunnel starts a tunnel and, with wait, follows it until it is up or
 // has failed.
 func connectTunnel(cmd *cobra.Command, name string, wait bool) error {
 	ctx := cmd.Context()
+	if printEngineProblem(cmd) {
+		return fmt.Errorf("%s not connected", name)
+	}
 	st, err := client().ConnectTunnel(ctx, name)
 	if err != nil {
 		return err

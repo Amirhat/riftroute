@@ -62,6 +62,7 @@ func run() error {
 		pollInterval time.Duration
 		showVersion  bool
 		allowUIDFlag int
+		fakeNoVPN    bool
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -71,6 +72,7 @@ func run() error {
 	flag.BoolVar(&autoApply, "auto-apply", true, "reconcile automatically on network changes (VPN up/down, etc.)")
 	flag.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "network-change poll interval")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
@@ -171,8 +173,9 @@ func run() error {
 	}}
 	if fp, ok := prov.(*fake.Provider); ok {
 		launcher = &tunnel.FakeLauncher{ // never run a real openvpn under -provider fake
-			OnUp:   func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
-			OnDown: func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
+			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
+			OnDown:  func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
+			Missing: fakeNoVPN,
 		}
 	}
 	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
@@ -197,7 +200,7 @@ func run() error {
 	}
 	defer tunnels.Shutdown()
 	svc.SetTunnels(tunnels.Inputs, tunnels.List)
-	svc.SetTunnelCheck(launcher.Check)
+	svc.SetTunnelEngine(launcher.Engine)
 	srv.SetTunnels(tunnels)
 	svc.SetKillSwitchStatus(func() bool {
 		on, _ := ks.Enabled(context.Background())
@@ -527,7 +530,19 @@ func run() error {
 		}
 	})
 	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
-	go tunnels.StartAuto()
+	// A daemon that died with tunnels up left their routes behind (a server
+	// pin outlives the tunnel's interface). Withdraw them — ungated by
+	// auto-apply, like every tunnel change, and retried if refused for now —
+	// before auto-connect brings tunnels back.
+	go func() {
+		if svc.OwnsTunnelRoutes(ctx) {
+			logger.Info("withdrawing routes left by the previous run's tunnels")
+			tunnels.Resync(ctx)
+		}
+		if ctx.Err() == nil {
+			tunnels.StartAuto()
+		}
+	}()
 
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version,
 		"build", buildinfo.Short(build), "uid", allowUID)

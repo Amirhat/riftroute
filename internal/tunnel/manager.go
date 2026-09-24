@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -400,8 +401,8 @@ func (m *Manager) Connect(name string) error {
 	if p.NeedsAuth && (d.Username == "" || d.Password == "") {
 		return fmt.Errorf("tunnel %s needs a username and password", name)
 	}
-	if err := m.o.Launcher.Check(); err != nil {
-		return err
+	if e := m.o.Launcher.Engine(); !e.Available {
+		return &EngineError{Engine: e}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &session{cancel: cancel, done: make(chan struct{})}
@@ -411,6 +412,10 @@ func (m *Manager) Connect(name string) error {
 	// a forgotten entry would be an openvpn nothing can stop.
 	r = m.rt[name]
 	switch {
+	case m.isClosed(): // checked under the lock DisconnectAll scans with
+		m.mu.Unlock()
+		cancel()
+		return errShuttingDown
 	case r == nil || m.defs[name] != d:
 		m.mu.Unlock()
 		cancel()
@@ -471,6 +476,9 @@ func (m *Manager) Disconnect(ctx context.Context, name string) error {
 
 // StartAuto connects every tunnel marked auto-connect (daemon startup).
 func (m *Manager) StartAuto() {
+	if m.isClosed() {
+		return
+	}
 	m.mu.Lock()
 	var names []string
 	for n, d := range m.defs {
@@ -480,7 +488,9 @@ func (m *Manager) StartAuto() {
 	}
 	m.mu.Unlock()
 	for _, n := range names {
-		if err := m.Connect(n); err != nil {
+		if err := m.Connect(n); errors.Is(err, errShuttingDown) {
+			return
+		} else if err != nil {
 			m.o.Log.Warn("tunnel auto-connect failed", "tunnel", n, "err", err)
 			m.mu.Lock()
 			m.rt[n].state, m.rt[n].lastErr = domain.TunnelFailed, err.Error()
@@ -488,6 +498,25 @@ func (m *Manager) StartAuto() {
 		}
 	}
 }
+
+// errShuttingDown refuses a connect once Shutdown has begun: an openvpn
+// started then would outlive the daemon with nothing to stop it.
+var errShuttingDown = errors.New("the daemon is shutting down")
+
+func (m *Manager) isClosed() bool {
+	select {
+	case <-m.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Resync re-applies the tunnels' routes (retried in the background if the
+// apply is refused for now). At startup it withdraws the routes a daemon that
+// died with tunnels up left behind — a server pin outlives the tunnel's
+// interface.
+func (m *Manager) Resync(ctx context.Context) { m.apply(ctx) }
 
 // Shutdown stops every tunnel (daemon exit).
 func (m *Manager) Shutdown() {
@@ -937,19 +966,35 @@ func (m *Manager) reapStale() {
 	}
 }
 
+// Engine reports whether tunnels can run on this machine, and if not, how
+// to install what's missing.
+func (m *Manager) Engine() domain.TunnelEngine { return m.o.Launcher.Engine() }
+
 // isOurOpenVPN reports whether pid is an openvpn running a config from our
 // run directory — so a recycled pid, or an openvpn the user started
 // themselves, is never killed.
 func (m *Manager) isOurOpenVPN(pid int) bool {
+	bin, rest, _ := strings.Cut(processArgs(pid), " ")
+	return filepath.Base(bin) == "openvpn" && strings.Contains(rest, "--config "+m.runDir+string(filepath.Separator))
+}
+
+// processArgs returns a process's command line, or "" if it's gone. Linux
+// reads /proc (BusyBox's ps, on Alpine and the like, has no -p).
+func processArgs(pid int) string {
+	if runtime.GOOS == "linux" {
+		data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(strings.ReplaceAll(string(data), "\x00", " "))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return false
+		return ""
 	}
-	args := strings.TrimSpace(string(out))
-	bin, rest, _ := strings.Cut(args, " ")
-	return filepath.Base(bin) == "openvpn" && strings.Contains(rest, "--config "+m.runDir+string(filepath.Separator))
+	return strings.TrimSpace(string(out))
 }
 
 // cmpBool orders true before false.

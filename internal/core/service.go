@@ -49,13 +49,13 @@ type Service struct {
 	// tunnelInputs/tunnelStatus read the tunnel manager (nil = no tunnels).
 	tunnelInputs func() []routing.TunnelInput
 	tunnelStatus func() []domain.TunnelStatus
-	// tunnelCheck reports whether tunnels can run here at all (openvpn
-	// installed); nil = not wired.
-	tunnelCheck func() error
+	// tunnelEngine reports whether tunnels can run here at all (openvpn
+	// installed, new enough) and how to install it (doctor).
+	tunnelEngine func() domain.TunnelEngine
 }
 
-// SetTunnelCheck installs the "can tunnels run here" probe (doctor).
-func (s *Service) SetTunnelCheck(fn func() error) { s.tunnelCheck = fn }
+// SetTunnelEngine installs the "can tunnels run here" probe (doctor).
+func (s *Service) SetTunnelEngine(fn func() domain.TunnelEngine) { s.tunnelEngine = fn }
 
 // SetTunnels wires the tunnel manager: what its tunnels route, and their
 // status for State.
@@ -255,6 +255,17 @@ func (s *Service) DesiredTunnelsOnly(ctx context.Context) ([]domain.ManagedRoute
 		}
 	}
 	return append(out, tunnelRoutes...), s.actualManagedRules(ctx), gw4, nil
+}
+
+// OwnsTunnelRoutes reports whether RiftRoute has routes recorded for a
+// tunnel — at startup, what a daemon that died with tunnels up left behind.
+func (s *Service) OwnsTunnelRoutes(ctx context.Context) bool {
+	for _, o := range s.actualManagedRoutes(ctx) {
+		if strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveDomains resolves the enabled profiles' domain rules via the TTL cache,

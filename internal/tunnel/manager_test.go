@@ -281,8 +281,35 @@ func TestConnectWithoutOpenVPNExplainsInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := h.m.Connect("infra")
-	if !errors.Is(err, ErrNoOpenVPN) || !strings.Contains(err.Error(), "install") {
+	var ee *EngineError
+	if !errors.Is(err, ErrEngineUnavailable) || !errors.As(err, &ee) || ee.Engine.Install == nil ||
+		!strings.Contains(err.Error(), "isn't installed") {
 		t.Fatalf("got %v", err)
+	}
+	if e := h.m.Engine(); e.Available || e.Install == nil || e.Install.System == "" {
+		t.Fatalf("engine = %+v", e)
+	}
+	if st, _ := h.m.Status("infra"); st.State != domain.TunnelDisconnected {
+		t.Fatalf("a refused connect must not leave a session: %+v", st)
+	}
+}
+
+// Once shutdown has begun, nothing may start an openvpn: it would outlive
+// the daemon with nothing to stop it.
+func TestNoConnectOnceShuttingDown(t *testing.T) {
+	h := newHarness(t)
+	spec := infraSpec()
+	spec.AutoConnect = true
+	if _, err := h.m.Save(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	h.m.Shutdown()
+	if err := h.m.Connect("infra"); !errors.Is(err, errShuttingDown) {
+		t.Fatalf("connect after shutdown: %v", err)
+	}
+	h.m.StartAuto()
+	if st, _ := h.m.Status("infra"); st.State != domain.TunnelDisconnected || st.LastError != "" {
+		t.Fatalf("auto-connect after shutdown: %+v", st)
 	}
 }
 

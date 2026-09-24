@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // TunnelType is the protocol a RiftRoute-managed tunnel speaks.
 type TunnelType string
@@ -88,4 +91,48 @@ type TunnelStatus struct {
 type TunnelBlocked struct {
 	Route  string `json:"route"`
 	Reason string `json:"reason"`
+}
+
+// TunnelEngine reports whether the program tunnels run on (openvpn) is
+// usable on this machine and, when it isn't, how to install it here.
+// RiftRoute never installs it itself: the user does, with their own package
+// manager, and the daemon picks it up without a restart.
+type TunnelEngine struct {
+	Available bool   `json:"available"`
+	Path      string `json:"path,omitempty"`
+	Version   string `json:"version,omitempty"`
+	// Problem says why tunnels can't run ("OpenVPN isn't installed", too old,
+	// unsafe permissions, unsupported OS); empty when Available.
+	Problem string         `json:"problem,omitempty"`
+	Install *TunnelInstall `json:"install,omitempty"`
+}
+
+// TunnelInstall is how to install (or fix) openvpn on this system.
+type TunnelInstall struct {
+	// System names the OS the steps are for ("macOS", "Ubuntu 24.04.1 LTS").
+	System string `json:"system"`
+	// Commands are run in a terminal, in order; empty when there is no
+	// one-line install (Note and URL say what to do instead).
+	Commands []string `json:"commands,omitempty"`
+	Note     string   `json:"note,omitempty"`
+	URL      string   `json:"url,omitempty"`
+}
+
+// Summary renders the steps on one line, for errors, logs, and doctor:
+// "run `brew install openvpn`. The OpenVPN Connect app … https://…".
+func (in *TunnelInstall) Summary() string {
+	if in == nil {
+		return ""
+	}
+	var parts []string
+	if len(in.Commands) > 0 {
+		parts = append(parts, "run `"+strings.Join(in.Commands, " && ")+"`.")
+	}
+	if in.Note != "" {
+		parts = append(parts, in.Note)
+	}
+	if in.URL != "" {
+		parts = append(parts, in.URL)
+	}
+	return strings.Join(parts, " ")
 }

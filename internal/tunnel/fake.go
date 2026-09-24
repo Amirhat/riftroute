@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 // FakeLauncher simulates openvpn for -provider fake and tests: it serves the
@@ -20,22 +22,23 @@ type FakeLauncher struct {
 	// OnUp/OnDown fire as the fake tunnel interface appears and goes away
 	// (the daemon wires them to the fake provider's interface list).
 	OnUp, OnDown func(iface, localIP string)
-	// Missing makes Check fail like a machine without openvpn.
+	// Missing makes Engine report a machine without openvpn (with this
+	// machine's real install help).
 	Missing bool
 }
 
-// Check implements Launcher.
-func (f *FakeLauncher) Check() error {
+// Engine implements Launcher.
+func (f *FakeLauncher) Engine() domain.TunnelEngine {
 	if f.Missing {
-		return fmt.Errorf("%w — %s", ErrNoOpenVPN, InstallHint())
+		return detectEngine(readHost(), func() (string, os.FileInfo, error) { return "", nil, errNotFound }, nil)
 	}
-	return nil
+	return domain.TunnelEngine{Available: true, Path: "(fake)", Version: "2.6.0"}
 }
 
 // Start implements Launcher.
 func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
-	if err := f.Check(); err != nil {
-		return nil, err
+	if e := f.Engine(); !e.Available {
+		return nil, &EngineError{Engine: e}
 	}
 	_ = os.Remove(spec.Management)
 	ln, err := net.Listen("unix", spec.Management)

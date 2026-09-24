@@ -51,9 +51,15 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 
 	// Tunnels RiftRoute runs itself.
 	if ts := s.TunnelStatuses(ctx); len(ts) > 0 {
-		if s.tunnelCheck != nil {
-			if err := s.tunnelCheck(); err != nil {
-				add("tunnel-engine", domain.CheckFail, err.Error(), "tunnels can't connect until this is fixed")
+		if s.tunnelEngine != nil {
+			if e := s.tunnelEngine(); !e.Available {
+				fix := "tunnels can't connect until this is fixed"
+				if h := e.Install.Summary(); h != "" {
+					fix = "on " + e.Install.System + ", " + h
+				}
+				add("tunnel-engine", domain.CheckFail, e.Problem, fix)
+			} else {
+				add("tunnel-engine", domain.CheckPass, strings.TrimSpace("OpenVPN "+e.Version+" at "+e.Path), "")
 			}
 		}
 		for _, t := range ts {

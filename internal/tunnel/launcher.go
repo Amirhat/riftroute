@@ -7,9 +7,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"sync"
+
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 // LaunchSpec is what a Launcher starts.
@@ -34,70 +37,73 @@ type Process interface {
 
 // Launcher starts openvpn processes.
 type Launcher interface {
-	// Check reports whether connections can be started here at all.
-	Check() error
+	// Engine reports whether connections can be started here at all, and
+	// if not, how the user installs what's missing.
+	Engine() domain.TunnelEngine
 	Start(spec LaunchSpec) (Process, error)
 }
 
-// ErrNoOpenVPN means the openvpn binary isn't installed.
-var ErrNoOpenVPN = errors.New("OpenVPN isn't installed")
+// errNotFound means no openvpn binary is installed where the daemon looks.
+var errNotFound = errors.New("openvpn not found")
 
 // binaryCandidates are the only places the daemon (root) runs openvpn from:
 // never $PATH, which a user's environment controls.
 func binaryCandidates() []string {
-	if runtime.GOOS == "darwin" {
+	switch runtime.GOOS {
+	case "darwin":
 		return []string{
 			"/opt/homebrew/sbin/openvpn", "/opt/homebrew/opt/openvpn/sbin/openvpn",
 			"/usr/local/sbin/openvpn", "/usr/local/opt/openvpn/sbin/openvpn",
 			"/opt/local/sbin/openvpn",
 		}
+	case "linux":
+		return []string{"/usr/sbin/openvpn", "/usr/bin/openvpn", "/usr/local/sbin/openvpn", "/sbin/openvpn"}
 	}
-	return []string{"/usr/sbin/openvpn", "/usr/local/sbin/openvpn", "/sbin/openvpn"}
+	return nil
 }
 
-// InstallHint is the one-line fix for ErrNoOpenVPN on this OS.
-func InstallHint() string {
-	if runtime.GOOS == "darwin" {
-		return "install it with: brew install openvpn"
-	}
-	return "install it with your package manager (e.g. sudo apt install openvpn)"
-}
-
-// FindOpenVPN returns the openvpn binary to run. A binary anyone but its
-// owner can modify is refused: the daemon would run it as root.
-func FindOpenVPN() (string, error) {
+// findOpenVPN returns the openvpn binary to run, with symlinks resolved so
+// the file checked is the file run (Homebrew links sbin/openvpn into its
+// Cellar). A binary anyone but its owner can modify is refused: the daemon
+// would run it as root.
+func findOpenVPN() (string, os.FileInfo, error) {
 	for _, p := range binaryCandidates() {
-		fi, err := os.Stat(p)
+		real, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			continue
+		}
+		fi, err := os.Lstat(real)
 		if err != nil || !fi.Mode().IsRegular() || fi.Mode()&0o111 == 0 {
 			continue
 		}
 		if fi.Mode()&0o022 != 0 {
-			return "", fmt.Errorf("%s is writable by other users; refusing to run it as root", p)
+			return real, fi, fmt.Errorf("%s is writable by other users, so RiftRoute won't run it as root", real)
 		}
-		return p, nil
+		return real, fi, nil
 	}
-	return "", fmt.Errorf("%w — %s", ErrNoOpenVPN, InstallHint())
+	return "", nil, errNotFound
 }
 
 // ExecLauncher runs the real openvpn binary.
 type ExecLauncher struct {
 	// Output receives each line openvpn prints (already redacted); may be nil.
 	Output func(tunnel, line string)
+	vc     versionCache
 }
 
-// Check implements Launcher.
-func (l *ExecLauncher) Check() error {
-	_, err := FindOpenVPN()
-	return err
+// Engine implements Launcher. It looks again on every call, so openvpn
+// installed while the daemon runs is picked up without a restart.
+func (l *ExecLauncher) Engine() domain.TunnelEngine {
+	return detectEngine(readHost(), findOpenVPN, l.vc.version)
 }
 
 // Start implements Launcher.
 func (l *ExecLauncher) Start(spec LaunchSpec) (Process, error) {
-	bin, err := FindOpenVPN()
-	if err != nil {
-		return nil, err
+	e := l.Engine()
+	if !e.Available {
+		return nil, &EngineError{Engine: e}
 	}
-	cmd := exec.Command(bin, "--config", spec.Config)
+	cmd := exec.Command(e.Path, "--config", spec.Config)
 	// openvpn execs ifconfig/route (script-security 1 allows only those); give
 	// it the system paths rather than the daemon's inherited environment.
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}

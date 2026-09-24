@@ -173,6 +173,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /preferences", s.requireWrite(s.handlePreferencesSet))
 	// Tunnels: VPN connections RiftRoute runs itself (OpenVPN, split only).
 	s.mux.HandleFunc("GET /tunnels", s.handleTunnels)
+	s.mux.HandleFunc("GET /tunnels/engine", s.handleTunnelEngine)
 	s.mux.HandleFunc("POST /tunnels", s.requireWrite(s.handleTunnelSave))
 	s.mux.HandleFunc("DELETE /tunnels/{name}", s.requireWrite(s.handleTunnelDelete))
 	s.mux.HandleFunc("POST /tunnels/{name}/connect", s.requireWrite(s.handleTunnelConnect(true)))

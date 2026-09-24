@@ -708,6 +708,14 @@ func (c *Client) Tunnels(ctx context.Context) ([]domain.TunnelStatus, error) {
 	return out, err
 }
 
+// TunnelEngine reports whether tunnels can run on the daemon's machine and,
+// if not, how the user installs openvpn there.
+func (c *Client) TunnelEngine(ctx context.Context) (domain.TunnelEngine, error) {
+	var out domain.TunnelEngine
+	err := c.do(ctx, http.MethodGet, "/tunnels/engine", nil, &out)
+	return out, err
+}
+
 // SaveTunnel creates or updates a tunnel. Empty Config/Password keep the
 // stored ones. A refused spec returns a *ValidationError.
 func (c *Client) SaveTunnel(ctx context.Context, spec domain.TunnelSpec) (TunnelResult, error) {

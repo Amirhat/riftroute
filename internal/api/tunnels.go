@@ -23,6 +23,16 @@ type TunnelManager interface {
 	Connect(name string) error
 	Disconnect(ctx context.Context, name string) error
 	Log(name string) ([]string, bool)
+	Engine() domain.TunnelEngine
+}
+
+// handleTunnelEngine reports whether tunnels can run on this machine and, if
+// not, how the user installs openvpn here — shown before they try to connect.
+func (s *Server) handleTunnelEngine(w http.ResponseWriter, r *http.Request) {
+	if !s.tunnelsEnabled(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, s.tunnels.Engine())
 }
 
 // handleTunnelLog returns openvpn's recent output for a tunnel (the running
@@ -156,7 +166,7 @@ func (s *Server) handleTunnelConnect(connect bool) http.HandlerFunc {
 		if err != nil {
 			s.auditTunnel(r, action, name, "failed", err.Error())
 			status := http.StatusInternalServerError
-			if errors.Is(err, tunnel.ErrNoOpenVPN) {
+			if errors.Is(err, tunnel.ErrEngineUnavailable) {
 				status = http.StatusPreconditionFailed
 			}
 			writeErr(w, status, err)
