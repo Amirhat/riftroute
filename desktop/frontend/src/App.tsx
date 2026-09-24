@@ -83,7 +83,7 @@ export default function App() {
     <div className="flex h-screen w-screen overflow-hidden bg-base text-default">
       <Sidebar current={view} onNavigate={setView} version={version || '…'} />
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between border-b border-line bg-surface px-5 py-3">
+        <header className="app-drag flex items-center justify-between border-b border-line bg-surface px-5 py-3">
           <h1 className="text-base font-semibold text-default">{titles[view]}</h1>
           <div className="flex items-center gap-3">
             <Badge tone={reachable ? 'success' : 'danger'}>

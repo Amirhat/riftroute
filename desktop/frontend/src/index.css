@@ -57,6 +57,30 @@
   color-scheme: light;
 }
 
+/*
+ * macOS window chrome. The window uses a hidden inset title bar
+ * (desktop/main.go), so the web content runs under the traffic-light buttons
+ * and there is no native title bar left to grab. With <html data-platform=
+ * "darwin"> (lib/platform.ts):
+ *   - --titlebar-h is the band the traffic lights sit in (centered 26px from
+ *     the top); the sidebar reserves it so nothing renders under the buttons;
+ *   - .app-drag marks top chrome that drags the window, via Wails' CSS drag
+ *     property. The property inherits, so controls inside opt back out.
+ */
+:root {
+  --titlebar-h: 52px;
+}
+
+[data-platform='darwin'] .app-drag {
+  --wails-draggable: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+[data-platform='darwin'] .app-drag :is(button, a, input, select, textarea, [role='button']) {
+  --wails-draggable: no-drag;
+}
+
 html,
 body,
 #root {
