@@ -18,10 +18,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   through the guarded Apply Protocol (visible as `tunnel:<name>` in the routing
   table and route-explain) and are removed on disconnect, panic, and shutdown.
   By default the OpenVPN server is reached around the main VPN, like OpenVPN
-  Connect does (`--via default` to go through it). Needs the `openvpn` program
-  (`brew install openvpn`); the profile is checked against an allowlist before
-  the root daemon runs it, and the profile and password are kept in a root-only
-  directory, never in the database or API responses.
+  Connect does (`--via default` to go through it). The profile is checked
+  against an allowlist before the root daemon runs it, and the profile and
+  password are kept in a root-only directory, never in the database or API
+  responses.
   `riftroute tunnel log <name>` shows openvpn's own output, and a connection
   that can't reach its server says why (e.g. another VPN's firewall). While a
   tunnel is up, its networks win over exclude profiles, so a wildcard domain
@@ -29,6 +29,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Profiles made for OpenVPN Connect work against older servers too: the
   profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
   openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
+  Works on macOS and Linux. RiftRoute doesn't bundle `openvpn` (2.5 or
+  newer): until you've installed it, the Tunnels page and `riftroute tunnel
+  list` say so up front, with the install command for your system (Homebrew,
+  apt, dnf, pacman, zypper, apk, …), and pick it up without a restart.
 
 ### Fixed
 - **Tinted colors in the app.** Faded backgrounds and borders — error and

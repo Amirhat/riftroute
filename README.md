@@ -204,10 +204,27 @@ Running a second VPN client usually knocks the first one off: the server pushes
 `redirect-gateway` (a pair of `0/1` + `128/1` routes that out-rank the other
 VPN's default route) and its own DNS. RiftRoute can run the OpenVPN connection
 itself as a **split tunnel** instead, so a VPN that already carries everything
-(Windscribe, …) stays up and only the networks you list go through OpenVPN:
+(Windscribe, …) stays up and only the networks you list go through OpenVPN.
+
+Tunnels run on the `openvpn` program (2.5 or newer), which **you install
+yourself** — RiftRoute doesn't bundle it, and the OpenVPN Connect app doesn't
+include it:
+
+| System | Install |
+|---|---|
+| macOS | `brew install openvpn` ([Homebrew](https://brew.sh)) |
+| Debian, Ubuntu, Mint | `sudo apt install openvpn` |
+| Fedora | `sudo dnf install openvpn` |
+| Rocky, Alma, CentOS Stream | `sudo dnf install epel-release && sudo dnf install openvpn` |
+| Arch, Manjaro | `sudo pacman -S openvpn` |
+| openSUSE | `sudo zypper install openvpn` |
+| Alpine | `sudo apk add openvpn` |
+
+You don't need to look this up: until it's installed, the **Tunnels** page and
+`riftroute tunnel list` say so and show the command for your system, and the
+daemon picks it up as soon as it's there — no restart.
 
 ```bash
-brew install openvpn        # the engine RiftRoute drives (Linux: apt install openvpn)
 riftroute tunnel add infra ~/Downloads/office.ovpn \
   --route 192.168.70.0/24 --route 192.168.72.11 --connect
 riftroute tunnel list       # state, interface, server, routes
@@ -250,8 +267,9 @@ Or use the **Tunnels** page in the app. How it works:
   challenge/2FA logins, encrypted private keys, proxies, `<connection>` blocks,
   TAP tunnels.
 
-`openvpn` runs as root from a fixed list of install paths (never `$PATH`); a
-binary other users can modify is refused. On macOS that is Homebrew's, which is
+`openvpn` runs as root from a fixed list of install paths (never `$PATH`), with
+symlinks resolved; a binary other users can modify is refused, and checking
+its version (to show whether tunnels can run) runs it as `nobody`, not root. On macOS that is Homebrew's, which is
 owned by the admin user who installed it — as with any root service built from
 Homebrew, only install it on a machine where that account is trusted.
 
@@ -353,6 +371,10 @@ Signing/notarization secrets: `MAC_CERT_P12`, `MAC_CERT_PASSWORD`,
 - Linux netns suite (`test/netns`, `-tags netns`) exercises the real `ip`
   command inside an isolated namespace under CI (apply+confirm, watchdog
   rollback, panic idempotence, Model B include, kill switch, fwmark rule).
+- `make test-tunnels-linux` (needs Docker) runs OpenVPN tunnels for real on
+  Linux: the daemon on Debian behind a full-tunnel "main VPN", a router, and
+  an old-style OpenVPN server — routes, the server pin, pushed-route/DNS
+  filtering, install help, crash recovery.
 - Frontend: `cd desktop/frontend && npm test` (Vitest + jsdom smoke tests).
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the Go tests
