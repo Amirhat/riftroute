@@ -117,6 +117,26 @@ const App = {
     window.open('https://github.com/Amirhat/riftroute/issues/new', '_blank', 'noopener')
     return Promise.resolve()
   },
+  GetTunnels: () => req('GET', '/tunnels').then((b) => b ?? []),
+  SaveTunnel: (spec: unknown) => issuesAreResults(req('POST', '/tunnels', spec)),
+  DeleteTunnel: (n: string) => req('DELETE', `/tunnels/${encodeURIComponent(n)}`).then(() => undefined),
+  ConnectTunnel: (n: string) => req('POST', `/tunnels/${encodeURIComponent(n)}/connect`, {}),
+  DisconnectTunnel: (n: string) => req('POST', `/tunnels/${encodeURIComponent(n)}/disconnect`, {}),
+  // No native file dialog in a browser: hand back a sample profile so the
+  // editor flow can be exercised against a -provider fake daemon.
+  OpenTunnelProfileDialog: () =>
+    Promise.resolve({
+      path: '/dev/sample.ovpn',
+      name: 'sample.ovpn (browser dev)',
+      config:
+        'client\ndev tun\nremote 198.51.100.7 1194 tcp\nauth-user-pass\nredirect-gateway def1\nuser nobody\ngroup nogroup\n<ca>\nCA\n</ca>\n',
+      servers: ['198.51.100.7:1194/tcp'],
+      needs_auth: true,
+      ignored: ['group', 'redirect-gateway', 'user'],
+      username: '',
+      password: '',
+      error: '',
+    }),
   GetPreferences: () => req('GET', '/preferences'),
   SetPreferences: (patch: unknown) => req('PUT', '/preferences', patch),
   // No app build in browser dev mode: only the daemon's own restart warning.
