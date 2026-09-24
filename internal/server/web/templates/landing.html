@@ -1,0 +1,141 @@
+{{define "landing.html"}}<!doctype html>
+<html lang="{{.T.Lang}}" dir="{{.T.Dir}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.T.Title}}</title>
+<meta name="description" content="{{.T.Description}}">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="preload" href="{{asset "go-bold.ttf"}}" as="font" type="font/ttf" crossorigin>{{if eq .T.Lang "fa"}}
+<link rel="preload" href="{{asset "vazirmatn-nl-bold.woff2"}}" as="font" type="font/woff2" crossorigin>{{end}}
+<link rel="stylesheet" href="{{asset "site.css"}}">
+<link rel="alternate" hreflang="en" href="https://riftroute.tellnew.tech/">
+<link rel="alternate" hreflang="fa" href="https://riftroute.tellnew.tech/fa">
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="g-mark" viewBox="0 0 64 64"><path d="M22 21.5c4.5 4.2 8.6 6 10 9.5 1.4-3.5 5.5-5.3 10-9.5M32 31v15" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="g-fork" viewBox="0 0 32 32"><path d="M4 16h7l6-7h11M11 16l6 7h11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="4" cy="16" r="2.5" fill="currentColor"/></symbol>
+  <symbol id="g-domain" viewBox="0 0 32 32"><path d="M4 16h24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M9 11v10M16.5 11v10M24 11v10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></symbol>
+  <symbol id="g-buffer" viewBox="0 0 32 32"><path d="M4 16h18M24 8v16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M28 10v12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity=".45"/></symbol>
+  <symbol id="g-watch" viewBox="0 0 32 32"><path d="M3 17h6l3-7 5 13 3-6h9" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="g-report" viewBox="0 0 32 32"><path d="M8 4h12l5 5v19H8z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M12 14h9M12 19h5M12 24h8" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+</svg>
+
+<header class="top">
+  <a class="brand" href="{{if eq .T.Lang "fa"}}/fa{{else}}/{{end}}" dir="ltr"><svg class="mark" aria-hidden="true"><use href="#g-mark"/></svg>RiftRoute</a>
+  <nav>
+    <a href="{{.SourceURL}}">GitHub</a>
+    <a class="lang" href="{{.T.Other}}" hreflang="{{if eq .T.Lang "fa"}}en{{else}}fa{{end}}" lang="{{if eq .T.Lang "fa"}}en{{else}}fa{{end}}">{{.T.OtherLabel}}</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="hero-copy">
+      <h1>{{.T.Hero}}</h1>
+      <p class="sub">{{.T.Sub}}</p>
+      <p class="cta"><a class="btn" href="{{.Releases}}">{{.T.Download}}</a><a class="quiet" href="{{.SourceURL}}">{{.T.Source}}</a></p>
+      <p class="platforms">{{.T.Platforms}}</p>
+    </div>
+
+    <figure class="map" aria-label="{{.T.MapLabel}}">
+      <div class="origin"><span class="stn big" aria-hidden="true"></span><span class="origin-name">{{.T.Origin}}</span><span class="pulse" aria-hidden="true"></span></div>
+      <svg class="junction wide" width="96" height="264" viewBox="0 0 96 264" aria-hidden="true" focusable="false">
+        <path class="j-vpn" d="M15 110L81 44H96"/><path class="j-direct" d="M15 110L81 176H96"/><path class="j-trunk" d="M0 110H18"/>
+      </svg>
+      <svg class="junction narrow" viewBox="0 0 100 64" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+        <path class="j-vpn" d="M31 14C31 36 6 34 6 56V64"/><path class="j-direct" d="M31 14C31 36 56 34 56 56V64"/><path class="j-trunk" d="M31 0V17"/>
+      </svg>
+      <div class="line vpn">
+        <p class="line-name"><b>{{.T.VPNLine}}</b> <span class="iface" dir="ltr">utun3</span></p>
+        <ol>{{range .T.VPNStops}}
+          <li>{{template "stop" .}}</li>{{end}}
+        </ol>
+        <p class="terminus">{{.T.VPNEnd}}</p>
+        <span class="pulse" aria-hidden="true"></span>
+      </div>
+      <div class="line direct">
+        <p class="line-name"><b>{{.T.DirectLine}}</b> <span class="iface" dir="ltr">en0</span></p>
+        <ol>{{range .T.DirectStops}}
+          <li>{{template "stop" .}}</li>{{end}}
+        </ol>
+        <p class="terminus">{{.T.DirectEnd}}</p>
+        <span class="pulse" aria-hidden="true"></span>
+      </div>
+      <figcaption>
+        <span class="legend"><span class="key vpn" aria-hidden="true"></span>{{.T.LegendVPN}}</span>
+        <span class="legend"><span class="key direct" aria-hidden="true"></span>{{.T.LegendDirect}}</span>
+        <span class="legend"><span class="key stop" aria-hidden="true"></span>{{.T.LegendStop}}</span>
+        <span class="note">{{.T.MapNote}}</span>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section class="safety" aria-labelledby="safety-title">
+    <div class="wrap">
+      <h2 id="safety-title">{{.T.SafetyTitle}}</h2>
+      <p class="lead">{{.T.SafetyLead}}</p>
+      <div class="tx">
+        <ol class="tx-line">{{range .T.Steps}}
+          <li><span class="stn" aria-hidden="true"></span><b>{{.Name}}</b><span>{{.Body}}</span></li>{{end}}
+        </ol>
+        <ul class="tx-fork">
+          <li class="kept"><span class="stn" aria-hidden="true"></span><b>{{.T.Kept.Name}}</b><span>{{.T.Kept.Body}}</span></li>
+          <li class="back"><span class="stn" aria-hidden="true"></span><b>{{.T.RolledBack.Name}}</b><span>{{.T.RolledBack.Body}}</span></li>
+        </ul>
+      </div>
+      <p class="panic"><b dir="ltr">{{.T.Panic.Name}}</b><span>{{.T.Panic.Body}}</span></p>
+    </div>
+  </section>
+
+  <section class="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <h2 id="features-title">{{.T.FeaturesTitle}}</h2>
+      <div class="features-body">
+        <ul class="index">{{range .T.Features}}
+          <li><svg class="glyph g-{{.Glyph}}" aria-hidden="true"><use href="#g-{{.Glyph}}"/></svg><h3>{{.Title}}</h3><p>{{.Body}}</p></li>{{end}}
+        </ul>
+        <figure class="shot" dir="ltr">
+          <picture>
+            <source srcset="{{asset "explain-narrow-dark.png"}}" media="(max-width: 1099px) and (prefers-color-scheme: dark)" width="400" height="381">
+            <source srcset="{{asset "explain-narrow-light.png"}}" media="(max-width: 1099px)" width="400" height="381">
+            <source srcset="{{asset "explain-dark.png"}}" media="(prefers-color-scheme: dark)">
+            <img src="{{asset "explain-light.png"}}" alt="{{.T.ShotAlt}}" width="666" height="775" loading="lazy" decoding="async">
+          </picture>
+          <figcaption dir="{{.T.Dir}}">{{.T.ShotCaption}}</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="privacy" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap">
+      <h2 id="privacy-title">{{.T.PrivacyTitle}}</h2>
+      <dl class="states">{{range .T.Privacy}}
+        <div class="state {{.Kind}}"><span class="seg" aria-hidden="true"></span><span class="stn" aria-hidden="true"></span><dt>{{.Label}}</dt><dd>{{.Text}}</dd></div>{{end}}
+      </dl>
+    </div>
+  </section>
+
+  <section class="close" aria-labelledby="close-title">
+    <div class="close-line" aria-hidden="true">
+      <span class="stn big"></span><span class="trunk"></span>
+      <svg class="fork" width="60" height="80" viewBox="0 0 60 80" focusable="false"><path class="j-vpn" d="M6 40L34 12H60"/><path class="j-direct" d="M6 40L34 68H60"/><path class="j-trunk" d="M0 40H8"/></svg>
+      <span class="ends"><span class="vpn"></span><span class="direct"></span></span>
+    </div>
+    <div class="wrap">
+      <h2 id="close-title">{{.T.CloseTitle}}</h2>
+      <p class="cta"><a class="btn" href="{{.Releases}}">{{.T.Download}}</a><a class="quiet" href="{{.SourceURL}}">{{.T.Source}}</a></p>
+      <p class="platforms">{{.T.Platforms}}</p>
+    </div>
+  </section>
+</main>
+
+<footer><div class="wrap"><span dir="ltr">© {{.Year}} RiftRoute</span><a href="{{.SourceURL}}/blob/main/LICENSE">{{.T.License}}</a><a href="{{.SourceURL}}">GitHub</a></div></footer>
+</body>
+</html>
+{{end}}
+
+{{define "stop"}}<span class="stn" aria-hidden="true"></span><span class="stop-name">{{if .Addr}}<code dir="ltr">{{.Addr}}</code>{{else}}{{.Name}}{{end}}</span><span class="why">{{.Why}}</span>{{end}}

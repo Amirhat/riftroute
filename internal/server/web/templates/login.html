@@ -1,0 +1,25 @@
+{{define "login.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in — RiftRoute</title>
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="stylesheet" href="{{asset "site.css"}}">
+</head>
+<body class="admin">
+<main class="card narrow">
+  <h1><img src="{{asset "favicon.svg"}}" alt="" width="28" height="28">RiftRoute admin</h1>
+  {{if .NoPassword}}<p class="note warn">Admin login isn't set up yet. On the server, run <code>riftroute-server passwd</code>.</p>{{end}}
+  {{if .Error}}<p class="note error" role="alert">{{.Error}}</p>{{end}}
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label for="pw">Password</label>
+    <input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit" class="btn">Sign in</button>
+  </form>
+</main>
+</body>
+</html>
+{{end}}

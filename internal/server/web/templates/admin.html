@@ -1,0 +1,33 @@
+{{define "admin.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Admin — RiftRoute</title>
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="stylesheet" href="{{asset "site.css"}}">
+</head>
+<body class="admin">
+<header class="top">
+  <span class="brand"><img src="{{asset "favicon.svg"}}" alt="" width="28" height="28">RiftRoute admin</span>
+  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="btn">Sign out</button></form>
+</header>
+<main class="dash">
+  <section class="card">
+    <h2>Server</h2>
+    <dl class="stats">
+      <div><dt>Version</dt><dd>{{.Version}}</dd></div>
+      <div><dt>Uptime</dt><dd>{{.Uptime}}</dd></div>
+      <div><dt>Database</dt><dd>{{bytes .DBSize}}</dd></div>
+      {{with .DiskFree}}<div><dt>Disk free</dt><dd>{{bytes .}}</dd></div>{{end}}
+      <div><dt>Signed-in sessions</dt><dd>{{.Sessions}}</dd></div>
+    </dl>
+  </section>
+  <section class="card later"><h2>Telemetry</h2><p>Coming in phase 3: anonymous usage counts from the app (opt-out, never addresses, domains or names), as charts here.</p></section>
+  <section class="card later"><h2>Releases &amp; updates</h2><p>Coming in phase 2: the signed update manifest, staged rollout and a halt switch.</p></section>
+  <section class="card later"><h2>Bug reports</h2><p>Coming in phase 4: redacted reports users choose to upload.</p></section>
+</main>
+</body>
+</html>
+{{end}}

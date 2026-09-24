@@ -1,0 +1,57 @@
+# riftroute-server — the site and (later) update/telemetry API behind Caddy.
+# Loopback only; runs as its own unprivileged account; can write nothing but
+# its data directory. Installed to /etc/systemd/system/.
+[Unit]
+Description=RiftRoute site and API (riftroute.tellnew.tech)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=riftroute-server
+Group=riftroute-server
+ExecStart=/opt/riftroute-server/bin/riftroute-server serve -listen 127.0.0.1:7780 -data /var/lib/riftroute-server
+Restart=on-failure
+RestartSec=2
+# The Go heap stays well inside MemoryMax (a password check takes 64 MiB and
+# only one runs at a time); the CPU caps keep a login flood from starving the
+# other services on this shared host.
+Environment=GOMEMLIMIT=180MiB
+CPUQuota=100%
+CPUWeight=50
+
+# Hardening: nothing but its own data directory is writable, no privileges,
+# no capabilities, no devices, no kernel knobs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/var/lib/riftroute-server
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# It only ever talks to Caddy over loopback: no outbound network at all.
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+MemoryMax=256M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target
