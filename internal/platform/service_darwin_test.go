@@ -4,6 +4,9 @@ package platform
 
 import (
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +142,70 @@ func TestLaunchdState(t *testing.T) {
 	out := "system/com.riftroute.daemon = {\n\tactive count = 1\n\tstate = running\n\tprogram = /x\n}"
 	if got := launchdState(out); got != "running" {
 		t.Fatalf("launchdState = %q", got)
+	}
+}
+
+// Start on a job that's already loaded must only kickstart it — a reload
+// (bootout+bootstrap) kills the healthy daemon the user just asked for.
+func TestStartServiceKeepsALoadedDaemon(t *testing.T) {
+	f := &fakeLaunchd{loaded: true}
+	f.install(t)
+	if err := startService(); err != nil {
+		t.Fatalf("startService: %v", err)
+	}
+	if f.index("bootout") >= 0 || f.index("bootstrap") >= 0 {
+		t.Fatalf("reloaded a loaded job: %v", f.calls)
+	}
+	if f.index("kickstart system/") < 0 || f.index("kickstart -k") >= 0 {
+		t.Fatalf("want a plain kickstart: %v", f.calls)
+	}
+}
+
+func TestStartServiceBootstrapsAnUnloadedJob(t *testing.T) {
+	f := &fakeLaunchd{}
+	f.install(t)
+	if err := startService(); err != nil {
+		t.Fatalf("startService: %v", err)
+	}
+	if f.index("bootstrap") < 0 || !f.loaded {
+		t.Fatalf("unloaded job not bootstrapped: %v", f.calls)
+	}
+}
+
+// A socket file left by a killed daemon must not count as "came up" — only a
+// listener accepting connections does.
+func TestDialUntilIgnoresStaleSocket(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "rr.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	_ = ln.Close() // leaves a stale socket file behind
+	if _, err := os.Stat(sock); err != nil {
+		t.Fatalf("sanity: stale socket file should exist: %v", err)
+	}
+	if err := dialUntil(sock, 300*time.Millisecond); err == nil {
+		t.Fatal("stale socket reported as up")
+	}
+}
+
+func TestDialUntilWaitsForListener(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "rr.sock")
+	lnc := make(chan net.Listener, 1)
+	go func() {
+		time.Sleep(400 * time.Millisecond) // daemon still starting
+		ln, err := net.Listen("unix", sock)
+		if err != nil {
+			t.Error(err)
+		}
+		lnc <- ln
+	}()
+	err := dialUntil(sock, 5*time.Second)
+	if ln := <-lnc; ln != nil {
+		_ = ln.Close()
+	}
+	if err != nil {
+		t.Fatalf("listener came up but dialUntil failed: %v", err)
 	}
 }

@@ -4,6 +4,27 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — 2026-09-24
+
+Fixes the app getting stuck "offline" after you stop and start the daemon, and
+the macOS window's buttons covering the sidebar. Both from
+[@ssenerg](https://github.com/ssenerg) — thank you.
+
+### Fixed
+- **Start after Stop brings the daemon back (macOS).** After stopping the
+  daemon from the app, Start never reconnected: the app had fixed the socket
+  path while the daemon was down and kept using the dead one, and Start on a
+  still-loaded job reloaded it — killing the fresh daemon and tripping
+  launchd's 10-second respawn throttle. The app and the menu-bar tray now
+  re-resolve the daemon's socket for every connection; Start only kickstarts a
+  loaded job; Start and Restart wait (up to 15 s) until the daemon actually
+  accepts connections, and show its log if it doesn't. (#13)
+- **Window chrome on macOS.** The close/minimize/zoom buttons sat on top of the
+  sidebar's logo, and the window couldn't be dragged by its top. The sidebar
+  now reserves the title-bar band on macOS, and the sidebar top and the page
+  header drag the window (buttons inside them still work). Windows and Linux
+  are unchanged. (#14)
+
 ## [0.2.4] — 2026-09-23
 
 Fixes VPNs failing to connect while exclude profiles are on, makes the kill

@@ -63,18 +63,34 @@ func (e *APIError) Error() string {
 
 // Client talks to riftrouted over its Unix domain socket.
 type Client struct {
-	socketPath string
+	socketPath func() string
 	http       *http.Client
 }
 
 // New builds a client for the daemon socket at socketPath.
 func New(socketPath string) *Client {
+	return newClient(func() string { return socketPath }, true)
+}
+
+// NewResolving builds a client that re-resolves the socket path on every dial.
+// Long-lived clients (GUI, tray) use it so they follow the daemon as it is
+// stopped/started/installed — its socket is removed on shutdown, so a path
+// resolved once while it was down would pin a dead fallback forever.
+//
+// Keep-alive is off: pooled connections are keyed by host, not socket path, so
+// a reused one could still reach the daemon at the old path. A local UDS dial
+// per request is cheap.
+func NewResolving(socketPath func() string) *Client {
+	return newClient(socketPath, false)
+}
+
+func newClient(socketPath func() string, keepAlive bool) *Client {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, "unix", socketPath)
+			return d.DialContext(ctx, "unix", socketPath())
 		},
-		DisableKeepAlives: false,
+		DisableKeepAlives: !keepAlive,
 	}
 	return &Client{
 		socketPath: socketPath,
@@ -82,8 +98,8 @@ func New(socketPath string) *Client {
 	}
 }
 
-// SocketPath returns the configured socket path.
-func (c *Client) SocketPath() string { return c.socketPath }
+// SocketPath returns the socket path the next dial will use.
+func (c *Client) SocketPath() string { return c.socketPath() }
 
 func (c *Client) url(path string) string { return "http://unix" + path }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -456,5 +457,113 @@ func TestClientBugReport(t *testing.T) {
 	}
 	if rep.Redactions == 0 || rep.GeneratedAt.IsZero() {
 		t.Errorf("metadata missing: %d redactions, generated %v", rep.Redactions, rep.GeneratedAt)
+	}
+}
+
+// serveAt runs the real API server on sock until the returned stop func is
+// called; closing the listener removes the socket file, like riftrouted's
+// clean shutdown does.
+func serveAt(t *testing.T, sock, version string) (stop func()) {
+	t.Helper()
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := fake.New()
+	svc := core.New(prov, st, version)
+	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, "fake", nil)
+	srv := api.NewServer(svc, st, proto, uint32(os.Getuid()), version, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = srv.Serve(ctx, ln); close(done) }()
+	var once sync.Once
+	stop = func() {
+		once.Do(func() {
+			cancel()
+			_ = ln.Close()
+			<-done
+			_ = st.Close()
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// TestClientResolvingFollowsDaemon is the pause→resume regression: the daemon
+// removes its system socket when stopped, so a client that resolved the path
+// once while it was down pinned the per-user fallback and never reconnected.
+func TestClientResolvingFollowsDaemon(t *testing.T) {
+	dir, err := os.MkdirTemp("", "rr") // short: unix socket paths cap at 104 bytes
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sysSock := filepath.Join(dir, "sys.sock")
+	devSock := filepath.Join(dir, "dev.sock")
+	// Mirrors platform.ClientSocket: the system socket when present, else dev.
+	resolve := func() string {
+		if _, err := os.Stat(sysSock); err == nil {
+			return sysSock
+		}
+		return devSock
+	}
+	ctx := context.Background()
+
+	c := NewResolving(resolve)
+	pinned := New(resolve()) // resolved once while the daemon is down
+	if _, err := c.Ping(ctx); !errors.Is(err, ErrDaemonUnreachable) {
+		t.Fatalf("daemon down: want unreachable, got %v", err)
+	}
+
+	for i, phase := range []string{"start", "resume after pause"} {
+		stop := serveAt(t, sysSock, "test")
+		if _, err := c.Ping(ctx); err != nil {
+			t.Fatalf("%s: resolving client should reach the daemon: %v", phase, err)
+		}
+		if i == 0 {
+			if _, err := pinned.Ping(ctx); err == nil {
+				t.Fatal("sanity: a client pinned to the fallback should not reach the daemon")
+			}
+		}
+		stop() // pause: socket removed
+		if _, err := os.Stat(sysSock); !os.IsNotExist(err) {
+			t.Fatalf("sanity: socket should be gone after stop, stat err=%v", err)
+		}
+		if _, err := c.Ping(ctx); err == nil {
+			t.Fatalf("%s: stopped daemon should be unreachable", phase)
+		}
+	}
+}
+
+// When the resolved path moves while the old daemon is still alive (a dev
+// daemon, then the system one gets installed), requests must follow the new
+// path — not reuse a kept-alive connection to the old socket.
+func TestClientResolvingSwitchesLiveDaemons(t *testing.T) {
+	dir, err := os.MkdirTemp("", "rr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sysSock := filepath.Join(dir, "sys.sock")
+	devSock := filepath.Join(dir, "dev.sock")
+	resolve := func() string {
+		if _, err := os.Stat(sysSock); err == nil {
+			return sysSock
+		}
+		return devSock
+	}
+	ctx := context.Background()
+	serveAt(t, devSock, "dev")
+	c := NewResolving(resolve)
+	if v, err := c.Ping(ctx); err != nil || v != "dev" {
+		t.Fatalf("dev daemon: ver=%q err=%v", v, err)
+	}
+	serveAt(t, sysSock, "sys")
+	if v, err := c.Ping(ctx); err != nil || v != "sys" {
+		t.Fatalf("after system install: ver=%q err=%v (want sys)", v, err)
 	}
 }

@@ -41,5 +41,11 @@ export default {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // `mac:` applies only inside the macOS window, where the traffic lights
+    // overlay the content (lib/platform.ts tags <html data-platform>).
+    function ({ addVariant }) {
+      addVariant('mac', '[data-platform="darwin"] &')
+    },
+  ],
 }
