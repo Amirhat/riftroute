@@ -26,6 +26,11 @@ var (
 // then SIGKILL after the job's exit timeout (20s by default).
 const unloadTimeout = 25 * time.Second
 
+// startTimeout bounds how long start/restart/install wait for the daemon to
+// accept connections. It exceeds launchd's 10s respawn throttle, so a throttled
+// (not failed) start is waited out rather than reported as a failure.
+const startTimeout = 15 * time.Second
+
 // bootService (re)loads the daemon into the SYSTEM launchd domain and starts it.
 // Uses the modern verbs — `launchctl load` is legacy and does not reliably load
 // a system LaunchDaemon on macOS 11+ (it was the reason the service "installed
@@ -82,16 +87,40 @@ func unbootService() error {
 // or returns an error with the daemon's log tail so the failure is visible
 // instead of a silent "installed but not running".
 func waitForSocket(socket string) error {
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		if c, err := net.DialTimeout("unix", socket, 300*time.Millisecond); err == nil {
+	if err := dialUntil(socket, startTimeout); err != nil {
+		return fmt.Errorf("riftrouted did not come up within %s — recent log (%s/riftrouted.err.log):\n%s",
+			startTimeout, logDir, readTail(logDir+"/riftrouted.err.log", 1200))
+	}
+	return nil
+}
+
+// dialUntil polls until something accepts on the unix socket or timeout
+// passes. It dials rather than stat()ing: a socket file left by a killed
+// daemon exists but refuses connections.
+func dialUntil(socket string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		c, err := net.DialTimeout("unix", socket, 250*time.Millisecond)
+		if err == nil {
 			_ = c.Close()
 			return nil
 		}
+		if time.Now().After(deadline) {
+			return err
+		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	return fmt.Errorf("riftrouted did not come up within 10s — recent log (%s/riftrouted.err.log):\n%s",
-		logDir, readTail(logDir+"/riftrouted.err.log", 1200))
+}
+
+// startService makes sure the job is running without disturbing a healthy
+// one: a loaded job only gets a kickstart (a reload would kill it — the old
+// "Start never brings it back" loop); an unloaded one is bootstrapped.
+func startService() error {
+	if _, err := printService(); err == nil {
+		_ = launchctl("kickstart", launchdTarget)
+		return nil
+	}
+	return bootService()
 }
 
 const (
@@ -181,7 +210,10 @@ func (launchdManager) Restart() error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
-	return bootService() // unloads (and waits) first
+	if err := bootService(); err != nil { // unloads (and waits) first
+		return err
+	}
+	return waitForSocket(systemSocket)
 }
 
 func (launchdManager) Start() error {
@@ -191,7 +223,10 @@ func (launchdManager) Start() error {
 	if !fileExists(launchdPlist) {
 		return fmt.Errorf("service not installed")
 	}
-	return bootService()
+	if err := startService(); err != nil {
+		return err
+	}
+	return waitForSocket(systemSocket)
 }
 
 func (launchdManager) Stop() error {

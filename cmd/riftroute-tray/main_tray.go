@@ -28,11 +28,12 @@ var socketFlag = flag.String("socket", "", "riftrouted socket path (default: pla
 
 func main() {
 	flag.Parse()
-	sock := *socketFlag
-	if sock == "" {
-		sock = platform.ClientSocket()
+	cl := apiclient.New(*socketFlag)
+	if *socketFlag == "" {
+		// Re-resolve per dial so the tray follows the daemon across stop/start.
+		cl = apiclient.NewResolving(platform.ClientSocket)
 	}
-	t := &tray{cl: apiclient.New(sock)}
+	t := &tray{cl: cl}
 	systray.Run(t.onReady, func() {})
 }
 
