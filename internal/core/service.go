@@ -46,6 +46,83 @@ type Service struct {
 	// build has since been installed over it (nil = not wired).
 	build    domain.BuildInfo
 	binWatch *buildinfo.Watcher
+	// tunnelInputs/tunnelStatus read the tunnel manager (nil = no tunnels).
+	tunnelInputs func() []routing.TunnelInput
+	tunnelStatus func() []domain.TunnelStatus
+	// tunnelEngine reports whether tunnels can run here at all (openvpn
+	// installed, new enough) and how to install it (doctor).
+	tunnelEngine func() domain.TunnelEngine
+}
+
+// SetTunnelEngine installs the "can tunnels run here" probe (doctor).
+func (s *Service) SetTunnelEngine(fn func() domain.TunnelEngine) { s.tunnelEngine = fn }
+
+// SetTunnels wires the tunnel manager: what its tunnels route, and their
+// status for State.
+func (s *Service) SetTunnels(inputs func() []routing.TunnelInput, status func() []domain.TunnelStatus) {
+	s.tunnelInputs, s.tunnelStatus = inputs, status
+}
+
+// TunnelStatuses returns the tunnels' status, marking the routes left out on
+// the current network and why (see routing.TunnelRouteBlock).
+func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
+	if s.tunnelStatus == nil {
+		return nil
+	}
+	ts := s.tunnelStatus()
+	in := routing.DesiredInput{Occupied: s.occupied(ctx)}
+	in.GatewayV4, _, _ = s.prov.DefaultGateway(ctx, domain.FamilyV4)
+	in.GatewayV6, _, _ = s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	for i := range ts {
+		for _, r := range ts[i].Routes {
+			pfx, err := netip.ParsePrefix(r)
+			if err != nil {
+				a, aerr := netip.ParseAddr(r)
+				if aerr != nil {
+					continue
+				}
+				pfx = netip.PrefixFrom(a, a.BitLen())
+			}
+			if why := routing.TunnelRouteBlock(pfx, in); why != "" {
+				ts[i].Blocked = append(ts[i].Blocked, domain.TunnelBlocked{Route: r, Reason: why})
+			}
+		}
+	}
+	return ts
+}
+
+// occupied maps the main-table destinations someone other than RiftRoute
+// routes (masked CIDR → interface), for routing.TunnelRouteBlock. Kernel
+// clone entries don't count: a real route replaces them. Only computed when
+// there are tunnels.
+func (s *Service) occupied(ctx context.Context) map[string]string {
+	if len(s.tunnels()) == 0 && s.tunnelStatus == nil {
+		return nil
+	}
+	owned := map[string]bool{}
+	for _, o := range s.actualManagedRoutes(ctx) {
+		owned[routing.RouteKey(o.Route)] = true
+	}
+	out := map[string]string{}
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, _ := s.prov.ListRoutes(ctx, fam)
+		for _, r := range rs {
+			if r.Table != "" || r.Cloned || r.Owner == domain.OwnerRiftRoute || owned[routing.RouteKey(r)] {
+				continue
+			}
+			if pfx, err := netip.ParsePrefix(r.DstCIDR); err == nil && pfx.Bits() > 0 {
+				out[pfx.Masked().String()] = r.Iface
+			}
+		}
+	}
+	return out
+}
+
+func (s *Service) tunnels() []routing.TunnelInput {
+	if s.tunnelInputs == nil {
+		return nil
+	}
+	return s.tunnelInputs()
 }
 
 // SetBuild records the running binary's identity and the watcher that
@@ -142,7 +219,9 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 		Domains:       s.resolveDomains(ctx, profiles),
 		VPNGatewayV4:  vg4, VPNIfaceV4: vi4,
 		VPNGatewayV6: vg6, VPNIfaceV6: vi6,
-		Now: s.now(),
+		Tunnels:  s.tunnels(),
+		Occupied: s.occupied(ctx),
+		Now:      s.now(),
 	}
 	if err4 == nil {
 		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
@@ -150,6 +229,43 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
 	routes, rules, err := routing.BuildDesired(in)
 	return routes, rules, gw4, err
+}
+
+// DesiredTunnelsOnly is the desired set for a tunnel transition: what
+// RiftRoute owns today with only the tunnels' routes recomputed. Connecting a
+// tunnel is an explicit action that must install its routes even with
+// auto-apply off — but it must not apply unrelated profile changes that are
+// staged and waiting for the user.
+func (s *Service) DesiredTunnelsOnly(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
+	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	in := routing.DesiredInput{Platform: s.Platform(), Tunnels: s.tunnels(), Occupied: s.occupied(ctx), Now: s.now()}
+	if err4 == nil {
+		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
+	}
+	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
+	tunnelRoutes, _, err := routing.BuildDesired(in)
+	if err != nil {
+		return nil, nil, gw4, err
+	}
+	var out []domain.ManagedRoute
+	for _, o := range s.actualManagedRoutes(ctx) {
+		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			out = append(out, o)
+		}
+	}
+	return append(out, tunnelRoutes...), s.actualManagedRules(ctx), gw4, nil
+}
+
+// OwnsTunnelRoutes reports whether RiftRoute has routes recorded for a
+// tunnel — at startup, what a daemon that died with tunnels up left behind.
+func (s *Service) OwnsTunnelRoutes(ctx context.Context) bool {
+	for _, o := range s.actualManagedRoutes(ctx) {
+		if strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveDomains resolves the enabled profiles' domain rules via the TTL cache,
@@ -354,7 +470,7 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 		return d
 	}
 	profs, _ := s.store.ListProfiles()
-	if len(profs) == 0 {
+	if len(profs) == 0 && len(s.tunnels()) == 0 {
 		return d
 	}
 	dRoutes, dRules, _, err := s.DesiredFromProfiles(ctx, profs)
@@ -481,6 +597,8 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 
 	dns, _ := s.prov.DNSConfig(ctx)
 
+	tunnels := s.TunnelStatuses(ctx)
+
 	var profs []domain.ProfileStatus
 	if s.store != nil {
 		ps, _ := s.store.ListProfiles()
@@ -508,6 +626,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		Preferences:       s.Preferences(),
 		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
+		Tunnels:           tunnels,
 		GeneratedAt:       s.now(),
 	}, nil
 }

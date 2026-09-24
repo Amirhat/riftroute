@@ -22,6 +22,10 @@ export function Confirm(arg1) {
   return window['go']['main']['App']['Confirm'](arg1);
 }
 
+export function ConnectTunnel(arg1) {
+  return window['go']['main']['App']['ConnectTunnel'](arg1);
+}
+
 export function CreateBugReport() {
   return window['go']['main']['App']['CreateBugReport']();
 }
@@ -32,6 +36,14 @@ export function DeleteList(arg1) {
 
 export function DeleteProfile(arg1) {
   return window['go']['main']['App']['DeleteProfile'](arg1);
+}
+
+export function DeleteTunnel(arg1) {
+  return window['go']['main']['App']['DeleteTunnel'](arg1);
+}
+
+export function DisconnectTunnel(arg1) {
+  return window['go']['main']['App']['DisconnectTunnel'](arg1);
 }
 
 export function Explain(arg1) {
@@ -106,6 +118,14 @@ export function GetSystemUsers() {
   return window['go']['main']['App']['GetSystemUsers']();
 }
 
+export function GetTunnelEngine() {
+  return window['go']['main']['App']['GetTunnelEngine']();
+}
+
+export function GetTunnels() {
+  return window['go']['main']['App']['GetTunnels']();
+}
+
 export function InstallDaemon() {
   return window['go']['main']['App']['InstallDaemon']();
 }
@@ -116,6 +136,10 @@ export function OpenConfigDialog() {
 
 export function OpenIssuePage() {
   return window['go']['main']['App']['OpenIssuePage']();
+}
+
+export function OpenTunnelProfileDialog() {
+  return window['go']['main']['App']['OpenTunnelProfileDialog']();
 }
 
 export function PanicFlush() {
@@ -160,6 +184,10 @@ export function SaveList(arg1) {
 
 export function SaveProfile(arg1, arg2) {
   return window['go']['main']['App']['SaveProfile'](arg1, arg2);
+}
+
+export function SaveTunnel(arg1) {
+  return window['go']['main']['App']['SaveTunnel'](arg1);
 }
 
 export function SetAutoApply(arg1) {

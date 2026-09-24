@@ -22,7 +22,7 @@ GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
-.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e vet fmt tidy cross clean run-daemon bindings \
+.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e test-tunnels-linux vet fmt tidy cross clean run-daemon bindings \
         dist dist-binaries checksums package-deb package-dmg package-appimage tray
 
 all: build
@@ -67,6 +67,11 @@ test:
 ## provider; host-safe, offline).
 test-e2e:
 	go test -count=1 ./test/e2e/...
+
+## test-tunnels-linux: real Linux check of OpenVPN tunnels in Docker — the
+## Linux daemon, a router, and an old-style OpenVPN server (needs Docker)
+test-tunnels-linux:
+	test/tunnels-linux/run.sh
 
 vet:
 	go vet $(CORE_PKGS)

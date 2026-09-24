@@ -38,6 +38,38 @@ export namespace apiclient {
 		    return a;
 		}
 	}
+	export class TunnelResult {
+	    tunnel?: domain.TunnelStatus;
+	    issues?: config.Issue[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.tunnel = this.convertValues(source["tunnel"], domain.TunnelStatus);
+	        this.issues = this.convertValues(source["issues"], config.Issue);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 
 }
 
@@ -123,6 +155,7 @@ export namespace domain {
 	    proto?: string;
 	    table?: string;
 	    profile?: string;
+	    cloned?: boolean;
 	    profile_id: string;
 	    // Go type: time
 	    created_at: any;
@@ -142,6 +175,7 @@ export namespace domain {
 	        this.proto = source["proto"];
 	        this.table = source["table"];
 	        this.profile = source["profile"];
+	        this.cloned = source["cloned"];
 	        this.profile_id = source["profile_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
@@ -418,6 +452,7 @@ export namespace domain {
 	    proto?: string;
 	    table?: string;
 	    profile?: string;
+	    cloned?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Route(source);
@@ -434,6 +469,7 @@ export namespace domain {
 	        this.proto = source["proto"];
 	        this.table = source["table"];
 	        this.profile = source["profile"];
+	        this.cloned = source["cloned"];
 	    }
 	}
 	export class DiffEntry {
@@ -1025,6 +1061,89 @@ export namespace domain {
 	        this.port = source["port"];
 	    }
 	}
+	export class TunnelBlocked {
+	    route: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelBlocked(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.route = source["route"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class TunnelStatus {
+	    name: string;
+	    type: string;
+	    via: string;
+	    routes: string[];
+	    auto_connect: boolean;
+	    username?: string;
+	    has_password: boolean;
+	    needs_auth: boolean;
+	    servers: string[];
+	    ignored?: string[];
+	    blocked?: TunnelBlocked[];
+	    state: string;
+	    detail?: string;
+	    iface?: string;
+	    local_ip?: string;
+	    server?: string;
+	    // Go type: time
+	    since?: any;
+	    last_error?: string;
+	    bytes_in: number;
+	    bytes_out: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.via = source["via"];
+	        this.routes = source["routes"];
+	        this.auto_connect = source["auto_connect"];
+	        this.username = source["username"];
+	        this.has_password = source["has_password"];
+	        this.needs_auth = source["needs_auth"];
+	        this.servers = source["servers"];
+	        this.ignored = source["ignored"];
+	        this.blocked = this.convertValues(source["blocked"], TunnelBlocked);
+	        this.state = source["state"];
+	        this.detail = source["detail"];
+	        this.iface = source["iface"];
+	        this.local_ip = source["local_ip"];
+	        this.server = source["server"];
+	        this.since = this.convertValues(source["since"], null);
+	        this.last_error = source["last_error"];
+	        this.bytes_in = source["bytes_in"];
+	        this.bytes_out = source["bytes_out"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class VPNStatus {
 	    active: boolean;
 	    interfaces: string[];
@@ -1054,6 +1173,7 @@ export namespace domain {
 	    kill_switch: boolean;
 	    kill_switch_notice?: string;
 	    preferences: Preferences;
+	    tunnels?: TunnelStatus[];
 	    // Go type: time
 	    generated_at: any;
 	
@@ -1077,6 +1197,7 @@ export namespace domain {
 	        this.kill_switch = source["kill_switch"];
 	        this.kill_switch_notice = source["kill_switch_notice"];
 	        this.preferences = this.convertValues(source["preferences"], Preferences);
+	        this.tunnels = this.convertValues(source["tunnels"], TunnelStatus);
 	        this.generated_at = this.convertValues(source["generated_at"], null);
 	    }
 	
@@ -1098,6 +1219,91 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
+	export class TunnelInstall {
+	    system: string;
+	    commands?: string[];
+	    note?: string;
+	    url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelInstall(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.system = source["system"];
+	        this.commands = source["commands"];
+	        this.note = source["note"];
+	        this.url = source["url"];
+	    }
+	}
+	export class TunnelEngine {
+	    available: boolean;
+	    path?: string;
+	    version?: string;
+	    problem?: string;
+	    install?: TunnelInstall;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelEngine(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.path = source["path"];
+	        this.version = source["version"];
+	        this.problem = source["problem"];
+	        this.install = this.convertValues(source["install"], TunnelInstall);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class TunnelSpec {
+	    name: string;
+	    type: string;
+	    config?: string;
+	    username?: string;
+	    password?: string;
+	    via: string;
+	    routes: string[];
+	    auto_connect: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelSpec(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.type = source["type"];
+	        this.config = source["config"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.via = source["via"];
+	        this.routes = source["routes"];
+	        this.auto_connect = source["auto_connect"];
+	    }
+	}
+	
 
 }
 
@@ -1141,6 +1347,34 @@ export namespace main {
 	        this.reachable = source["reachable"];
 	        this.version = source["version"];
 	        this.can_manage = source["can_manage"];
+	    }
+	}
+	export class TunnelProfileFile {
+	    path: string;
+	    name: string;
+	    config: string;
+	    servers: string[];
+	    needs_auth: boolean;
+	    ignored: string[];
+	    username: string;
+	    password: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelProfileFile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.config = source["config"];
+	        this.servers = source["servers"];
+	        this.needs_auth = source["needs_auth"];
+	        this.ignored = source["ignored"];
+	        this.username = source["username"];
+	        this.password = source["password"];
+	        this.error = source["error"];
 	    }
 	}
 

@@ -42,3 +42,15 @@ export function fmtBuildMeta(b?: { commit?: string; commit_time?: string; modifi
   if (b.commit_time) parts.push(b.commit_time.slice(0, 10))
   return parts.join(' · ')
 }
+
+// fmtBytes renders a byte count compactly (1.4 MB); binary steps, SI-style labels.
+export function fmtBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024
+    i++
+  }
+  return `${i === 0 ? n : n.toFixed(n < 10 ? 1 : 0)} ${units[i]}`
+}

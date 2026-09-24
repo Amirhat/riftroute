@@ -120,6 +120,8 @@ export interface State {
   kill_switch_notice?: string
   // Absent from daemons that predate update/telemetry preferences.
   preferences?: Preferences
+  // VPN connections RiftRoute runs itself; absent when there are none.
+  tunnels?: TunnelStatus[]
   generated_at: string
 }
 
@@ -362,4 +364,88 @@ export interface ConfigImportResult {
   plan?: Plan
   diff?: Diff
   result?: ApplyResult
+}
+
+export type TunnelState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
+// direct: reach the server around the main VPN; default: through it.
+export type TunnelVia = 'direct' | 'default'
+
+// TunnelStatus mirrors domain.TunnelStatus (never carries the profile or password).
+export interface TunnelStatus {
+  name: string
+  type: string
+  via: TunnelVia
+  routes: string[] | null
+  auto_connect: boolean
+  username?: string
+  has_password: boolean
+  needs_auth: boolean
+  servers: string[] | null
+  ignored?: string[] | null
+  // Routes left out on this network, and why (contains its router, or
+  // another VPN/the system already routes that exact destination).
+  blocked?: TunnelBlocked[] | null
+  state: TunnelState
+  detail?: string
+  iface?: string
+  local_ip?: string
+  server?: string
+  since?: string
+  last_error?: string
+  bytes_in: number
+  bytes_out: number
+}
+
+export interface TunnelBlocked {
+  route: string
+  reason: string
+}
+
+// TunnelSpec mirrors domain.TunnelSpec. Empty config/password on an update
+// keep the saved ones.
+export interface TunnelSpec {
+  name: string
+  type: string
+  config?: string
+  username?: string
+  password?: string
+  via: TunnelVia
+  routes: string[]
+  auto_connect: boolean
+}
+
+// TunnelProfileFile is a .ovpn picked in the native dialog, inlined and parsed.
+// An empty path means the picker was cancelled; error means unusable.
+export interface TunnelProfileFile {
+  path: string
+  name: string
+  config: string
+  servers: string[] | null
+  needs_auth: boolean
+  ignored: string[] | null
+  username: string
+  password: string
+  error: string
+}
+
+export interface TunnelResult {
+  tunnel?: TunnelStatus
+  issues?: ConfigIssue[]
+}
+
+// TunnelEngine mirrors domain.TunnelEngine: whether tunnels can run on this
+// machine and, if not, how the user installs openvpn here.
+export interface TunnelEngine {
+  available: boolean
+  path?: string
+  version?: string
+  problem?: string
+  install?: TunnelInstall
+}
+
+export interface TunnelInstall {
+  system: string
+  commands?: string[] | null
+  note?: string
+  url?: string
 }

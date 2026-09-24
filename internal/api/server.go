@@ -59,6 +59,8 @@ type Server struct {
 	// the daemon can sync profile-derived side state (the Linux per-app cgroup
 	// marker). nil = no-op.
 	onProfilesChanged func(context.Context)
+	// tunnels runs the daemon's own VPN connections (nil disables the API).
+	tunnels TunnelManager
 	// onPanic fires after a panic flush so the daemon can tear down side state
 	// the protocol doesn't own — the wildcard DNS learner and its resolver
 	// files — restoring the DNS baseline alongside routes/PF. nil = no-op.
@@ -169,6 +171,15 @@ func (s *Server) routes() {
 	// Update mode + telemetry level (what RiftRoute may do on the network).
 	s.mux.HandleFunc("GET /preferences", s.handlePreferencesGet)
 	s.mux.HandleFunc("PUT /preferences", s.requireWrite(s.handlePreferencesSet))
+	// Tunnels: VPN connections RiftRoute runs itself (OpenVPN, split only).
+	s.mux.HandleFunc("GET /tunnels", s.handleTunnels)
+	s.mux.HandleFunc("GET /tunnels/engine", s.handleTunnelEngine)
+	s.mux.HandleFunc("POST /tunnels", s.requireWrite(s.handleTunnelSave))
+	s.mux.HandleFunc("DELETE /tunnels/{name}", s.requireWrite(s.handleTunnelDelete))
+	s.mux.HandleFunc("POST /tunnels/{name}/connect", s.requireWrite(s.handleTunnelConnect(true)))
+	s.mux.HandleFunc("POST /tunnels/{name}/disconnect", s.requireWrite(s.handleTunnelConnect(false)))
+	// openvpn's output can name servers and users: the allowed uid only.
+	s.mux.HandleFunc("GET /tunnels/{name}/log", s.requireWrite(s.handleTunnelLog))
 	// Fake-only: toggle the simulated VPN to exercise auto-apply (no-op in prod).
 	s.mux.HandleFunc("POST /debug/vpn", s.requireWrite(s.handleDebugVPN))
 }

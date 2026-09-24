@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
+	"github.com/Amirhat/riftroute/internal/tunnel"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -60,6 +62,7 @@ func run() error {
 		pollInterval time.Duration
 		showVersion  bool
 		allowUIDFlag int
+		fakeNoVPN    bool
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -69,6 +72,7 @@ func run() error {
 	flag.BoolVar(&autoApply, "auto-apply", true, "reconcile automatically on network changes (VPN up/down, etc.)")
 	flag.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "network-change poll interval")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
@@ -160,6 +164,44 @@ func run() error {
 		sdns = &splitdns.FakeManager{} // never touch real system DNS under -provider fake
 	}
 	srv.SetKillSwitch(ks)
+
+	// Tunnels: VPN connections RiftRoute runs itself (split only — they
+	// never take the default route or DNS). Definitions hold secrets, so they
+	// live in a root-only directory beside the DB, not in it.
+	var launcher tunnel.Launcher = &tunnel.ExecLauncher{Output: func(name, line string) {
+		logger.Debug("openvpn", "tunnel", name, "line", line)
+	}}
+	if fp, ok := prov.(*fake.Provider); ok {
+		launcher = &tunnel.FakeLauncher{ // never run a real openvpn under -provider fake
+			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
+			OnDown:  func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
+			Missing: fakeNoVPN,
+		}
+	}
+	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
+	tunnels, err := tunnel.New(tunnel.Options{
+		Dir:      filepath.Join(filepath.Dir(dbPath), "tunnels"),
+		Launcher: launcher,
+		Ifaces:   prov.Interfaces,
+		Resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		},
+		Apply: func(ctx context.Context) error {
+			if rec == nil {
+				return errors.New("daemon still starting")
+			}
+			return rec.ApplyTunnels(ctx)
+		},
+		OnChange: func() { srv.BroadcastState(context.Background()) },
+		Log:      logger,
+	})
+	if err != nil {
+		return fmt.Errorf("tunnels: %w", err)
+	}
+	defer tunnels.Shutdown()
+	svc.SetTunnels(tunnels.Inputs, tunnels.List)
+	svc.SetTunnelEngine(launcher.Engine)
+	srv.SetTunnels(tunnels)
 	svc.SetKillSwitchStatus(func() bool {
 		on, _ := ks.Enabled(context.Background())
 		return on
@@ -365,6 +407,7 @@ func run() error {
 	// proxy-pointing entries), so nothing dangles at a stopped proxy. The learner
 	// re-establishes on the next profile change / restart if still wanted.
 	srv.SetOnPanic(func(ctx context.Context) {
+		tunnels.DisconnectAll() // back to baseline: no tunnel, no tunnel routes
 		proxy.SetWildcards(nil)
 		proxy.Stop()
 		lastLearnerReady.Store(false)
@@ -417,7 +460,7 @@ func run() error {
 	// so a single bad snapshot can never crash the daemon (which would kill an
 	// armed watchdog and strand the user).
 	poller := netmon.NewPoller(prov, pollInterval)
-	rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
+	rec = reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
 	go supervise(ctx, logger, "poller", poller.Run)
 	go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
 	go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
@@ -487,10 +530,27 @@ func run() error {
 		}
 	})
 	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
+	// A daemon that died with tunnels up left their routes behind (a server
+	// pin outlives the tunnel's interface). Withdraw them — ungated by
+	// auto-apply, like every tunnel change, and retried if refused for now —
+	// before auto-connect brings tunnels back.
+	go func() {
+		if svc.OwnsTunnelRoutes(ctx) {
+			logger.Info("withdrawing routes left by the previous run's tunnels")
+			tunnels.Resync(ctx)
+		}
+		if ctx.Err() == nil {
+			tunnels.StartAuto()
+		}
+	}()
 
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version,
 		"build", buildinfo.Short(build), "uid", allowUID)
 	serveErr := srv.Serve(ctx, ln)
+
+	// Tunnels first: each withdraws its routes through the protocol on the way
+	// down, which ShutdownResolve then commits.
+	tunnels.Shutdown()
 
 	// Graceful shutdown: resolve any in-flight transactions (commit auto-applied,
 	// roll back unconfirmed) so a clean reboot doesn't trip crash-recovery. An

@@ -4,6 +4,44 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Tunnels: run an OpenVPN connection next to your main VPN.** Connecting a
+  second VPN client used to knock the first one off (Windscribe dropped when
+  OpenVPN Connect came up): the OpenVPN server pushes `redirect-gateway` and its
+  own DNS, which take over everything. RiftRoute can now run the OpenVPN
+  profile itself as a split tunnel — `riftroute tunnel add <name> <profile.ovpn>
+  --route <cidr>…`, or the new **Tunnels** page. Only the networks you list go
+  through it; the server's redirect-gateway, pushed routes, and pushed DNS are
+  ignored, so the main VPN keeps the default route. The tunnel's routes go
+  through the guarded Apply Protocol (visible as `tunnel:<name>` in the routing
+  table and route-explain) and are removed on disconnect, panic, and shutdown.
+  By default the OpenVPN server is reached around the main VPN, like OpenVPN
+  Connect does (`--via default` to go through it). The profile is checked
+  against an allowlist before the root daemon runs it, and the profile and
+  password are kept in a root-only directory, never in the database or API
+  responses.
+  `riftroute tunnel log <name>` shows openvpn's own output, and a connection
+  that can't reach its server says why (e.g. another VPN's firewall). While a
+  tunnel is up, its networks win over exclude profiles, so a wildcard domain
+  that resolves an internal host to a private address can't pull it back out.
+  Profiles made for OpenVPN Connect work against older servers too: the
+  profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
+  openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
+  Works on macOS and Linux. RiftRoute doesn't bundle `openvpn` (2.5 or
+  newer): until you've installed it, the Tunnels page and `riftroute tunnel
+  list` say so up front, with the install command for your system (Homebrew,
+  apt, dnf, pacman, zypper, apk, …), and pick it up without a restart.
+
+### Fixed
+- **Tinted colors in the app.** Faded backgrounds and borders — error and
+  warning boxes, the sidebar's selected item, owner and state badges, hover
+  highlights — rendered with no color at all: the theme colors were plain CSS
+  variables, which Tailwind can't make translucent, so those classes produced
+  no CSS. Theme colors are now RGB channels, and every tint shows in both the
+  light and dark themes.
+
 ## [0.2.5] — 2026-09-24
 
 Fixes the app getting stuck "offline" after you stop and start the daemon, and

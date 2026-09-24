@@ -49,6 +49,39 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 		add("drift", domain.CheckPass, "desired routing matches actual", "")
 	}
 
+	// Tunnels RiftRoute runs itself.
+	if ts := s.TunnelStatuses(ctx); len(ts) > 0 {
+		if s.tunnelEngine != nil {
+			if e := s.tunnelEngine(); !e.Available {
+				fix := "tunnels can't connect until this is fixed"
+				if h := e.Install.Summary(); h != "" {
+					fix = "on " + e.Install.System + ", " + h
+				}
+				add("tunnel-engine", domain.CheckFail, e.Problem, fix)
+			} else {
+				add("tunnel-engine", domain.CheckPass, strings.TrimSpace("OpenVPN "+e.Version+" at "+e.Path), "")
+			}
+		}
+		for _, t := range ts {
+			name := "tunnel:" + t.Name
+			switch {
+			case t.State == domain.TunnelFailed:
+				add(name, domain.CheckFail, t.LastError, "fix the login or profile, then `riftroute tunnel up "+t.Name+"`")
+			case len(t.Blocked) > 0:
+				var bs []string
+				for _, b := range t.Blocked {
+					bs = append(bs, b.Route+" ("+b.Reason+")")
+				}
+				add(name, domain.CheckWarn, "not installed on this network: "+strings.Join(bs, "; "),
+					"narrow those routes, or ignore this while on this network")
+			case t.State == domain.TunnelConnected:
+				add(name, domain.CheckPass, fmt.Sprintf("connected on %s; %d route(s) through it", t.Iface, len(t.Routes)), "")
+			default:
+				add(name, domain.CheckPass, string(t.State), "")
+			}
+		}
+	}
+
 	// Wildcard DNS learner: with *.domain rules configured, subdomain routing
 	// depends on the loopback forwarder being up.
 	if n := s.wildcardRuleCount(); n > 0 {
