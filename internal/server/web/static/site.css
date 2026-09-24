@@ -26,11 +26,18 @@
    PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
    LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
    NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
+   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+   Persian: Vazirmatn (Non-Latin cut, v33.003), Copyright 2015 The Vazirmatn
+   Project Authors (https://github.com/rastikerdar/vazirmatn), licensed under
+   the SIL Open Font License 1.1 — full text at /licenses/vazirmatn-ofl.txt. */
 
 @font-face { font-family: "Go"; src: url("go-regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "Go"; src: url("go-bold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
 @font-face { font-family: "Go Mono"; src: url("go-mono.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+/* Persian letters only (Latin stays in Go); the English page never loads it. */
+@font-face { font-family: "Vazirmatn"; src: url("vazirmatn-nl-regular.woff2") format("woff2"); font-weight: 400; font-display: swap; unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+200C-200F, U+FB50-FDFF, U+FE70-FEFF; }
+@font-face { font-family: "Vazirmatn"; src: url("vazirmatn-nl-bold.woff2") format("woff2"); font-weight: 700; font-display: swap; unicode-range: U+0600-06FF, U+0750-077F, U+08A0-08FF, U+200C-200F, U+FB50-FDFF, U+FE70-FEFF; }
 
 :root {
   --ground: #ffffff;
@@ -80,7 +87,7 @@ body {
   font: 400 1.0625rem/1.6 var(--sans); caret-color: var(--vpn);
   text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;
 }
-[lang="fa"] body { line-height: 1.9; }
+[lang="fa"] body { line-height: 1.9; font-family: "Go", "Vazirmatn", system-ui, -apple-system, "Segoe UI", "SF Arabic", "Noto Sans Arabic", Tahoma, sans-serif; }
 ::selection { background: color-mix(in srgb, var(--vpn) 30%, transparent); color: inherit; }
 a { color: inherit; text-underline-offset: .22em; text-decoration-thickness: 1.5px; }
 a:focus-visible { outline: 3px solid var(--vpn); outline-offset: 4px; border-radius: 6px; }

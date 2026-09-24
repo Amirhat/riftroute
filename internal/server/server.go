@@ -32,7 +32,7 @@ import (
 // Explicit extensions: a stray file in the folder (.DS_Store, an editor's
 // backup) must never ship, let alone under a year-long public cache header.
 //
-//go:embed web/templates/*.html web/static/*.css web/static/*.svg web/static/*.png web/static/*.ttf
+//go:embed web/templates/*.html web/static/*.css web/static/*.svg web/static/*.png web/static/*.ttf web/static/*.woff2 web/licenses/*.txt
 var webFS embed.FS
 
 const (
@@ -169,6 +169,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /fa", s.landing(copyFA))
 	m.HandleFunc("GET /static/{hash}/{file}", s.handleStatic)
 	m.HandleFunc("GET /healthz", s.handleHealth)
+	m.HandleFunc("GET /licenses/{name}", s.handleLicense)
 	m.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, "User-agent: *\nDisallow: /admin\nDisallow: /login\n")
@@ -226,10 +227,33 @@ func (s *Server) landing(c siteCopy) http.HandlerFunc {
 // staticTypes is fixed rather than read from the host's mime database, which
 // varies (and may not know fonts at all).
 var staticTypes = map[string]string{
-	".css": "text/css; charset=utf-8",
-	".svg": "image/svg+xml",
-	".png": "image/png",
-	".ttf": "font/ttf",
+	".css":   "text/css; charset=utf-8",
+	".svg":   "image/svg+xml",
+	".png":   "image/png",
+	".ttf":   "font/ttf",
+	".woff2": "font/woff2",
+}
+
+// licenses are the third-party notices the site's fonts require, served as
+// plain text (linked from site.css).
+var licenses = map[string]string{
+	"vazirmatn-ofl.txt": "web/licenses/Vazirmatn-OFL.txt",
+}
+
+func (s *Server) handleLicense(w http.ResponseWriter, r *http.Request) {
+	name, ok := licenses[r.PathValue("name")]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	b, err := webFS.ReadFile(name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(b)
 }
 
 func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {

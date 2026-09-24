@@ -40,9 +40,11 @@ with a white fork. Violet is never a button or background colour — it means
 - **Go** (Regular 400, Bold 700) for everything; **Go Mono** only for
   addresses, interfaces and domains — never as decoration. Bigelow & Holmes for
   the Go project, BSD-licensed; the notice is at the top of `site.css`.
-- Persian falls back to the platform's Arabic-script face (SF Arabic, Segoe UI,
-  Noto Sans Arabic). *Open:* a self-hosted Persian face (Vazirmatn, OFL) waits
-  on the owner's approval.
+- **Vazirmatn** (Non-Latin cut, v33.003, Regular + Bold woff2, ~22 KB each) for
+  Persian letters, after Go in the `/fa` stack so Latin stays in Go. Limited by
+  `unicode-range` and set only on `html[lang=fa]`, so the English page never
+  loads it. SIL OFL 1.1: notice in `site.css`, full text in
+  `licenses/Vazirmatn-OFL.txt`, served at `/licenses/vazirmatn-ofl.txt`.
 - Display: `h1` `clamp(2.6rem, 1.1rem + 4.9vw, 5.6rem)` (5rem in the
   two-column hero), `-0.035em`, line-height ~1; `h2`
   `clamp(2.1rem, 1.3rem + 2.7vw, 3.6rem)`. Persian headings: no negative

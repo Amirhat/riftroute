@@ -158,6 +158,20 @@ func TestStaticAssetsAreHashedAndImmutable(t *testing.T) {
 	if csp := e.do("GET", "/", nil).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "font-src 'self'") {
 		t.Fatalf("CSP doesn't allow our fonts: %q", csp)
 	}
+	// The Persian face ships with its licence, and only the Persian page
+	// preloads it.
+	if w := e.do("GET", strings.Replace(m[1], "site.css", "vazirmatn-nl-bold.woff2", 1), nil); w.Code != 200 || w.Header().Get("Content-Type") != "font/woff2" {
+		t.Fatalf("vazirmatn: %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	if w := e.do("GET", "/licenses/vazirmatn-ofl.txt", nil); w.Code != 200 || !strings.Contains(w.Body.String(), "SIL Open Font License") {
+		t.Fatalf("font licence: %d", w.Code)
+	}
+	if w := e.do("GET", "/licenses/../server.go", nil); w.Code == 200 {
+		t.Fatal("licence route serves arbitrary files")
+	}
+	if strings.Contains(page, "vazirmatn") || !strings.Contains(e.do("GET", "/fa", nil).Body.String(), "vazirmatn-nl-bold.woff2") {
+		t.Fatal("only the Persian page should preload Vazirmatn")
+	}
 }
 
 func TestHealthz(t *testing.T) {
