@@ -7,54 +7,82 @@
  * a pure variable swap via [data-theme="light"]. Never hardcode a hex in a
  * component — add or reuse a token here.
  *
+ * Each color is stored as space-separated RGB channels (--x-rgb) so Tailwind
+ * can apply opacity modifiers: bg-danger/10 → rgb(var(--danger-rgb) / 0.1). A
+ * hex behind var() can't take an alpha, and such classes generated no CSS.
+ *
  * z-index scale is defined as tokens too (mapped into Tailwind as z-dropdown …
  * z-toast) so runtime overlays never open behind static ones.
  */
 :root,
 [data-theme='dark'] {
-  --bg: #0f1217;
-  --surface: #161b22;
-  --surface-2: #1c232d;
-  --border: #2a3340;
-  --text: #e6edf3;
-  --muted: #8b98a9;
-  --accent: #4f9cf9;
-  --accent-contrast: #0b1220;
-  --success: #3fb950;
-  --warning: #d29922;
-  --danger: #f85149;
-  --vpn: #a371f7;
-  --direct: #3fb950;
-  --owner-system: #8b98a9;
-  --owner-riftroute: #4f9cf9;
-  --owner-vpn: #a371f7;
+  --bg-rgb: 15 18 23; /* #0f1217 */
+  --surface-rgb: 22 27 34; /* #161b22 */
+  --surface-2-rgb: 28 35 45; /* #1c232d */
+  --border-rgb: 42 51 64; /* #2a3340 */
+  --text-rgb: 230 237 243; /* #e6edf3 */
+  --muted-rgb: 139 152 169; /* #8b98a9 */
+  --accent-rgb: 79 156 249; /* #4f9cf9 */
+  --accent-contrast-rgb: 11 18 32; /* #0b1220 */
+  --success-rgb: 63 185 80; /* #3fb950 */
+  --warning-rgb: 210 153 34; /* #d29922 */
+  --danger-rgb: 248 81 73; /* #f85149 */
+  --vpn-rgb: 163 113 247; /* #a371f7 */
+  --direct-rgb: 63 185 80; /* #3fb950 */
+  --owner-system-rgb: 139 152 169; /* #8b98a9 */
+  --owner-riftroute-rgb: 79 156 249; /* #4f9cf9 */
+  --owner-vpn-rgb: 163 113 247; /* #a371f7 */
   /* Toggle knob: must contrast with BOTH track states in BOTH themes (a
      surface-colored knob was invisible on the dark OFF track). */
-  --knob: #ffffff;
-  --toggle-off: #3a4656;
+  --knob-rgb: 255 255 255; /* #ffffff */
+  --toggle-off-rgb: 58 70 86; /* #3a4656 */
   color-scheme: dark;
 }
 
 [data-theme='light'] {
-  --bg: #f6f8fa;
-  --surface: #ffffff;
-  --surface-2: #eef1f4;
-  --border: #d0d7de;
-  --text: #1f2328;
-  --muted: #59636e;
-  --accent: #0969da;
-  --accent-contrast: #ffffff;
-  --success: #1a7f37;
-  --warning: #9a6700;
-  --danger: #cf222e;
-  --vpn: #8250df;
-  --direct: #1a7f37;
-  --owner-system: #59636e;
-  --owner-riftroute: #0969da;
-  --owner-vpn: #8250df;
-  --knob: #ffffff;
-  --toggle-off: #aeb8c2;
+  --bg-rgb: 246 248 250; /* #f6f8fa */
+  --surface-rgb: 255 255 255; /* #ffffff */
+  --surface-2-rgb: 238 241 244; /* #eef1f4 */
+  --border-rgb: 208 215 222; /* #d0d7de */
+  --text-rgb: 31 35 40; /* #1f2328 */
+  --muted-rgb: 89 99 110; /* #59636e */
+  --accent-rgb: 9 105 218; /* #0969da */
+  --accent-contrast-rgb: 255 255 255; /* #ffffff */
+  --success-rgb: 26 127 55; /* #1a7f37 */
+  --warning-rgb: 154 103 0; /* #9a6700 */
+  --danger-rgb: 207 34 46; /* #cf222e */
+  --vpn-rgb: 130 80 223; /* #8250df */
+  --direct-rgb: 26 127 55; /* #1a7f37 */
+  --owner-system-rgb: 89 99 110; /* #59636e */
+  --owner-riftroute-rgb: 9 105 218; /* #0969da */
+  --owner-vpn-rgb: 130 80 223; /* #8250df */
+  --knob-rgb: 255 255 255; /* #ffffff */
+  --toggle-off-rgb: 174 184 194; /* #aeb8c2 */
   color-scheme: light;
+}
+
+/* --x is the same color for raw CSS (var(--bg) etc.). Declared wherever a
+   theme applies, so it resolves against that theme's channels. */
+:root,
+[data-theme] {
+  --bg: rgb(var(--bg-rgb));
+  --surface: rgb(var(--surface-rgb));
+  --surface-2: rgb(var(--surface-2-rgb));
+  --border: rgb(var(--border-rgb));
+  --text: rgb(var(--text-rgb));
+  --muted: rgb(var(--muted-rgb));
+  --accent: rgb(var(--accent-rgb));
+  --accent-contrast: rgb(var(--accent-contrast-rgb));
+  --success: rgb(var(--success-rgb));
+  --warning: rgb(var(--warning-rgb));
+  --danger: rgb(var(--danger-rgb));
+  --vpn: rgb(var(--vpn-rgb));
+  --direct: rgb(var(--direct-rgb));
+  --owner-system: rgb(var(--owner-system-rgb));
+  --owner-riftroute: rgb(var(--owner-riftroute-rgb));
+  --owner-vpn: rgb(var(--owner-vpn-rgb));
+  --knob: rgb(var(--knob-rgb));
+  --toggle-off: rgb(var(--toggle-off-rgb));
 }
 
 /*
