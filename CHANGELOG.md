@@ -30,6 +30,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
   openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
 
+### Fixed
+- **Tinted colors in the app.** Faded backgrounds and borders — error and
+  warning boxes, the sidebar's selected item, owner and state badges, hover
+  highlights — rendered with no color at all: the theme colors were plain CSS
+  variables, which Tailwind can't make translucent, so those classes produced
+  no CSS. Theme colors are now RGB channels, and every tint shows in both the
+  light and dark themes.
+
 ## [0.2.5] — 2026-09-24
 
 Fixes the app getting stuck "offline" after you stop and start the daemon, and
