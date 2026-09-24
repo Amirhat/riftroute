@@ -90,5 +90,7 @@ type State struct {
 	KillSwitchNotice string `json:"kill_switch_notice,omitempty"`
 	// Preferences are the user's update/telemetry choices.
 	Preferences Preferences `json:"preferences"`
-	GeneratedAt time.Time   `json:"generated_at"`
+	// Tunnels are the VPN connections RiftRoute runs itself.
+	Tunnels     []TunnelStatus `json:"tunnels,omitempty"`
+	GeneratedAt time.Time      `json:"generated_at"`
 }

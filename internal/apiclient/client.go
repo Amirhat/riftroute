@@ -691,3 +691,81 @@ func (c *Client) Events(ctx context.Context, handle func(domain.Event)) error {
 	}
 	return ctx.Err()
 }
+
+// --- Tunnels ---
+
+// TunnelResult is the answer to a tunnel save: the saved tunnel plus any
+// warnings (e.g. a route that contains the router).
+type TunnelResult struct {
+	Tunnel *domain.TunnelStatus `json:"tunnel,omitempty"`
+	Issues []config.Issue       `json:"issues,omitempty"`
+}
+
+// Tunnels lists the VPN connections RiftRoute runs itself.
+func (c *Client) Tunnels(ctx context.Context) ([]domain.TunnelStatus, error) {
+	var out []domain.TunnelStatus
+	err := c.do(ctx, http.MethodGet, "/tunnels", nil, &out)
+	return out, err
+}
+
+// SaveTunnel creates or updates a tunnel. Empty Config/Password keep the
+// stored ones. A refused spec returns a *ValidationError.
+func (c *Client) SaveTunnel(ctx context.Context, spec domain.TunnelSpec) (TunnelResult, error) {
+	data, err := json.Marshal(spec)
+	if err != nil {
+		return TunnelResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url("/tunnels"), bytes.NewReader(data))
+	if err != nil {
+		return TunnelResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return TunnelResult{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var out TunnelResult
+	_ = json.Unmarshal(b, &out)
+	if resp.StatusCode >= 400 {
+		if len(out.Issues) > 0 {
+			return out, &ValidationError{Issues: out.Issues}
+		}
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(b, &e)
+		return out, &APIError{StatusCode: resp.StatusCode, Message: e.Error}
+	}
+	return out, nil
+}
+
+// DeleteTunnel disconnects and removes a tunnel.
+func (c *Client) DeleteTunnel(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/tunnels/"+url.PathEscape(name), nil, nil)
+}
+
+// ConnectTunnel starts a tunnel; it connects in the background (poll Tunnels
+// or watch state events for progress).
+func (c *Client) ConnectTunnel(ctx context.Context, name string) (domain.TunnelStatus, error) {
+	var st domain.TunnelStatus
+	err := c.do(ctx, http.MethodPost, "/tunnels/"+url.PathEscape(name)+"/connect", nil, &st)
+	return st, err
+}
+
+// DisconnectTunnel stops a tunnel and waits for it to go down.
+func (c *Client) DisconnectTunnel(ctx context.Context, name string) (domain.TunnelStatus, error) {
+	var st domain.TunnelStatus
+	err := c.do(ctx, http.MethodPost, "/tunnels/"+url.PathEscape(name)+"/disconnect", nil, &st)
+	return st, err
+}
+
+// TunnelLog returns openvpn's recent output for a tunnel.
+func (c *Client) TunnelLog(ctx context.Context, name string) ([]string, error) {
+	var body struct {
+		Lines []string `json:"lines"`
+	}
+	err := c.do(ctx, http.MethodGet, "/tunnels/"+url.PathEscape(name)+"/log", nil, &body)
+	return body.Lines, err
+}

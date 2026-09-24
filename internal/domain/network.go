@@ -46,6 +46,11 @@ type Route struct {
 	Table string `json:"table,omitempty"`
 	// Profile is the owning profile id for managed routes; empty otherwise.
 	Profile string `json:"profile,omitempty"`
+	// Cloned marks a kernel cache entry cloned from another route (macOS
+	// RTF_WASCLONED, e.g. a per-host entry under a VPN's default). Adding a
+	// real route for the same destination replaces it, so it never "occupies"
+	// a destination.
+	Cloned bool `json:"cloned,omitempty"`
 }
 
 // PolicyRule is a policy-routing selector: a Linux `ip rule` entry (Model B) or

@@ -362,6 +362,22 @@ func (p *Provider) SetVPN(up bool) {
 	}
 }
 
+// SetTunnelIface adds (up) or removes a tunnel interface holding addr — the
+// fake tunnel launcher's stand-in for openvpn opening and closing its utun.
+func (p *Provider) SetTunnelIface(name, addr string, up bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.ifaces {
+		if p.ifaces[i].Name == name {
+			p.ifaces = append(p.ifaces[:i], p.ifaces[i+1:]...)
+			break
+		}
+	}
+	if up {
+		p.ifaces = append(p.ifaces, domain.Iface{Name: name, Up: true, Kind: domain.IfaceKindUtun, Addrs: []string{addr + "/24"}, IsVPN: true})
+	}
+}
+
 // --- internals (caller holds p.mu) ---
 
 func (p *Provider) appendRoute(rt domain.Route) {
