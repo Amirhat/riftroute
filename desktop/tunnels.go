@@ -85,6 +85,14 @@ func (a *App) GetTunnels() ([]domain.TunnelStatus, error) {
 	return ts, err
 }
 
+// GetTunnelEngine reports whether tunnels can run on this machine and, if
+// not, how to install openvpn here (the Tunnels page shows it up front).
+func (a *App) GetTunnelEngine() (domain.TunnelEngine, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.TunnelEngine(ctx)
+}
+
 // SaveTunnel creates or updates a tunnel. Validation problems come back in
 // the result's Issues, not as a thrown error.
 func (a *App) SaveTunnel(spec domain.TunnelSpec) (apiclient.TunnelResult, error) {

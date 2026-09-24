@@ -52,6 +52,7 @@ import {
   SaveBugReport,
   OpenIssuePage,
   GetTunnels,
+  GetTunnelEngine,
   SaveTunnel,
   DeleteTunnel,
   ConnectTunnel,
@@ -83,6 +84,7 @@ import type {
   Preferences,
   BugReport,
   TunnelStatus,
+  TunnelEngine,
   TunnelSpec,
   TunnelProfileFile,
   TunnelResult,
@@ -158,6 +160,7 @@ export const api = {
   checkUpdate: () => CheckUpdate() as unknown as Promise<UpdateResult>,
   // Tunnels: VPN connections RiftRoute runs itself (split only).
   tunnels: () => GetTunnels() as unknown as Promise<TunnelStatus[]>,
+  tunnelEngine: () => GetTunnelEngine() as unknown as Promise<TunnelEngine>,
   saveTunnel: (spec: TunnelSpec) =>
     SaveTunnel(spec as unknown as Parameters<typeof SaveTunnel>[0]) as unknown as Promise<TunnelResult>,
   deleteTunnel: (name: string) => DeleteTunnel(name) as Promise<void>,

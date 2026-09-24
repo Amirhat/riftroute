@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { stateKey, useStateQuery } from '../lib/queries'
+import { stateKey, tunnelEngineKey, useStateQuery, useTunnelEngineQuery } from '../lib/queries'
 import { fmtBytes, fmtUptime, friendly } from '../lib/format'
+import { copyText, openURL } from '../lib/system'
 import { Addr, Badge, Card, Dot, Label, Skeleton } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { TunnelEditor } from '../components/TunnelEditor'
-import type { TunnelState, TunnelStatus } from '../types'
+import type { TunnelEngine, TunnelState, TunnelStatus } from '../types'
 
 const stateTone: Record<TunnelState, 'success' | 'warning' | 'danger' | 'muted'> = {
   connected: 'success',
@@ -29,11 +30,17 @@ export function Tunnels() {
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const now = useNow(1000)
+  const engineQ = useTunnelEngineQuery()
+  // An older daemon without the check (or a failed read) must not block
+  // connecting: openvpn's own error still explains what's wrong.
+  const engine = engineQ.data
+  const canConnect = !engine || engine.available
 
   const tunnels = stateQ.data?.tunnels ?? []
   const refresh = () => {
     qc.invalidateQueries({ queryKey: stateKey })
     qc.invalidateQueries({ queryKey: ['routes'] })
+    qc.invalidateQueries({ queryKey: tunnelEngineKey })
   }
 
   async function run(name: string, fn: () => Promise<unknown>) {
@@ -67,8 +74,13 @@ export function Tunnels() {
         )}
       </div>
 
-      {error && <Card className="border-danger/40 bg-danger/5 p-4 text-sm text-danger">{error}</Card>}
-      {notice && <Card className="border-warning/40 bg-warning/5 p-4 text-sm text-warning">{notice}</Card>}
+      {engine && !engine.available && (
+        <EngineBanner engine={engine} checking={engineQ.isFetching} onRecheck={() => engineQ.refetch()} />
+      )}
+      {error && <div className="rounded-xl border border-danger/40 bg-danger/5 p-4 text-sm text-danger">{error}</div>}
+      {notice && (
+        <div className="rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm text-warning">{notice}</div>
+      )}
 
       {stateQ.isLoading ? (
         <Skeleton className="h-40" />
@@ -79,7 +91,8 @@ export function Tunnels() {
             <p className="text-sm text-muted">
               Import an <span className="font-mono">.ovpn</span> profile to reach private networks (say{' '}
               <Addr>192.168.70.0/24</Addr>) while your main VPN carries everything else. RiftRoute runs the{' '}
-              <span className="font-mono">openvpn</span> program itself — the OpenVPN Connect app isn't needed.
+              <span className="font-mono">openvpn</span> program, which you install yourself — the OpenVPN Connect app
+              isn't needed.
             </p>
             <button
               onClick={() => setEditor({ mode: 'new' })}
@@ -96,6 +109,7 @@ export function Tunnels() {
             t={t}
             now={now}
             busy={busy === t.name}
+            canConnect={canConnect}
             onConnect={() => run(t.name, () => api.connectTunnel(t.name))}
             onDisconnect={() => run(t.name, () => api.disconnectTunnel(t.name))}
             onEdit={() => setEditor({ mode: 'edit', tunnel: t })}
@@ -134,10 +148,83 @@ export function Tunnels() {
   )
 }
 
+// EngineBanner explains, before the user tries to connect, that tunnels need
+// the openvpn program and how to install it on this system. RiftRoute never
+// installs it itself; the daemon notices it once it's there.
+function EngineBanner({
+  engine,
+  checking,
+  onRecheck,
+}: {
+  engine: TunnelEngine
+  checking: boolean
+  onRecheck: () => void
+}) {
+  const inst = engine.install
+  const cmds = inst?.commands ?? []
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      setCopied(await copyText(cmds.join('\n')))
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <div role="status" className="rounded-xl border border-warning/40 bg-warning/5 p-4">
+      <div className="space-y-3 text-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h2 className="font-semibold text-warning">{engine.problem || "OpenVPN isn't usable"}</h2>
+            <p className="text-muted">
+              {engine.path ? (
+                <>
+                  RiftRoute found <span className="ltr font-mono">{engine.path}</span> but can't use it.
+                </>
+              ) : (
+                <>
+                  Tunnels run on the <span className="font-mono">openvpn</span> program, which you install yourself.
+                </>
+              )}
+              {cmds.length > 0 && inst?.system ? ` On ${inst.system}, run this in a terminal:` : ''}
+            </p>
+          </div>
+          <button
+            onClick={onRecheck}
+            disabled={checking}
+            className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-sm text-default hover:bg-elevated disabled:opacity-50"
+          >
+            {checking ? 'Checking…' : 'Check again'}
+          </button>
+        </div>
+        {cmds.length > 0 && (
+          <div className="flex items-start gap-2 rounded-lg border border-line bg-surface p-3">
+            <pre className="ltr min-w-0 flex-1 overflow-x-auto font-mono text-sm text-default">{cmds.join('\n')}</pre>
+            <button
+              onClick={copy}
+              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted hover:bg-elevated hover:text-default"
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+        )}
+        {inst?.note && <p className="text-muted">{inst.note}</p>}
+        {inst?.url && (
+          <button onClick={() => openURL(inst.url!)} className="ltr text-accent hover:underline">
+            {inst.url}
+          </button>
+        )}
+        <p className="text-xs text-muted">RiftRoute picks it up as soon as it's installed — no restart needed.</p>
+      </div>
+    </div>
+  )
+}
+
 function TunnelCard({
   t,
   now,
   busy,
+  canConnect,
   onConnect,
   onDisconnect,
   onEdit,
@@ -146,6 +233,7 @@ function TunnelCard({
   t: TunnelStatus
   now: number
   busy: boolean
+  canConnect: boolean
   onConnect: () => void
   onDisconnect: () => void
   onEdit: () => void
@@ -194,7 +282,8 @@ function TunnelCard({
           ) : (
             <button
               onClick={onConnect}
-              disabled={busy}
+              disabled={busy || !canConnect}
+              title={canConnect ? undefined : 'Install OpenVPN first (see above)'}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >
               {busy ? 'Connecting…' : 'Connect'}

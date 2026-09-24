@@ -13,6 +13,7 @@ vi.mock('../lib/api', () => ({
     deleteTunnel: vi.fn(),
     saveTunnel: vi.fn(),
     openTunnelProfile: vi.fn(),
+    tunnelEngine: vi.fn(),
   },
 }))
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>
@@ -53,6 +54,7 @@ function renderView() {
 describe('Tunnels view', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/usr/sbin/openvpn', version: '2.6.14' })
   })
 
   it('shows a connected tunnel with where its traffic goes', async () => {
@@ -185,5 +187,37 @@ describe('Tunnels view — routes left out', () => {
       await screen.findByText(/isn't installed on this network: contains your router 192\.168\.1\.1/),
     ).toBeInTheDocument()
     expect(screen.getByText('192.168.70.0/24')).toBeInTheDocument()
+  })
+
+  it('explains up front how to install openvpn on this system, and holds Connect until it is', async () => {
+    const failed: TunnelStatus = { ...connected, state: 'disconnected', iface: undefined, since: undefined }
+    withTunnels([failed])
+    mockApi.tunnelEngine.mockResolvedValue({
+      available: false,
+      problem: "OpenVPN isn't installed",
+      install: {
+        system: 'Ubuntu 24.04.1 LTS',
+        commands: ['sudo apt install openvpn'],
+      },
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    renderView()
+
+    expect(await screen.findByText("OpenVPN isn't installed")).toBeInTheDocument()
+    expect(screen.getByText(/On Ubuntu 24\.04\.1 LTS, run this in a terminal/)).toBeInTheDocument()
+    expect(screen.getByText('sudo apt install openvpn')).toBeInTheDocument()
+    const connect = screen.getByRole('button', { name: 'Connect' })
+    expect(connect).toBeDisabled()
+    expect(connect).toHaveAttribute('title', 'Install OpenVPN first (see above)')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('sudo apt install openvpn'))
+
+    // Installed meanwhile: checking again clears the banner and frees Connect.
+    mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/usr/sbin/openvpn', version: '2.6.14' })
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(screen.queryByText("OpenVPN isn't installed")).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Connect' })).toBeEnabled()
   })
 })

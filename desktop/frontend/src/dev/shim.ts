@@ -118,6 +118,7 @@ const App = {
     return Promise.resolve()
   },
   GetTunnels: () => req('GET', '/tunnels').then((b) => b ?? []),
+  GetTunnelEngine: () => req('GET', '/tunnels/engine'),
   SaveTunnel: (spec: unknown) => issuesAreResults(req('POST', '/tunnels', spec)),
   DeleteTunnel: (n: string) => req('DELETE', `/tunnels/${encodeURIComponent(n)}`).then(() => undefined),
   ConnectTunnel: (n: string) => req('POST', `/tunnels/${encodeURIComponent(n)}/connect`, {}),

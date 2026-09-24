@@ -118,6 +118,10 @@ export function GetSystemUsers() {
   return window['go']['main']['App']['GetSystemUsers']();
 }
 
+export function GetTunnelEngine() {
+  return window['go']['main']['App']['GetTunnelEngine']();
+}
+
 export function GetTunnels() {
   return window['go']['main']['App']['GetTunnels']();
 }

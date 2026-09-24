@@ -65,6 +65,8 @@ export function GetSystemApps():Promise<Array<sysinfo.App>>;
 
 export function GetSystemUsers():Promise<Array<sysinfo.User>>;
 
+export function GetTunnelEngine():Promise<domain.TunnelEngine>;
+
 export function GetTunnels():Promise<Array<domain.TunnelStatus>>;
 
 export function InstallDaemon():Promise<void>;

@@ -432,3 +432,20 @@ export interface TunnelResult {
   tunnel?: TunnelStatus
   issues?: ConfigIssue[]
 }
+
+// TunnelEngine mirrors domain.TunnelEngine: whether tunnels can run on this
+// machine and, if not, how the user installs openvpn here.
+export interface TunnelEngine {
+  available: boolean
+  path?: string
+  version?: string
+  problem?: string
+  install?: TunnelInstall
+}
+
+export interface TunnelInstall {
+  system: string
+  commands?: string[] | null
+  note?: string
+  url?: string
+}
