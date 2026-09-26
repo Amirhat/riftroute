@@ -399,6 +399,9 @@ export interface TunnelStatus {
   // Routes left out on this network, and why (contains its router, or
   // another VPN/the system already routes that exact destination).
   blocked?: TunnelBlocked[] | null
+  // Installed, but an app rule of an include profile still sends that app's
+  // traffic for them elsewhere (another VPN).
+  captured?: TunnelBlocked[] | null
   // The daemon can't read this tunnel's saved definition: it can only be
   // deleted (and added again). last_error says why; the other fields are
   // placeholders (via "direct", no routes or servers).

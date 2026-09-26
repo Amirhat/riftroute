@@ -87,6 +87,12 @@ describe('Tunnels view', () => {
     await waitFor(() => expect(mockApi.disconnectTunnel).toHaveBeenCalledWith('infra'))
   })
 
+  it('says when an app rule still sends some traffic past a tunnel route', async () => {
+    withTunnels([{ ...connected, captured: [{ route: '192.168.70.0/24', reason: 'Firefox is sent into utun4 by the profile “work apps”' }] }])
+    renderView()
+    expect(await screen.findByText(/still goes past it/)).toHaveTextContent('Firefox is sent into utun4')
+  })
+
   it('shows why a tunnel failed and offers to connect', async () => {
     withTunnels([
       {

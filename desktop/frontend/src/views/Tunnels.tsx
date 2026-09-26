@@ -556,6 +556,11 @@ function TunnelCard({
                   <span className="ltr font-mono">{r}</span> isn't installed on this network: {why}.
                 </p>
               ))}
+              {(t.captured ?? []).map((c) => (
+                <p key={'cap-' + c.route} className="mt-1.5 text-xs text-warning">
+                  <span className="ltr font-mono">{c.route}</span> is installed, but some traffic still goes past it: {c.reason}.
+                </p>
+              ))}
             </>
           )}
         </div>
