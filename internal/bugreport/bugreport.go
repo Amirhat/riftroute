@@ -7,6 +7,7 @@ package bugreport
 
 import (
 	"fmt"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -109,7 +110,44 @@ func NewRedactor(in Input) *redact.Redactor {
 	for _, ev := range in.Audit {
 		r.Add(redact.Profile, ev.Profile)
 	}
+	// Tunnels RiftRoute runs: names, logins and servers turn up in doctor
+	// checks, openvpn's output and log lines. (A tunnel's status never holds
+	// its password or profile text.) The doctor names tunnels even when the
+	// daemon's state couldn't be read.
+	for _, t := range in.State.Tunnels {
+		r.Add(redact.Tunnel, t.Name)
+		r.Add(redact.User, t.Username)
+		for _, s := range append([]string{t.Server}, t.Servers...) {
+			r.Add(redact.Server, serverHost(s))
+		}
+	}
+	for _, ch := range in.Doctor.Checks {
+		if n, ok := strings.CutPrefix(ch.Name, "tunnel:"); ok {
+			r.Add(redact.Tunnel, n)
+		}
+	}
 	return r
+}
+
+// serverHost returns the host of a tunnel server as the daemon reports it:
+// "host:port/proto" (a profile's remote) or "ip:port" (the one in use), with
+// IPv6 addresses unbracketed.
+func serverHost(s string) string {
+	s, _, _ = strings.Cut(s, "/")
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		return ap.Addr().String()
+	}
+	if i := strings.LastIndexByte(s, ':'); i > 0 && isNumeric(s[i+1:]) {
+		if host := s[:i]; !strings.Contains(host, ":") || isAddr(host) {
+			return host
+		}
+	}
+	return s
+}
+
+func isAddr(s string) bool {
+	_, err := netip.ParseAddr(s)
+	return err == nil
 }
 
 // GenericIface reports whether an interface name is generic (en0, utun4)

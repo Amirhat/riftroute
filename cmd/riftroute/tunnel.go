@@ -155,7 +155,7 @@ func tunnelAddCmd() *cobra.Command {
 			if _, err := findTunnel(cmd.Context(), args[0]); err == nil && !replace {
 				return fmt.Errorf("a tunnel named %q already exists — change it with `riftroute tunnel edit %s`, or pass --replace", args[0], args[0])
 			}
-			text, creds, err := readProfile(args[1])
+			text, creds, err := readProfile(cmd, args[1])
 			if err != nil {
 				return err
 			}
@@ -214,7 +214,7 @@ func tunnelEditCmd() *cobra.Command {
 				Username: f.username,
 			}
 			if profile != "" {
-				text, creds, err := readProfile(profile)
+				text, creds, err := readProfile(cmd, profile)
 				if err != nil {
 					return err
 				}
@@ -341,13 +341,25 @@ func tunnelRmCmd() *cobra.Command {
 }
 
 // readProfile reads a .ovpn and inlines the files it references — as the
-// user running the CLI, so it can only pull in files that user can read.
-func readProfile(path string) (string, *tunnel.Creds, error) {
-	data, err := os.ReadFile(path)
+// user running the CLI, and only from the profile's own folder — and lists
+// the files it read, so the user sees everything the import pulled in.
+func readProfile(cmd *cobra.Command, path string) (string, *tunnel.Creds, error) {
+	text, err := tunnel.ReadProfileFile(path)
 	if err != nil {
 		return "", nil, err
 	}
-	return tunnel.InlineFiles(string(data), filepath.Dir(path), os.ReadFile)
+	res, err := tunnel.InlineFiles(text, filepath.Dir(path))
+	if err != nil {
+		return "", nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(res.Files) > 0 {
+		w := cmd.ErrOrStderr()
+		fmt.Fprintf(w, "inlined %d file(s) the profile refers to:\n", len(res.Files))
+		for _, f := range res.Files {
+			fmt.Fprintf(w, "  %s\n", f)
+		}
+	}
+	return res.Config, res.Creds, nil
 }
 
 // askCreds fills in the username/password, prompting on a terminal.

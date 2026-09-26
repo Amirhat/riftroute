@@ -50,12 +50,23 @@ func openDefStore(dir string) (*defStore, error) {
 
 func (s *defStore) path(name string) string { return filepath.Join(s.dir, name+".json") }
 
+// list returns the readable definitions, skipping broken ones (see scan).
 func (s *defStore) list() ([]*def, error) {
+	defs, _, err := s.scan()
+	return defs, err
+}
+
+// scan returns every readable definition, sorted by name, and — separately —
+// the ones that can't be read or decoded, by tunnel name. One bad file must
+// not take the rest down with it: the daemon (routing, the kill switch)
+// starts without that tunnel instead of refusing to start at all. err is only
+// for a directory that can't be read; logging the broken ones is the
+// caller's job.
+func (s *defStore) scan() (defs []*def, broken map[string]error, err error) {
 	ents, err := os.ReadDir(s.dir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []*def
 	for _, e := range ents {
 		name, ok := strings.CutSuffix(e.Name(), ".json")
 		if !ok || !ValidName(name) {
@@ -63,12 +74,16 @@ func (s *defStore) list() ([]*def, error) {
 		}
 		d, err := s.get(name)
 		if err != nil {
-			return nil, fmt.Errorf("tunnel %s: %w", name, err)
+			if broken == nil {
+				broken = map[string]error{}
+			}
+			broken[name] = err
+			continue
 		}
-		out = append(out, d)
+		defs = append(defs, d)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+	return defs, broken, nil
 }
 
 func (s *defStore) get(name string) (*def, error) {

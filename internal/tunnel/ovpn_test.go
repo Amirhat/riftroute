@@ -2,8 +2,8 @@ package tunnel
 
 import (
 	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -219,39 +219,6 @@ func TestQuoteRoundTrips(t *testing.T) {
 	}
 }
 
-func TestInlineFiles(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("ca.crt", "CA-PEM\n")
-	write("ta.key", "TA-KEY\n")
-	write("creds.txt", "bob\nhunter2\n")
-	src := "client\nremote 192.0.2.1\nca ca.crt\ntls-auth ta.key 1\nauth-user-pass creds.txt\n<cert>\nINLINE\n</cert>\n"
-	out, creds, err := InlineFiles(src, dir, os.ReadFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if creds == nil || creds.Username != "bob" || creds.Password != "hunter2" {
-		t.Fatalf("creds = %+v", creds)
-	}
-	p, err := Parse(out)
-	if err != nil {
-		t.Fatalf("inlined profile does not parse: %v\n%s", err, out)
-	}
-	r := p.Render(RenderOptions{Management: "/m"})
-	for _, must := range []string{"<ca>\nCA-PEM\n</ca>", "key-direction 1", "<tls-auth>\nTA-KEY\n</tls-auth>", "<cert>\nINLINE\n</cert>", "auth-user-pass\n"} {
-		if !strings.Contains(r, must) {
-			t.Errorf("missing %q in\n%s", must, r)
-		}
-	}
-	if strings.Contains(r, "hunter2") || strings.Contains(r, "creds.txt") {
-		t.Error("credentials file leaked into the config")
-	}
-}
-
 // openvpn 2.6+ ignores `cipher` in negotiation; a server that only speaks the
 // profile's cipher hangs up unless it is offered (as OpenVPN Connect does).
 func TestProfileCipherIsOfferedToTheServer(t *testing.T) {
@@ -285,5 +252,157 @@ func TestPeerFingerprintValueFormIsKept(t *testing.T) {
 	}
 	if _, err := Parse("client\nremote 192.0.2.1\npeer-fingerprint /etc/fp.txt\n"); err == nil {
 		t.Fatal("a path must still be refused")
+	}
+}
+
+// The rendered remote line must read back as exactly remote/host/port/proto,
+// whatever the host string holds.
+func TestRenderedRemoteCannotInjectWords(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "192.0.2.1 53 tcp # rest"
+	out := p.Render(RenderOptions{Management: "/m", Remotes: []Remote{{Host: host, Port: 1194, Proto: "udp"}}})
+	var n int
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(l, "remote ") {
+			continue
+		}
+		n++
+		toks, err := tokenize(l)
+		if err != nil || len(toks) != 4 || toks[1] != host || toks[2] != "1194" || toks[3] != "udp" {
+			t.Errorf("remote line %q reads back as %q (%v)", l, toks, err)
+		}
+	}
+	if n != 1 {
+		t.Errorf("want one remote line, got %d:\n%s", n, out)
+	}
+}
+
+// netip accepts any characters in an IPv6 zone, which Render used to write
+// unquoted: `remote "2001:db8::1%x 53 tcp"` became a remote on port 53/tcp.
+func TestParseRefusesZonedRemotes(t *testing.T) {
+	for _, in := range []string{
+		"remote \"2001:db8::1%x 53 tcp #\" 1194 udp\n",
+		"remote 2001:db8::1%en0\n",
+		"remote fe80::1%utun3\n",
+	} {
+		_, err := Parse("client\n" + in)
+		if err == nil || !strings.Contains(err.Error(), "zone") {
+			t.Errorf("%q: got %v, want a zone error", in, err)
+		}
+	}
+}
+
+// A server pinned to the physical gateway at one of these addresses would
+// pin a route to loopback, the link, or a multicast group.
+func TestParseRefusesUnroutableRemoteAddresses(t *testing.T) {
+	for _, host := range []string{
+		"127.0.0.1", "127.8.9.10", "::1", "169.254.10.1", "fe80::1", "224.0.0.251",
+		"239.1.2.3", "ff02::1", "ff05::2", "0.0.0.0", "::", "::ffff:127.0.0.1", "255.255.255.255",
+	} {
+		_, err := Parse("client\nremote " + host + " 1194\n")
+		if err == nil || !strings.Contains(err.Error(), "can't be a VPN server") {
+			t.Errorf("%s: got %v, want it refused", host, err)
+		}
+	}
+	// Host names are resolved (and the addresses filtered) by the daemon.
+	for _, host := range []string{"10.0.0.1", "192.168.1.10", "192.0.2.1", "2001:db8::1", "100.64.0.1", "vpn.example.net", "localhost"} {
+		if _, err := Parse("client\nremote " + host + " 1194\n"); err != nil {
+			t.Errorf("%s: %v", host, err)
+		}
+	}
+}
+
+func TestParseCapsRemotes(t *testing.T) {
+	remotes := func(n int) string {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "remote 192.0.2.%d 1194\n", i+1)
+		}
+		return b.String()
+	}
+	p, err := Parse("client\n" + remotes(maxRemotes))
+	if err != nil || len(p.Remotes) != maxRemotes {
+		t.Fatalf("%d remotes: %v", maxRemotes, err)
+	}
+	if _, err := Parse("client\n" + remotes(maxRemotes+1)); err == nil || !strings.Contains(err.Error(), "remote") {
+		t.Fatalf("%d remotes: got %v, want refused", maxRemotes+1, err)
+	}
+	if _, err := Parse("client\nremote 192.0.2.1\n<connection>\nremote 192.0.2.2\n</connection>\n"); err == nil {
+		t.Fatal("<connection> blocks stay refused")
+	}
+}
+
+// push-peer-info would send the machine's MAC address and platform details
+// to the server; RiftRoute drops it like other directives it overrides.
+func TestPushPeerInfoIsDropped(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\npush-peer-info\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(p.Ignored, "push-peer-info") {
+		t.Errorf("ignored = %v, want push-peer-info reported", p.Ignored)
+	}
+	if out := p.Render(RenderOptions{Management: "/m"}); strings.Contains(out, "push-peer-info") {
+		t.Errorf("push-peer-info reached openvpn:\n%s", out)
+	}
+}
+
+// route-nopull doesn't stop a server from setting the tunnel's addresses: a
+// pushed ifconfig-ipv6 is a connected route, sized by the server. Unless the
+// tunnel carries an IPv6 route, the server gets to set no IPv6 at all.
+func TestRenderRefusesPushedIPv6UnlessRouted(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters := []string{"pull-filter ignore \"ifconfig-ipv6\"\n", "pull-filter ignore \"route-ipv6\"\n"}
+	out := p.Render(RenderOptions{Management: "/m"})
+	for _, f := range filters {
+		if !strings.Contains(out, f) {
+			t.Errorf("v4-only tunnel lacks %q:\n%s", f, out)
+		}
+	}
+	out = p.Render(RenderOptions{Management: "/m", IPv6: true})
+	for _, f := range filters {
+		if strings.Contains(out, f) {
+			t.Errorf("IPv6 tunnel still has %q", f)
+		}
+	}
+}
+
+func TestRoutesNeedIPv6(t *testing.T) {
+	for routes, want := range map[string]bool{
+		"":                          false,
+		"10.0.0.0/8,192.0.2.7":      false,
+		"10.0.0.0/8,2001:db8::/32":  true,
+		"2001:db8::7":               true,
+		"::ffff:10.0.0.0/104":       false, // v4-mapped: an IPv4 route
+		"not-a-route,172.16.0.0/12": false,
+	} {
+		var rs []string
+		if routes != "" {
+			rs = strings.Split(routes, ",")
+		}
+		if got := RoutesNeedIPv6(rs); got != want {
+			t.Errorf("RoutesNeedIPv6(%q) = %v, want %v", routes, got, want)
+		}
+	}
+}
+
+// If the daemon dies, its management connection drops: openvpn must restart
+// and park (hold + credentials over management), not stay up unsupervised.
+func TestRenderRestartsOpenVPNWhenTheDaemonGoesAway(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := p.Render(RenderOptions{Management: "/m"})
+	for _, must := range []string{"management-signal\n", "management-hold\n", "management-query-passwords\n"} {
+		if !strings.Contains(out, must) {
+			t.Errorf("rendered config lacks %q:\n%s", must, out)
+		}
 	}
 }

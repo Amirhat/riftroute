@@ -87,7 +87,7 @@ var directives = map[string]policy{
 	"connect-timeout": keep, "server-poll-timeout": keep, "remote-random": keep,
 	"remote-random-hostname": keep, "explicit-exit-notify": keep,
 	"persist-key": keep, "persist-tun": keep, "persist-remote-ip": keep, "persist-local-ip": keep,
-	"topology": keep, "tun-ipv6": keep, "push-peer-info": keep, "fast-io": keep,
+	"topology": keep, "tun-ipv6": keep, "fast-io": keep,
 	// TLS / crypto
 	"remote-cert-tls": keep, "ns-cert-type": keep, "remote-cert-eku": keep, "remote-cert-ku": keep,
 	"verify-x509-name": keep, "tls-version-min": keep, "tls-version-max": keep,
@@ -116,6 +116,9 @@ var directives = map[string]policy{
 	// RiftRoute runs openvpn itself.
 	"user": ignore, "group": ignore, "auth-retry": ignore, "setenv": ignore, "setenv-safe": ignore,
 	"ignore-unknown-option": ignore, "echo": ignore,
+	// Sends the machine's MAC address and OS details to the server; without
+	// it openvpn still sends the version and cipher support it must.
+	"push-peer-info": ignore,
 	// key material: accepted only inline (a path would be read by root)
 	"ca": inline, "cert": inline, "key": inline, "tls-auth": inline, "tls-crypt": inline,
 	"tls-crypt-v2": inline, "pkcs12": inline, "extra-certs": inline, "crl-verify": inline,
@@ -159,7 +162,13 @@ func allFingerprints(args []string) bool {
 	return true
 }
 
-const maxProfileBytes = 256 << 10
+const (
+	// maxProfileBytes caps a profile, with its files inlined.
+	maxProfileBytes = 512 << 10
+	// maxRemotes bounds the servers a profile lists (each may be resolved and
+	// pinned to the physical gateway).
+	maxRemotes = 32
+)
 
 // Parse sanitizes an OpenVPN client profile. File references must already be
 // inlined (see InlineFiles); the result renders to a config safe to hand to a
@@ -280,6 +289,9 @@ func Parse(text string) (*Profile, error) {
 		case "lport", "bind":
 			continue // the client never needs a fixed local port
 		case "remote":
+			if len(remotes) == maxRemotes {
+				return nil, &ProfileError{Line: ln, Msg: fmt.Sprintf("more than %d remote lines", maxRemotes)}
+			}
 			remotes = append(remotes, struct {
 				ln   int
 				args []string
@@ -323,6 +335,9 @@ func Parse(text string) (*Profile, error) {
 		if len(r.args) == 0 || len(r.args) > 3 || !(IsAddr(r.args[0]) || reHost.MatchString(r.args[0])) {
 			return nil, &ProfileError{Line: r.ln, Msg: "remote needs a host name or IP"}
 		}
+		if err := checkRemoteAddr(r.args[0]); err != "" {
+			return nil, &ProfileError{Line: r.ln, Msg: err}
+		}
 		rem := Remote{Host: r.args[0], Port: defPort, Proto: defProto}
 		if len(r.args) > 1 {
 			n, ok := parsePort(r.args[1:2])
@@ -360,6 +375,25 @@ type RenderOptions struct {
 	Remotes []Remote
 	// Management is the unix socket openvpn listens on for the daemon.
 	Management string
+	// IPv6 lets the server give the tunnel an IPv6 address. Set it only when
+	// the tunnel carries an IPv6 route (see RoutesNeedIPv6): a pushed
+	// ifconfig-ipv6 is a connected route into the tunnel, sized by the server.
+	IPv6 bool
+}
+
+// RoutesNeedIPv6 reports whether any of a tunnel's routes is IPv6 — whether
+// its rendered config should let the server set an IPv6 address.
+func RoutesNeedIPv6(routes []string) bool {
+	for _, r := range routes {
+		a, err := netip.ParseAddr(r)
+		if pfx, perr := netip.ParsePrefix(r); perr == nil {
+			a, err = pfx.Addr(), nil
+		}
+		if err == nil && a.Is6() && !a.Is4In6() {
+			return true
+		}
+	}
+	return false
 }
 
 // Render produces the config handed to openvpn: the allowed directives, then
@@ -381,7 +415,9 @@ func (p *Profile) Render(o RenderOptions) string {
 			}
 			wroteRemotes = true
 			for _, r := range remotes {
-				fmt.Fprintf(&b, "remote %s %d %s\n", r.Host, r.Port, r.Proto)
+				// Quoted like every other argument: Parse refuses odd hosts,
+				// but o.Remotes come from the daemon's resolver.
+				fmt.Fprintf(&b, "remote %s %d %s\n", quote(r.Host), r.Port, quote(r.Proto))
 			}
 		case l.block:
 			fmt.Fprintf(&b, "<%s>\n%s\n</%s>\n", l.name, strings.Trim(l.body, "\n"), l.name)
@@ -395,6 +431,21 @@ func (p *Profile) Render(o RenderOptions) string {
 		}
 	}
 	b.WriteString(p.cipherCompat())
+	// What the server can still push. route-nopull drops pushed routes,
+	// redirect-gateway/-private and DNS settings, and route-noexec keeps
+	// openvpn from installing any route it was given; the pull-filters restate
+	// the ones that matter most. Neither stops the server from setting the
+	// tunnel's own addresses, which the kernel turns into routes of its own:
+	//   - topology subnet + `ifconfig <ip> <netmask>`: a connected route for
+	//     the whole subnet into the tunnel (a 128.0.0.0 mask is half the
+	//     Internet);
+	//   - net30/p2p `ifconfig <ip> <peer>`: a host route to the peer, which
+	//     can be any address (the LAN router, a DNS server);
+	//   - `ifconfig-ipv6 <ip>/<bits>`: a connected route for that prefix.
+	// IPv4 addressing can't be refused (the tunnel needs an address), so the
+	// daemon checks the interface's prefix once openvpn reports CONNECTED.
+	// IPv6 addressing, and pushed IPv6 routes for good measure, are refused
+	// outright unless the tunnel carries an IPv6 route (o.IPv6).
 	b.WriteString(`# --- RiftRoute ---
 route-nopull
 route-noexec
@@ -404,13 +455,21 @@ pull-filter ignore "dhcp-option"
 pull-filter ignore "dns"
 pull-filter ignore "block-outside-dns"
 pull-filter ignore "register-dns"
-script-security 1
+`)
+	if !o.IPv6 {
+		b.WriteString("pull-filter ignore \"ifconfig-ipv6\"\npull-filter ignore \"route-ipv6\"\n")
+	}
+	b.WriteString(`script-security 1
 persist-tun
 auth-nocache
 auth-retry none
 `)
 	fmt.Fprintf(&b, "verb %d\n", min(max(p.verb, 3), 5))
-	fmt.Fprintf(&b, "management %s unix\nmanagement-hold\nmanagement-query-passwords\n", quote(o.Management))
+	// management-signal: if the daemon dies, its management connection drops
+	// and openvpn restarts (SIGUSR1). Held, and asking for credentials over
+	// management, it then waits for a daemon instead of staying connected
+	// with nobody supervising it.
+	fmt.Fprintf(&b, "management %s unix\nmanagement-hold\nmanagement-query-passwords\nmanagement-signal\n", quote(o.Management))
 	return b.String()
 }
 
@@ -570,4 +629,26 @@ func normProto(args []string) (string, bool) {
 func IsAddr(host string) bool {
 	_, err := netip.ParseAddr(host)
 	return err == nil
+}
+
+// checkRemoteAddr refuses an IP-literal remote no VPN server can be at: the
+// daemon pins each server address to the physical gateway, and a pinned route
+// to loopback, the link, a multicast group or "any" is harmful. It also
+// refuses IPv6 zones — netip accepts any characters after the %, and a zone
+// only means something on a link-local address anyway. Host names pass; the
+// daemon resolves them and filters the addresses itself.
+func checkRemoteAddr(host string) string {
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	if a.Zone() != "" {
+		return fmt.Sprintf("remote %q has an IPv6 zone (%%…); use the plain address", host)
+	}
+	a = a.Unmap()
+	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() ||
+		a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return fmt.Sprintf("remote %s is a loopback, link-local, multicast or unspecified address; it can't be a VPN server", host)
+	}
+	return ""
 }
