@@ -1125,8 +1125,12 @@ func (m *Manager) vetAddressing(ctx context.Context, name, iface string, nets []
 		env.protected = m.o.Protected(ctx)
 	}
 	m.mu.Lock()
-	if r := m.rt[name]; r != nil {
-		env.servers = append(append(env.servers, r.servers...), r.bypass...)
+	// Every running tunnel's servers: a peer at another's would carry that
+	// tunnel's connection through this one.
+	for n, r := range m.rt {
+		if n == name || r.sess != nil {
+			env.servers = append(append(env.servers, r.servers...), r.bypass...)
+		}
 	}
 	// Its own routes: on a reconnect they're still on the (persisted)
 	// interface, and macOS doesn't tag them as RiftRoute's.

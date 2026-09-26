@@ -97,9 +97,10 @@ func (s *Server) applyProfiles(ctx context.Context, req applyReq, snapshot []dom
 	opts := s.buildOptions(req, netip.Addr{}) // the build sets the gateway it derived against
 	opts.SnapshotProfiles = snapshot
 	res, _ = s.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		desired, rules, physGW, err := s.svc.DesiredForApply(ctx)
+		desired, rules, physGW, record, err := s.svc.DesiredForApply(ctx)
 		buildErr = err
 		o.UseGateway(physGW)
+		o.OnCommit = record
 		return desired, rules, err
 	}, opts)
 	return res, buildErr
@@ -153,7 +154,15 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
 	// The daemon's tunnels go down before the flush (beforePanic): each one
 	// going down re-applies the survivors' routes, refused while this runs.
-	perr := s.proto.PanicWith(r.Context(), domain.ActorUI, s.beforePanic)
+	// What yielded to them is forgotten first: it describes routes the flush
+	// removes, and the tunnel apply that follows a panic must not put any of
+	// it back.
+	perr := s.proto.PanicWith(r.Context(), domain.ActorUI, func(ctx context.Context) {
+		s.svc.ForgetYielded()
+		if s.beforePanic != nil {
+			s.beforePanic(ctx)
+		}
+	})
 	// Restore the DNS baseline too: stop the wildcard learner and drop its
 	// resolver files (the protocol only owns routes/PF). A dangling resolver
 	// file pointing at a stopped proxy would otherwise break DNS for the domain.

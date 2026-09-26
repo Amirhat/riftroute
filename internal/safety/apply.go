@@ -87,6 +87,12 @@ type Options struct {
 	// a live tunnel's routes with nothing to put them back. The journal
 	// still covers a crash mid-execution.
 	Unguarded bool
+	// OnCommit runs once the change commits — at once when unguarded or
+	// when there was nothing to change, else when its guard window or a
+	// confirm commits it — and never for a dry run, a refusal, a failure
+	// or a rollback. It runs on no lock of the protocol's. For what must
+	// only be recorded once a change really stands.
+	OnCommit func()
 }
 
 // UseGateway points the guardrails and the watchdog at physGW, the physical
@@ -139,6 +145,14 @@ type pendingTx struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	result    domain.TxResult
+	onCommit  func() // Options.OnCommit
+}
+
+// committed runs a change's OnCommit.
+func committed(opts Options) {
+	if opts.OnCommit != nil {
+		opts.OnCommit()
+	}
 }
 
 func (pt *pendingTx) decide(d decision) {
@@ -318,6 +332,7 @@ func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRou
 	}
 
 	if len(plan.Ops) == 0 {
+		committed(opts)
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 
@@ -400,6 +415,7 @@ func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Pla
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
 	if len(plan.Ops) == 0 {
+		committed(opts)
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 	if err := p.supersedePending(); err != nil {
@@ -492,12 +508,13 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 		p.resolved[txID] = domain.TxCommitted
 		p.txmu.Unlock()
 		p.audit(opts.Actor, "confirm", "committed", "unguarded", nil, false)
+		committed(opts)
 		return Result{TxID: txID, Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 
 	// ARM watchdog + commit-confirm and resolve in the background.
 	ctxTx, cancel := context.WithCancel(context.Background())
-	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, ownership: ownership, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
+	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, ownership: ownership, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{}), onCommit: opts.OnCommit}
 	p.register(pt)
 
 	prober := p.newProber()
@@ -561,6 +578,9 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		pt.result = domain.TxCommitted
 		p.clearPending(pt.id) // resolved cleanly → no crash-recovery needed
 		p.audit(actor, "confirm", "committed", "", nil, false)
+		if pt.onCommit != nil {
+			pt.onCommit()
+		}
 	} else {
 		if left, rbErr := p.rollBack(pt); rbErr != nil {
 			// The kernel wasn't fully reverted. The ownership records follow

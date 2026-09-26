@@ -8,6 +8,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/routing"
+	"github.com/Amirhat/riftroute/internal/safety"
 )
 
 // Connecting a tunnel whose network an installed include rule covers: the
@@ -96,5 +97,67 @@ func TestTunnelDisconnectRestoresWhatItsConnectCut(t *testing.T) {
 	}
 	if got := h.kernel(t)["10.70.5.5/32"]; len(got) != 1 || got[0] != "en0" {
 		t.Errorf("exclude route after the disconnect = %v, want it back via en0", got)
+	}
+}
+
+// A panic flushes everything; the tunnel apply that follows it must not put
+// back what earlier applies had made yield to a tunnel.
+func TestPanicForgetsWhatYielded(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	if err := h.prov.AddRule(ctx, domain.ManagedRule{PolicyRule: domain.PolicyRule{
+		Priority: routing.ModelBRulePrio, Selector: "to 10.0.0.0/8", Table: routing.ModelBTable, Family: domain.FamilyV4, Proto: "riftroute",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	h.own(t, domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.70.5.5/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute}, ProfileID: "p1"})
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.setTunnels()
+	if err := h.proto.PanicWith(ctx, domain.ActorUI, func(context.Context) { h.svc.ForgetYielded() }); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := h.prov.ListRules(ctx, domain.FamilyV4)
+	for _, r := range rules {
+		if r.Proto == "riftroute" {
+			t.Errorf("a flushed rule came back: %q", r.Selector)
+		}
+	}
+	if got := h.kernel(t)["10.70.5.5/32"]; len(got) != 0 {
+		t.Errorf("a flushed route came back: %v", got)
+	}
+}
+
+// Only a change that stands is recorded: a dry run (like a refused or rolled
+// back apply) leaves the record alone, so a tunnel disconnect never installs
+// what no apply committed.
+func TestOnlyACommittedApplyIsRecorded(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.st.UpsertProfile(domain.Profile{ID: "p1", Name: "p1", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.9.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+	opts := safety.Options{DryRun: true, Actor: domain.ActorUI}
+	if _, err := h.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		desired, rules, gw, record, err := h.svc.DesiredForApply(ctx)
+		o.UseGateway(gw)
+		o.OnCommit = record
+		return desired, rules, err
+	}, opts); err != nil {
+		t.Fatal(err)
+	}
+	h.setTunnels()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 0 {
+		t.Errorf("a dry run's route was installed: %v", got)
 	}
 }

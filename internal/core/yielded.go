@@ -37,6 +37,10 @@ func (s *Service) loadYielded() yielded {
 	return y
 }
 
+// ForgetYielded drops the record: a panic flushed what it describes, and
+// nothing may put it back.
+func (s *Service) ForgetYielded() { s.saveYielded(yielded{}) }
+
 func (s *Service) saveYielded(y yielded) {
 	if s.store == nil {
 		return

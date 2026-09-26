@@ -331,12 +331,12 @@ func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.Managed
 	return routes, rules, gw, nil
 }
 
-// TunnelsForApply is DesiredTunnelsOnly for a tunnel apply: it also records
-// what now yields to the live tunnels, for the next one to put back.
-func (s *Service) TunnelsForApply(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+// TunnelsForApply is DesiredTunnelsOnly for a tunnel apply. It also returns
+// what yields to the live tunnels, recorded by commit — for the apply's
+// safety.Options.OnCommit — for the next tunnel apply to put back.
+func (s *Service) TunnelsForApply(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, func(), error) {
 	routes, rules, gw, y := s.tunnelsOnly(ctx, owned)
-	s.saveYielded(y)
-	return routes, rules, gw, nil
+	return routes, rules, gw, func() { s.saveYielded(y) }, nil
 }
 
 // tunnelsOnly builds a tunnel apply's desired set. What earlier applies made
@@ -363,10 +363,11 @@ func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) 
 	return routes, tp.RulesBeside(rules), in.GatewayV4, yieldedTo(tp, others, rules, routes)
 }
 
-// DesiredForApply is DesiredManaged for a full apply: it also records what
-// the profiles' set gives up to the live tunnels, for a later tunnel apply
-// to put back once they're gone.
-func (s *Service) DesiredForApply(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+// DesiredForApply is DesiredManaged for a full apply. It also returns what
+// the profiles' set gives up to the live tunnels, recorded by commit — for
+// the apply's safety.Options.OnCommit: only a change that stands may be put
+// back later (never a dry run's, a refused or a rolled-back one's).
+func (s *Service) DesiredForApply(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, func(), error) {
 	var profiles []domain.Profile
 	if s.store != nil {
 		profiles, _ = s.store.ListProfiles()
@@ -374,16 +375,17 @@ func (s *Service) DesiredForApply(ctx context.Context) ([]domain.ManagedRoute, [
 	in := s.profileInput(ctx, profiles)
 	routes, rules, err := routing.BuildDesired(in)
 	if err != nil {
-		return routes, rules, in.GatewayV4, err
+		return routes, rules, in.GatewayV4, nil, err
 	}
 	// The same set as if no tunnel were up: what yielded is the difference.
 	bare := in
 	bare.Tunnels, bare.Occupied = nil, nil
 	bareRoutes, bareRules, err := routing.BuildDesired(bare)
-	if err == nil {
-		s.saveYielded(yieldedTo(routing.PlanTunnels(in), bareRoutes, bareRules, routes))
+	if err != nil {
+		return routes, rules, in.GatewayV4, nil, nil // nothing to record
 	}
-	return routes, rules, in.GatewayV4, nil
+	y := yieldedTo(routing.PlanTunnels(in), bareRoutes, bareRules, routes)
+	return routes, rules, in.GatewayV4, func() { s.saveYielded(y) }, nil
 }
 
 // TunnelsActive reports whether a tunnel is running, or has routes recorded
