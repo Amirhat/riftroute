@@ -75,16 +75,34 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	var req applyReq
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req)
 
-	desired, rules, physGW, err := s.svc.DesiredManaged(r.Context())
+	res, err := s.applyProfiles(r.Context(), req, nil)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	// The outcome (committed / failed / refused-with-violations / pending) is
 	// encoded in res; the request itself succeeded, so always 200.
-	res, _ := s.proto.Apply(r.Context(), desired, rules, s.buildOptions(req, physGW))
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, res)
+}
+
+// applyProfiles applies the desired state of the enabled profiles (and the
+// tunnels), derived under the apply lock (safety.Protocol.ApplyBuilt): a set
+// derived before waiting for it would undo a tunnel transition that landed in
+// between. snapshot is the pre-change profile set for the pre-apply snapshot
+// (Options.SnapshotProfiles; nil reads the store). buildErr reports that
+// desired state couldn't be derived, so nothing was applied — each handler
+// reports that its own way; every other outcome is in res.
+func (s *Server) applyProfiles(ctx context.Context, req applyReq, snapshot []domain.Profile) (res safety.Result, buildErr error) {
+	opts := s.buildOptions(req, netip.Addr{}) // the build sets the gateway it derived against
+	opts.SnapshotProfiles = snapshot
+	res, _ = s.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		desired, rules, physGW, err := s.svc.DesiredManaged(ctx)
+		buildErr = err
+		o.UseGateway(physGW)
+		return desired, rules, err
+	}, opts)
+	return res, buildErr
 }
 
 func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
@@ -182,14 +200,11 @@ func (s *Server) handleProfileToggle(enable bool) http.HandlerFunc {
 			return
 		}
 		// Reconcile to the new enabled set (non-interactive; guard kept).
-		desired, rules, physGW, err := s.svc.DesiredManaged(r.Context())
+		res, err := s.applyProfiles(r.Context(), applyReq{Yes: true}, prior)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		opts := s.buildOptions(applyReq{Yes: true}, physGW)
-		opts.SnapshotProfiles = prior
-		res, _ := s.proto.Apply(r.Context(), desired, rules, opts)
 		s.BroadcastState(r.Context())
 		writeJSON(w, http.StatusOK, res)
 	}
@@ -397,7 +412,7 @@ func (s *Server) handleProfileSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notifyProfilesChanged(r.Context())
-	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	res, derr := s.applyProfiles(r.Context(), applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, prior)
 	if derr != nil {
 		// The profile IS saved; only the follow-up reconcile failed (e.g. include
 		// mode with no live tunnel). Broadcast so clients show the saved profile,
@@ -408,9 +423,6 @@ func (s *Server) handleProfileSave(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	opts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
-	opts.SnapshotProfiles = prior
-	res, _ := s.proto.Apply(r.Context(), desired, rules, opts)
 	resp.Result = &res
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, resp)
@@ -434,7 +446,7 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notifyProfilesChanged(r.Context())
-	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	res, derr := s.applyProfiles(r.Context(), applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, prior)
 	if derr != nil {
 		// The profile IS deleted; only the follow-up reconcile failed. Broadcast so
 		// clients drop the stale profile, and report the partial success as such.
@@ -442,9 +454,6 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, ConfigResp{ApplyError: derr.Error()})
 		return
 	}
-	opts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
-	opts.SnapshotProfiles = prior
-	res, _ := s.proto.Apply(r.Context(), desired, rules, opts)
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, ConfigResp{Result: &res})
 }
@@ -530,7 +539,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.notifyProfilesChanged(r.Context())
-	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	res, derr := s.applyProfiles(r.Context(), applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, prior)
 	if derr != nil {
 		// The config IS persisted; only the follow-up reconcile failed. Report the
 		// partial success as such instead of a bare error.
@@ -539,9 +548,6 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	cfgOpts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
-	cfgOpts.SnapshotProfiles = prior
-	res, _ := s.proto.Apply(r.Context(), desired, rules, cfgOpts)
 	resp.Result = &res
 	// Apply + persist per-domain resolver selection (split-DNS) alongside the
 	// routes, so a declarative apply and the Settings editor stay in sync and the
@@ -895,16 +901,13 @@ func (s *Server) handleSnapshotRestore(w http.ResponseWriter, r *http.Request) {
 	s.notifyProfilesChanged(r.Context())
 
 	resp := ConfigResp{}
-	desired, rules, physGW, derr := s.svc.DesiredManaged(r.Context())
+	res, derr := s.applyProfiles(r.Context(), applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, prior)
 	if derr != nil {
 		s.BroadcastState(r.Context())
 		resp.ApplyError = derr.Error()
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	restoreOpts := s.buildOptions(applyReq{Yes: isTrue(r.URL.Query().Get("yes"))}, physGW)
-	restoreOpts.SnapshotProfiles = prior
-	res, _ := s.proto.Apply(r.Context(), desired, rules, restoreOpts)
 	resp.Result = &res
 	s.BroadcastState(r.Context())
 	writeJSON(w, http.StatusOK, resp)
