@@ -63,6 +63,7 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 | Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark; macOS PF match on uid/user) |
 | Lists | Inline static + subscribable remote lists (HTTPS-only, size-capped, checksummed, never executed) |
 | Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails |
+| Tunnels | Run an OpenVPN profile as a split tunnel next to your main VPN — only listed networks go through it; the server can't take the default route or DNS |
 | Kill switch | Default-drop egress fence (nftables on Linux / pf on macOS) with a reconnect allow-list |
 | Diagnostics | `doctor` battery, IPv6 + DNS **leak detector**, desired-vs-actual **drift**, conflict/overlap detection, MTU/blackhole check |
 | Observability | Live **flow monitor** (which connections go via VPN vs direct), route-explain (LPM simulator), audit timeline, `watch` TUI |
@@ -197,6 +198,102 @@ the first hit. **If you depend on a specific subdomain, add it as its own exact
 guaranteed, immediate coverage. Wildcard subdomain learning is available on
 macOS (scoped resolver files) and Linux (systemd-resolved).
 
+### Tunnels — an OpenVPN connection next to your main VPN
+
+Running a second VPN client usually knocks the first one off: the server pushes
+`redirect-gateway` (a pair of `0/1` + `128/1` routes that out-rank the other
+VPN's default route) and its own DNS. RiftRoute can run the OpenVPN connection
+itself as a **split tunnel** instead, so a VPN that already carries everything
+(Windscribe, …) stays up and only the networks you list go through OpenVPN.
+
+Tunnels run on the `openvpn` program (2.5 or newer) — not the OpenVPN Connect
+app, which doesn't include it:
+
+- **macOS: nothing to install.** RiftRoute ships its own openvpn (OpenVPN 2.6,
+  built from source — see [THIRD_PARTY.md](THIRD_PARTY.md)) in the app and the
+  release tarballs, and installing the daemon — the app's **Install** button,
+  or `sudo riftroute daemon install` — puts it beside the daemon, and updates
+  keep it in step. Homebrew's openvpn is not used (why: below). If it's
+  missing — a daemon updated by an older release's updater, which knew only
+  the daemon — **Check for updates** on the Tunnels page (or `riftroute update
+  check`) installs it from the newest signed release, even with updates off;
+  reinstalling the daemon from a current release puts it in place too.
+- **Linux:** install your distribution's package (RiftRoute's `.deb`
+  recommends it, so apt installs it alongside by default):
+
+| System | Install |
+|---|---|
+| Debian, Ubuntu, Mint | `sudo apt install openvpn` |
+| Fedora | `sudo dnf install openvpn` |
+| Rocky, Alma, CentOS Stream | `sudo dnf install epel-release && sudo dnf install openvpn` |
+| Arch, Manjaro | `sudo pacman -S openvpn` |
+| openSUSE | `sudo zypper install openvpn` |
+| Alpine | `sudo apk add openvpn` |
+
+You don't need to look this up: until openvpn is usable, the **Tunnels** page
+and `riftroute tunnel list` say so and show what to do on your system, and the
+daemon picks it up as soon as it's there — no restart.
+
+```bash
+riftroute tunnel add infra ~/Downloads/office.ovpn \
+  --route 192.168.70.0/24 --route 192.168.72.11 --connect
+riftroute tunnel list       # state, interface, server, routes
+riftroute tunnel down infra # disconnect; its routes are removed
+riftroute tunnel log infra  # openvpn's own output — why it won't connect
+```
+
+Or use the **Tunnels** page in the app. How it works:
+
+- The daemon runs the `openvpn` program (not the OpenVPN Connect app) with
+  `route-noexec` and the server's `redirect-gateway`, pushed routes, and pushed
+  DNS filtered out — the tunnel never touches your default route or DNS.
+- When it connects, RiftRoute installs **only your routes** into its interface,
+  through the same guarded Apply Protocol as profiles (they show as
+  `tunnel:<name>` in the routing table and in `route explain`). They're removed
+  when it disconnects, on `panic`, and when the daemon stops.
+- `--via direct` (default) pins the OpenVPN server's address to your router, so
+  the tunnel's own connection goes around the main VPN, like OpenVPN Connect
+  does; `--via default` sends it through the main VPN instead. **A main VPN
+  with its own firewall blocks the direct path** — Windscribe's firewall, for
+  example, drops everything outside its tunnel (exclude profiles too). Let the
+  server through there (Windscribe: split tunneling → exclude its IP), or set
+  that firewall to manual and use RiftRoute's kill switch instead. A connection
+  stuck in `tcp_connect` says so in `riftroute tunnel list`.
+- A tunnel's networks win over exclude profiles: while it's up, an exclude
+  rule can't pull a host inside them back out (e.g. `*.example.com` resolving
+  `gitlab.example.com` to `192.168.70.42`, which sits behind the tunnel).
+- A route that contains your current router (say `192.168.0.0/16` on a
+  `192.168.1.x` Wi-Fi) is left out on that network — it would cut you off —
+  and so is one for a destination another VPN or the system already routes
+  (the kernel keeps one route per destination, and RiftRoute never takes over
+  routes it didn't create). Both show as blocked, with the reason; the
+  tunnel's other routes still apply.
+- The profile is checked against an allowlist before a root process sees it:
+  scripts, plugins, OpenSSL engines, and file paths are refused; files it
+  references are inlined by the CLI/app as *you* — only from the profile's
+  folder (keys and certificates also from folders under it; an
+  `auth-user-pass` login file only from right beside the profile, and never a
+  dotfile), and each file read is listed. The profile and password are
+  stored in a root-only (`0700`/`0600`) directory next to the database, never in
+  the database itself, and are never returned by the API.
+- Username/password, certificate, and inline-key profiles work. Not yet:
+  challenge/2FA logins, encrypted private keys, proxies, `<connection>` blocks,
+  TAP tunnels.
+
+`openvpn` runs as root, so the daemon runs only one that nobody but root can
+change: on macOS the copy RiftRoute installs at
+`/Library/PrivilegedHelperTools/riftroute-openvpn`, on Linux the
+distribution's in `/usr/sbin`, `/usr/bin` or `/sbin` — never one found on
+`$PATH` or under `/usr/local`. Symlinks are resolved, and the file and every
+folder above it must be owned by root and writable by no one else; anything
+else is refused, with how to fix it. Homebrew's openvpn is never used: its
+folder belongs to the user who installed Homebrew, so any program running as
+that user could replace it — or a library or OpenSSL config it loads — and
+have it run as root. The macOS build is static (it links only macOS's own
+libraries), has no plugins or OpenSSL engines, reads no `openssl.cnf`, and is
+updated and rolled back together with the daemon. Checking its version (to
+show whether tunnels can run) runs it as `nobody`, not root.
+
 ## CLI
 
 ```
@@ -210,6 +307,7 @@ riftroute watch                  # live TUI
 riftroute profile <enable|disable> <name> [--apply]
 riftroute apply [file] [--dry-run] [--yes]
 riftroute killswitch <on|off|status>
+riftroute tunnel <add|edit|up|down|list|log|rm>   # OpenVPN beside your main VPN
 riftroute list <list|refresh>
 riftroute snapshot ...           # inspect saved snapshots
 riftroute panic                  # flush all managed routes immediately
@@ -313,11 +411,23 @@ release reaches users only once its manifest is signed and published.
 `make dist` cross-compiles CLI+daemon tarballs (darwin/linux × amd64/arm64) and
 writes `checksums.txt`. `make package-deb`, `package-dmg`, `package-appimage`
 build the OS packages. Pushing a `vX.Y.Z` tag runs
-[`.github/workflows/release.yml`](.github/workflows/release.yml): it always
-builds the core + `.deb` + checksums and the AppImage, builds a **signed +
-notarized** `.dmg` when the Apple secrets are present (otherwise an unsigned one),
-and publishes a GitHub Release. The Homebrew formula is bumped from the
-checksums via [`scripts/bump-homebrew.sh`](scripts/bump-homebrew.sh).
+[`.github/workflows/release.yml`](.github/workflows/release.yml): its
+**openvpn** job builds the macOS openvpn first (static, from pinned and
+hash-checked sources — [`scripts/build-openvpn.sh`](scripts/build-openvpn.sh)),
+then it builds the core + `.deb` + checksums (the darwin tarballs carry that
+openvpn) and the AppImage, builds a **signed + notarized** `.dmg` when the Apple
+secrets are present (otherwise an unsigned one), and publishes a GitHub Release
+with the OpenVPN, LZO, LZ4 and OpenSSL source tarballs attached. openvpn is
+required there: if its job fails, nothing is published. The Homebrew formula is
+bumped from the checksums via
+[`scripts/bump-homebrew.sh`](scripts/bump-homebrew.sh).
+
+Locally, `make openvpn` (on a Mac) builds it into `build/openvpn/` — arm64,
+x86_64 and universal, each with its `licenses/`. `make dist` and `make
+package-dmg` take it from there; without it they still build, but **leave
+openvpn out** (macOS tunnels then say it's missing), and with
+`REQUIRE_OPENVPN=1` — as the release sets it — they fail instead. openvpn is
+never packaged without its licenses.
 
 Signing/notarization secrets: `MAC_CERT_P12`, `MAC_CERT_PASSWORD`,
 `MAC_SIGN_IDENTITY`, and `AC_APPLE_ID`/`AC_TEAM_ID`/`AC_PASSWORD`.
@@ -329,6 +439,10 @@ Signing/notarization secrets: `MAC_CERT_P12`, `MAC_CERT_PASSWORD`,
 - Linux netns suite (`test/netns`, `-tags netns`) exercises the real `ip`
   command inside an isolated namespace under CI (apply+confirm, watchdog
   rollback, panic idempotence, Model B include, kill switch, fwmark rule).
+- `make test-tunnels-linux` (needs Docker) runs OpenVPN tunnels for real on
+  Linux: the daemon on Debian behind a full-tunnel "main VPN", a router, and
+  an old-style OpenVPN server — routes, the server pin, pushed-route/DNS
+  filtering, install help, crash recovery.
 - Frontend: `cd desktop/frontend && npm test` (Vitest + jsdom smoke tests).
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the Go tests

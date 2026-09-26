@@ -21,3 +21,11 @@ export function useBuildNotesQuery() {
 export function useRoutesQuery(family: string) {
   return useQuery({ queryKey: routesKey(family), queryFn: () => api.routes(family) })
 }
+
+export const tunnelEngineKey = ['tunnelEngine'] as const
+
+// Whether openvpn is usable changes only when the user installs it; a slow
+// poll notices that without a restart or a click.
+export function useTunnelEngineQuery() {
+  return useQuery({ queryKey: tunnelEngineKey, queryFn: api.tunnelEngine, refetchInterval: 15_000 })
+}

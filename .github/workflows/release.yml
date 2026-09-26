@@ -4,6 +4,9 @@ name: Release
 # always built; the signed/notarized macOS .dmg and Linux AppImage are built per
 # OS. Code signing + notarization run only when the corresponding secrets exist
 # (MAC_*/AC_*), so forks and unsigned dry-runs still succeed (Gatekeeper warns).
+# The macOS tarballs and the .dmg ship RiftRoute's own openvpn (the openvpn job).
+# It is required: if it fails, nothing is published (a release without it
+# would leave every new macOS install without tunnels). Never Homebrew's.
 on:
   push:
     tags: ["v*"]
@@ -20,8 +23,70 @@ env:
   GO_VERSION: "1.25.x"
 
 jobs:
+  # RiftRoute's own openvpn for macOS — the daemon runs only a root-owned copy
+  # of it. Static, from pinned and hash-checked sources (scripts/build-openvpn.sh):
+  # arm64 + x86_64 for the tarballs, universal for the app. Cached by the
+  # script's hash (it holds every pin). A tag can only restore caches saved on
+  # the default branch, which openvpn.yml does whenever the script changes on
+  # main; a release rebuilds only when that hasn't run.
+  openvpn:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: |
+            build/openvpn
+            build/openvpn-work/sources
+          key: openvpn-${{ runner.os }}-${{ hashFiles('scripts/build-openvpn.sh') }}
+      - name: Build openvpn (arm64, x86_64, universal)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          scripts/build-openvpn.sh arm64 build/openvpn/arm64
+          scripts/build-openvpn.sh x86_64 build/openvpn/x86_64
+          scripts/build-openvpn.sh universal build/openvpn/universal
+      - name: Check it links only macOS's own libraries (cached builds too)
+        run: |
+          for a in arm64 x86_64 universal; do
+            f=build/openvpn/$a/openvpn
+            otool -L "$f"
+            if otool -L "$f" | awk '/^\t/ {print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)'; then
+              echo "::error::$f links a library outside /usr/lib and /System"; exit 1
+            fi
+            codesign --verify --strict "$f"
+          done
+          lipo build/openvpn/universal/openvpn -verify_arch arm64 x86_64
+          # openvpn 2.6 exits 1 after printing its version: check the text.
+          out=$(env -i PATH=/usr/bin:/bin OPENSSL_CONF=/dev/null build/openvpn/arm64/openvpn --version 2>&1 || true)
+          echo "$out"
+          grep -q '^OpenVPN 2\.6\.' <<<"$out" || { echo "::error::openvpn --version didn't identify itself"; exit 1; }
+      # GPLv2 (OpenVPN, LZO): the complete corresponding source — every
+      # tarball the program is built from, LZ4 and OpenSSL included — ships
+      # with every release that ships the binary, from the same place.
+      - name: Collect the sources
+        run: |
+          mkdir -p build/openvpn-sources
+          cp build/openvpn-work/sources/openvpn-*.tar.gz build/openvpn-work/sources/lzo-*.tar.gz \
+            build/openvpn-work/sources/lz4-*.tar.gz build/openvpn-work/sources/openssl-*.tar.gz build/openvpn-sources/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvpn-darwin
+          path: |
+            build/openvpn/arm64
+            build/openvpn/x86_64
+            build/openvpn/universal
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openvpn-sources-dist
+          path: build/openvpn-sources/
+          if-no-files-found: error
+
   # Always-buildable core: cross binaries, checksums, .deb. No secrets needed.
+  # The darwin tarballs carry the openvpn job's binaries.
   core:
+    needs: openvpn
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,15 +94,22 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - name: Resolve VERSION
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }} # never expanded into the script
         run: |
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            V="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            V="$INPUT_VERSION"
           else
             V="${GITHUB_REF_NAME#v}"
           fi
           echo "VERSION=${V#v}" >> "$GITHUB_ENV"
+      - name: Get the macOS openvpn
+        uses: actions/download-artifact@v4
+        with:
+          name: openvpn-darwin
+          path: build/openvpn
       - name: Build cross binaries + checksums
-        run: make dist VERSION="${VERSION:-0.0.0}"
+        run: make dist VERSION="${VERSION:-0.0.0}" REQUIRE_OPENVPN=1
       - name: Build .deb (amd64 + arm64)
         run: |
           ARCH=amd64 VERSION="${VERSION:-0.0.0}" packaging/deb/build-deb.sh
@@ -52,7 +124,9 @@ jobs:
   # macOS GUI → signed/notarized .dmg (signing gated on secrets). Secrets are
   # surfaced as job-level env because the `secrets` context is NOT allowed in an
   # `if:` (that made the whole workflow a startup failure); the step gates on env.
+  # The universal openvpn is bundled and signed with the CLI and daemon.
   dmg:
+    needs: openvpn
     runs-on: macos-latest
     env:
       MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
@@ -82,9 +156,16 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$KEYCHAIN"
+      - name: Get the macOS openvpn
+        uses: actions/download-artifact@v4
+        with:
+          name: openvpn-darwin
+          path: build/openvpn
       - name: Build GUI + package DMG
         env:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
+          OPENVPN_BIN: ${{ github.workspace }}/build/openvpn/universal/openvpn
+          REQUIRE_OPENVPN: "1"
         run: |
           V="${VERSION#v}"
           make desktop-universal VERSION="$V"
@@ -128,16 +209,19 @@ jobs:
           path: dist/*.AppImage
 
   publish:
-    needs: [core, dmg, appimage]
-    # Publish as long as the always-buildable core succeeded; a flaky GUI build
-    # (dmg/appimage) then just omits those artifacts rather than blocking the
-    # whole release. download-artifact fetches whatever succeeded.
-    if: ${{ always() && needs.core.result == 'success' }}
+    needs: [openvpn, core, dmg, appimage]
+    # Publish as long as openvpn and the always-buildable core succeeded; a
+    # flaky GUI build (dmg/appimage) then just omits those artifacts rather
+    # than blocking the whole release. download-artifact fetches whatever
+    # succeeded — only the *-dist artifacts (the openvpn binaries reach users
+    # inside the tarballs and the app; its sources are openvpn-sources-dist).
+    if: ${{ always() && needs.openvpn.result == 'success' && needs.core.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: "*-dist"
       - name: Flatten + final checksums
         run: |
           mkdir -p release

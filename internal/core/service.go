@@ -21,6 +21,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/lists"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/routing"
+	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -48,6 +49,162 @@ type Service struct {
 	// build has since been installed over it (nil = not wired).
 	build    domain.BuildInfo
 	binWatch *buildinfo.Watcher
+	// tunnelInputs/tunnelStatus read the tunnel manager (nil = no tunnels).
+	tunnelInputs func() []routing.TunnelInput
+	tunnelStatus func() []domain.TunnelStatus
+	// tunnelEngine reports whether tunnels can run here at all (openvpn
+	// installed, new enough) and how to install it (doctor).
+	tunnelEngine func() domain.TunnelEngine
+}
+
+// SetTunnelEngine installs the "can tunnels run here" probe (doctor).
+func (s *Service) SetTunnelEngine(fn func() domain.TunnelEngine) { s.tunnelEngine = fn }
+
+// SetTunnels wires the tunnel manager: what its tunnels route, and their
+// status for State.
+func (s *Service) SetTunnels(inputs func() []routing.TunnelInput, status func() []domain.TunnelStatus) {
+	s.tunnelInputs, s.tunnelStatus = inputs, status
+}
+
+// TunnelStatuses returns the tunnels' status, marking the routes left out on
+// the current network and why (see routing.PlanTunnels). Tunnels that aren't
+// running are checked too, so their status says what would be left out. A
+// live tunnel's routes that an installed include-mode app rule still
+// captures are marked too (routing.AppRuleCaptures).
+func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
+	if s.tunnelStatus == nil {
+		return nil
+	}
+	ts := s.tunnelStatus()
+	if len(ts) == 0 {
+		return ts
+	}
+	tunnels := append([]routing.TunnelInput(nil), s.tunnels()...)
+	running := map[string]bool{}
+	for _, t := range tunnels {
+		running[t.Name] = true
+	}
+	for _, t := range ts {
+		if !running[t.Name] {
+			tunnels = append(tunnels, routing.TunnelInput{Name: t.Name, Routes: t.Routes})
+		}
+	}
+	plan := routing.PlanTunnels(s.networkInput(ctx, tunnels, nil))
+	captured := routing.AppRuleCaptures(plan, s.actualManagedRules(ctx))
+	for i := range ts {
+		ts[i].Blocked = append(ts[i].Blocked, plan.Blocked[ts[i].Name]...)
+		ts[i].Captured = append(ts[i].Captured, captured[ts[i].Name]...)
+	}
+	return ts
+}
+
+// networkInput is the network side of desired state: the physical gateways,
+// the tunnels, and — only when there are tunnels, since it costs kernel and
+// resolver reads — what a tunnel route must leave alone: the destinations
+// someone else routes, the resolvers in use, the watchdog's anchors. owned is
+// what RiftRoute owns (its own routes aren't someone else's); nil reads the
+// ownership map.
+func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInput, owned []domain.ManagedRoute) routing.DesiredInput {
+	in := routing.DesiredInput{Platform: s.Platform(), Tunnels: tunnels, Now: s.now()}
+	if gw4, if4, err := s.prov.DefaultGateway(ctx, domain.FamilyV4); err == nil {
+		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
+	}
+	in.GatewayV6, in.PhysIfaceV6, _ = s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	if len(tunnels) > 0 {
+		if owned == nil {
+			owned = s.actualManagedRoutes(ctx)
+		}
+		in.Occupied = s.occupied(ctx, owned)
+		in.DNSServers = s.systemResolvers(ctx)
+		for _, a := range safety.DefaultAnchors(in.GatewayV4) {
+			if addr, err := netip.ParseAddr(a); err == nil {
+				in.Anchors = append(in.Anchors, addr)
+			}
+		}
+	}
+	return in
+}
+
+// TunnelProtected are the addresses a tunnel's own addressing may never
+// cover: the physical gateways, the resolvers in use and the watchdog's
+// anchors. A server that gave its tunnel a network (or a point-to-point
+// peer) holding one of them would pull that traffic into the tunnel.
+func (s *Service) TunnelProtected(ctx context.Context) []netip.Addr {
+	var out []netip.Addr
+	gw4, _, err := s.prov.DefaultGateway(ctx, domain.FamilyV4)
+	if err == nil && gw4.IsValid() {
+		out = append(out, gw4)
+	}
+	if gw6, _, err := s.prov.DefaultGateway(ctx, domain.FamilyV6); err == nil && gw6.IsValid() {
+		out = append(out, gw6.WithZone(""))
+	}
+	out = append(out, s.systemResolvers(ctx)...)
+	for _, a := range safety.DefaultAnchors(gw4) {
+		if addr, err := netip.ParseAddr(a); err == nil {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
+// systemResolvers are the DNS resolvers in use, less the ones the user
+// pointed a domain at (split DNS): those often sit behind a tunnel on purpose
+// — the tunnel's internal zone resolving through its own server.
+func (s *Service) systemResolvers(ctx context.Context) []netip.Addr {
+	cfg, err := s.prov.DNSConfig(ctx)
+	if err != nil {
+		return nil
+	}
+	perDomain := map[netip.Addr]bool{}
+	if s.store != nil {
+		if rs, err := s.store.LoadSplitDNS(); err == nil {
+			for _, r := range rs {
+				if a, err := netip.ParseAddr(r.Resolver); err == nil {
+					perDomain[a.Unmap()] = true
+				}
+			}
+		}
+	}
+	var out []netip.Addr
+	for _, v := range cfg.Servers {
+		if a, err := netip.ParseAddr(v); err == nil && !perDomain[a.Unmap()] {
+			out = append(out, a.Unmap().WithZone(""))
+		}
+	}
+	return out
+}
+
+// occupied maps the main-table destinations someone other than RiftRoute
+// routes (masked CIDR → interface), for routing.TunnelRouteBlock. Kernel
+// clone entries don't count: a real route replaces them. RiftRoute's own
+// routes are told by routing.KernelKey: a v6 pin recorded via fe80::1%en0 is
+// listed without the zone, and counted as someone else's it would be
+// withdrawn by one apply and re-added by the next.
+func (s *Service) occupied(ctx context.Context, owned []domain.ManagedRoute) map[string]string {
+	ours := map[string]bool{}
+	for _, o := range owned {
+		ours[routing.KernelKey(o.Route)] = true
+	}
+	out := map[string]string{}
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, _ := s.prov.ListRoutes(ctx, fam)
+		for _, r := range rs {
+			if r.Table != "" || r.Cloned || r.Owner == domain.OwnerRiftRoute || ours[routing.KernelKey(r)] {
+				continue
+			}
+			if pfx, err := netip.ParsePrefix(r.DstCIDR); err == nil && pfx.Bits() > 0 {
+				out[pfx.Masked().String()] = r.Iface
+			}
+		}
+	}
+	return out
+}
+
+func (s *Service) tunnels() []routing.TunnelInput {
+	if s.tunnelInputs == nil {
+		return nil
+	}
+	return s.tunnelInputs()
 }
 
 // SetBuild records the running binary's identity and the watcher that
@@ -135,34 +292,135 @@ func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, []
 // DesiredFromProfiles builds desired managed routes + rules from an explicit
 // profile set (used by config dry-run before anything is persisted).
 func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
-	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
-	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	in := s.profileInput(ctx, profiles)
+	routes, rules, err := routing.BuildDesired(in)
+	return routes, rules, in.GatewayV4, err
+}
+
+// profileInput is the builder's input for a profile set.
+func (s *Service) profileInput(ctx context.Context, profiles []domain.Profile) routing.DesiredInput {
+	in := s.networkInput(ctx, s.tunnels(), nil)
 	vg4, vi4 := s.resolveVPN(ctx, domain.FamilyV4)
 	vg6, vi6 := s.resolveVPN(ctx, domain.FamilyV6)
-	in := routing.DesiredInput{
-		Profiles:      profiles,
-		Platform:      s.Platform(),
-		PolicyRouting: s.prov.Capabilities().PolicyRouting,
-		Lists:         s.listsMap(),
-		Domains:       s.resolveDomains(ctx, profiles),
-		VPNGatewayV4:  vg4, VPNIfaceV4: vi4,
-		VPNGatewayV6: vg6, VPNIfaceV6: vi6,
-		Now: s.now(),
+	in.Profiles = profiles
+	in.PolicyRouting = s.prov.Capabilities().PolicyRouting
+	in.Lists = s.listsMap()
+	in.Domains = s.resolveDomains(ctx, profiles)
+	in.VPNGatewayV4, in.VPNIfaceV4 = vg4, vi4
+	in.VPNGatewayV6, in.VPNIfaceV6 = vg6, vi6
+	return in
+}
+
+// DesiredTunnelsOnly is the desired set for a tunnel transition: owned —
+// what RiftRoute owns right now, as the Apply Protocol hands it over under
+// its lock (safety.Protocol.ApplyBuilt) — with only the tunnels' routes
+// recomputed. Connecting a tunnel is an explicit action that must install its
+// routes even with auto-apply off — but it must not apply unrelated profile
+// changes that are staged and waiting for the user.
+//
+// The other owned routes and the installed rules are carried over as they
+// are, placed beside the tunnels as a full reconcile would: a route or an
+// include rule's destination inside a live tunnel's networks yields to it, so
+// the set never routes one destination two ways. (What yielded comes back
+// with the next full apply — auto-apply's on the interface change.)
+//
+// Like DesiredManaged it also returns the v4 physical gateway the set was
+// built against (zero if none), for the guardrails and the watchdog.
+func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+	routes, rules, gw, _ := s.tunnelsOnly(ctx, owned)
+	return routes, rules, gw, nil
+}
+
+// TunnelsForApply is DesiredTunnelsOnly for a tunnel apply. It also returns
+// what yields to the live tunnels, recorded by commit — for the apply's
+// safety.Options.OnCommit — for the next tunnel apply to put back. It is
+// built on the last record, so the apply sets safety.Options.BuiltOnRecord.
+func (s *Service) TunnelsForApply(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, func(), error) {
+	routes, rules, gw, y := s.tunnelsOnly(ctx, owned)
+	return routes, rules, gw, func() { s.saveYielded(y) }, nil
+}
+
+// tunnelsOnly builds a tunnel apply's desired set. What earlier applies made
+// yield to live tunnels is put back first — so what a tunnel took is
+// returned when it goes, even with auto-apply off, where no full apply would
+// — then everything is placed beside the tunnels live now; what yields to
+// them this time is returned for the record.
+func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, yielded) {
+	if owned == nil {
+		owned = []domain.ManagedRoute{} // owns nothing: don't let networkInput read the map again
 	}
-	if err4 == nil {
-		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
+	in := s.networkInput(ctx, s.tunnels(), owned)
+	var others []domain.ManagedRoute
+	for _, o := range owned {
+		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			others = append(others, o)
+		}
 	}
-	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
+	dest := s.destinations(ctx)
+	prev := s.loadYielded().stillWanted(dest)
+	others = prev.putBackRoutes(others)
+	rules := prev.putBackRules(s.actualManagedRules(ctx))
+	tp := routing.PlanTunnels(in)
+	routes := tp.Beside(others)
+	return routes, tp.RulesBeside(rules), in.GatewayV4, yieldedTo(tp, others, rules, routes).attributed(dest)
+}
+
+// DesiredForApply is DesiredManaged for a full apply. It also returns what
+// the profiles' set gives up to the live tunnels, recorded by commit — for
+// the apply's safety.Options.OnCommit: only a change that stands may be put
+// back later (never a dry run's, a refused or a rolled-back one's).
+func (s *Service) DesiredForApply(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, func(), error) {
+	var profiles []domain.Profile
+	if s.store != nil {
+		profiles, _ = s.store.ListProfiles()
+	}
+	in := s.profileInput(ctx, profiles)
 	routes, rules, err := routing.BuildDesired(in)
-	return routes, rules, gw4, err
+	if err != nil {
+		return routes, rules, in.GatewayV4, nil, err
+	}
+	// The same set as if no tunnel were up: what yielded is the difference.
+	bare := in
+	bare.Tunnels, bare.Occupied = nil, nil
+	bareRoutes, bareRules, err := routing.BuildDesired(bare)
+	if err != nil {
+		return routes, rules, in.GatewayV4, nil, nil // nothing to record
+	}
+	y := yieldedTo(routing.PlanTunnels(in), bareRoutes, bareRules, routes)
+	return routes, rules, in.GatewayV4, func() { s.saveYielded(y) }, nil
+}
+
+// TunnelsActive reports whether a tunnel is running, or has routes recorded
+// — whether a tunnel apply has anything to keep current or withdraw.
+func (s *Service) TunnelsActive(ctx context.Context) bool {
+	return len(s.tunnels()) > 0 || s.OwnsTunnelRoutes(ctx)
+}
+
+// OwnsTunnelRoutes reports whether RiftRoute has routes recorded for a
+// tunnel — at startup, what a daemon that died with tunnels up left behind.
+func (s *Service) OwnsTunnelRoutes(ctx context.Context) bool {
+	for _, o := range s.actualManagedRoutes(ctx) {
+		if strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveDomains resolves the enabled profiles' domain rules via the TTL cache,
 // returning domain → resolved IP strings for the engine to expand.
 func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile) map[string][]string {
-	m := map[string][]string{}
+	m, _ := s.lookupDomains(ctx, profiles)
+	return m
+}
+
+// lookupDomains is resolveDomains, also reporting the rules whose own
+// lookup came back empty — never resolved yet (DNS not up after a start) or
+// resolving to nothing — whatever the DNS learner observed under them.
+func (s *Service) lookupDomains(ctx context.Context, profiles []domain.Profile) (m map[string][]string, unresolved map[string]bool) {
+	m, unresolved = map[string][]string{}, map[string]bool{}
 	if s.domains == nil {
-		return m
+		return m, unresolved
 	}
 	for _, p := range profiles {
 		if !p.Enabled {
@@ -177,6 +435,9 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 			// the map stays keyed by the raw rule value the engine looks up.
 			for _, a := range s.domains.Lookup(ctx, domain.DomainRuleHost(r.Value)) {
 				ss = append(ss, a.String())
+			}
+			if len(ss) == 0 {
+				unresolved[r.Value] = true
 			}
 			// …plus every subdomain address the DNS learner has observed.
 			if s.wildcardIPs != nil && strings.HasPrefix(r.Value, "*.") {
@@ -194,7 +455,7 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 			m[r.Value] = ss
 		}
 	}
-	return m
+	return m, unresolved
 }
 
 // DomainHosts returns the distinct domains referenced by enabled profiles (for
@@ -359,7 +620,7 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 		return d
 	}
 	profs, _ := s.store.ListProfiles()
-	if len(profs) == 0 {
+	if len(profs) == 0 && len(s.tunnels()) == 0 {
 		return d
 	}
 	dRoutes, dRules, _, err := s.DesiredFromProfiles(ctx, profs)
@@ -371,6 +632,11 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 		d.Reason = err.Error()
 		return d
 	}
+	// Tunnel routes the kernel dropped with their interface count as missing
+	// (as the Apply Protocol will see them), not as "in sync".
+	actualRoutes = routing.VerifyTunnelRoutes(actualRoutes, dRoutes, func(fam domain.Family) ([]domain.Route, error) {
+		return s.prov.ListRoutes(ctx, fam)
+	})
 	plan := routing.Reconcile(dRoutes, actualRoutes, dRules, s.actualManagedRules(ctx), s.Platform())
 	for _, op := range plan.Ops {
 		switch op.Kind {
@@ -486,6 +752,8 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 
 	dns, _ := s.prov.DNSConfig(ctx)
 
+	tunnels := s.TunnelStatuses(ctx)
+
 	var profs []domain.ProfileStatus
 	if s.store != nil {
 		ps, _ := s.store.ListProfiles()
@@ -514,6 +782,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Preferences:       s.Preferences(),
 		Update:            s.updateSnapshot(),
 		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
+		Tunnels:           tunnels,
 		GeneratedAt:       s.now(),
 	}, nil
 }
@@ -576,7 +845,8 @@ func (s *Service) Routes(ctx context.Context, family domain.Family, owner domain
 }
 
 // tagOwnedRoutes stamps Owner/Profile onto listed routes that appear in the
-// ownership map (matched by full route identity).
+// ownership map (matched by full route identity, as the table lists it —
+// routing.KernelKey).
 func (s *Service) tagOwnedRoutes(rs []domain.Route) {
 	if s.store == nil {
 		return
@@ -587,10 +857,10 @@ func (s *Service) tagOwnedRoutes(rs []domain.Route) {
 	}
 	byKey := make(map[string]domain.ManagedRoute, len(owned))
 	for _, mr := range owned {
-		byKey[routing.RouteKey(mr.Route)] = mr
+		byKey[routing.KernelKey(mr.Route)] = mr
 	}
 	for i := range rs {
-		if mr, ok := byKey[routing.RouteKey(rs[i])]; ok {
+		if mr, ok := byKey[routing.KernelKey(rs[i])]; ok {
 			rs[i].Owner = domain.OwnerRiftRoute
 			if rs[i].Profile == "" {
 				rs[i].Profile = mr.ProfileID

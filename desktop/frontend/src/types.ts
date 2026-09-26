@@ -122,6 +122,8 @@ export interface State {
   preferences?: Preferences
   // The daemon's updater (absent from daemons without one).
   update?: UpdateStatus
+  // VPN connections RiftRoute runs itself; absent when there are none.
+  tunnels?: TunnelStatus[]
   generated_at: string
 }
 
@@ -376,6 +378,109 @@ export interface ConfigImportResult {
   plan?: Plan
   diff?: Diff
   result?: ApplyResult
+}
+
+export type TunnelState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
+// direct: reach the server around the main VPN; default: through it.
+export type TunnelVia = 'direct' | 'default'
+
+// TunnelStatus mirrors domain.TunnelStatus (never carries the profile or password).
+export interface TunnelStatus {
+  name: string
+  type: string
+  via: TunnelVia
+  routes: string[] | null
+  auto_connect: boolean
+  username?: string
+  has_password: boolean
+  needs_auth: boolean
+  servers: string[] | null
+  ignored?: string[] | null
+  // Routes left out on this network, and why (contains its router, or
+  // another VPN/the system already routes that exact destination).
+  blocked?: TunnelBlocked[] | null
+  // Installed, but an app rule of an include profile still sends that app's
+  // traffic for them elsewhere (another VPN).
+  captured?: TunnelBlocked[] | null
+  // The daemon can't read this tunnel's saved definition: it can only be
+  // deleted (and added again). last_error says why; the other fields are
+  // placeholders (via "direct", no routes or servers).
+  unreadable?: boolean
+  state: TunnelState
+  detail?: string
+  iface?: string
+  local_ip?: string
+  server?: string
+  since?: string
+  last_error?: string
+  bytes_in: number
+  bytes_out: number
+}
+
+export interface TunnelBlocked {
+  route: string
+  reason: string
+}
+
+// TunnelSpec mirrors domain.TunnelSpec. Empty config/password on an update
+// keep the saved ones.
+export interface TunnelSpec {
+  name: string
+  type: string
+  config?: string
+  username?: string
+  password?: string
+  via: TunnelVia
+  routes: string[]
+  auto_connect: boolean
+}
+
+// TunnelProfileFile is a .ovpn picked in the native dialog, inlined and parsed.
+// An empty path means the picker was cancelled; error means unusable.
+export interface TunnelProfileFile {
+  path: string
+  name: string
+  config: string
+  servers: string[] | null
+  needs_auth: boolean
+  ignored: string[] | null
+  username: string
+  password: string
+  error: string
+  // Local files the profile referenced and the picker inlined (ca, cert,
+  // key, auth-user-pass, …). Absent from builds that don't report them.
+  files?: string[] | null
+}
+
+export interface TunnelResult {
+  tunnel?: TunnelStatus
+  issues?: ConfigIssue[]
+}
+
+// TunnelEngine mirrors domain.TunnelEngine: whether tunnels can run on this
+// machine and, if not, how the user installs openvpn here.
+export interface TunnelEngine {
+  available: boolean
+  path?: string
+  version?: string
+  problem?: string
+  install?: TunnelInstall
+}
+
+// What fixes openvpn here (absent from daemons that predate it):
+// update — RiftRoute's own openvpn (macOS) is missing, and the daemon's
+//   update check installs the one the newest release ships;
+// reinstall — RiftRoute's own openvpn is there but unusable: reinstall the
+//   daemon from a current release;
+// install — the system's openvpn package (Linux): commands/note/url say how.
+export type TunnelInstallAction = 'update' | 'reinstall' | 'install'
+
+export interface TunnelInstall {
+  system: string
+  action?: TunnelInstallAction
+  commands?: string[] | null
+  note?: string
+  url?: string
 }
 
 // The desktop app's own update (it follows the daemon to the same release).

@@ -4,7 +4,10 @@ package platform
 
 import "errors"
 
-const installedBin = ""
+const (
+	installedBin     = ""
+	installedOpenVPN = ""
+)
 
 type noopManager struct{}
 

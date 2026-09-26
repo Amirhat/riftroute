@@ -38,6 +38,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
+	"github.com/Amirhat/riftroute/internal/tunnel"
 	"github.com/Amirhat/riftroute/internal/updater"
 )
 
@@ -68,6 +69,7 @@ func run() error {
 		allowUIDFlag int
 		selfTest     bool
 		channel      string
+		fakeNoVPN    bool
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -79,6 +81,7 @@ func run() error {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&selfTest, "selftest", false, "check this binary against a database copy (-db) and exit (used by the updater)")
 	flag.StringVar(&channel, "update-channel", "stable", "update channel")
+	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
@@ -100,6 +103,14 @@ func run() error {
 		dbPath = paths.DB
 	}
 
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+	// One daemon per state directory, decided before anything else runs.
+	if err := lockInstance(filepath.Dir(dbPath)); err != nil {
+		return err
+	}
+
 	// Before the database is opened: confirm, count or roll back an update.
 	// The version the updater compares is the one -version prints first
 	// ("0.2.6" for a release, "0.2.6-3-gabc1234" for a dev build).
@@ -111,10 +122,6 @@ func run() error {
 	guard, _ := bootGuard(current, exe, updateDir, dbPath, logger)
 	if guard.RestartNow {
 		return restartExit(updater.RestartExitCode)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
 	}
 
 	st, err := store.Open(dbPath)
@@ -144,6 +151,17 @@ func run() error {
 	}
 	if perr != nil {
 		logger.Warn("pending-tx recovery incomplete", "err", perr)
+	}
+
+	// No tunnel is running yet, so the routes a previous run's tunnels left
+	// are stale: forget them before step 2 re-adds owned routes — by interface
+	// name, and after a reboot a tunnel's utun name may be another VPN's. Their
+	// server pins are withdrawn; one that won't delete is retried by the
+	// tunnels' resync below.
+	if n, terr := proto.DropTunnelRoutes(context.Background()); terr != nil {
+		logger.Warn("could not drop the previous run's tunnel routes", "err", terr)
+	} else if n > 0 {
+		logger.Info("dropped routes left by the previous run's tunnels", "count", n)
 	}
 
 	// Crash recovery, step 2: re-assert/repair owned routes against the kernel
@@ -186,6 +204,70 @@ func run() error {
 		sdns = &splitdns.FakeManager{} // never touch real system DNS under -provider fake
 	}
 	srv.SetKillSwitch(ks)
+
+	// Tunnels: VPN connections RiftRoute runs itself (split only — they
+	// never take the default route or DNS). Definitions hold secrets, so they
+	// live in a root-only directory beside the DB, not in it.
+	var launcher tunnel.Launcher = &tunnel.ExecLauncher{Output: func(name, line string) {
+		logger.Debug("openvpn", "tunnel", name, "line", line)
+	}}
+	if fp, ok := prov.(*fake.Provider); ok {
+		launcher = &tunnel.FakeLauncher{ // never run a real openvpn under -provider fake
+			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
+			OnDown:  func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
+			Missing: fakeNoVPN,
+		}
+	}
+	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
+	// Tunnel state changes come in bursts (every openvpn STATE line) and
+	// arrive on a management reader, which must not wait for a full State
+	// build: coalesce them onto one broadcaster.
+	stateKick := make(chan struct{}, 1)
+	broadcastSoon := func() {
+		select {
+		case stateKick <- struct{}{}:
+		default:
+		}
+	}
+	go func() { // for the life of the process
+		for range stateKick {
+			srv.BroadcastState(context.Background())
+		}
+	}()
+	tunnels, err := tunnel.New(tunnel.Options{
+		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
+		Launcher:  launcher,
+		Ifaces:    prov.Interfaces,
+		Protected: svc.TunnelProtected,
+		Routes: func(ctx context.Context) ([]domain.Route, error) {
+			v4, err := prov.ListRoutes(ctx, domain.FamilyV4)
+			if err != nil {
+				return nil, err
+			}
+			v6, _ := prov.ListRoutes(ctx, domain.FamilyV6) // v4-only hosts: none
+			return append(v4, v6...), nil
+		},
+		Resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
+			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		},
+		Apply: func(ctx context.Context) error {
+			if rec == nil {
+				return errors.New("daemon still starting")
+			}
+			// Refused during a panic: the applier retries once it's done,
+			// which also covers a tunnel connected while it ran.
+			return rec.ApplyTunnels(ctx)
+		},
+		OnChange: broadcastSoon,
+		Log:      logger,
+	})
+	if err != nil {
+		return fmt.Errorf("tunnels: %w", err)
+	}
+	defer tunnels.Shutdown()
+	svc.SetTunnels(tunnels.Inputs, tunnels.List)
+	svc.SetTunnelEngine(launcher.Engine)
+	srv.SetTunnels(tunnels)
 	svc.SetKillSwitchStatus(func() bool {
 		on, _ := ks.Enabled(context.Background())
 		return on
@@ -386,6 +468,13 @@ func run() error {
 		syncPerApp(ctx)
 		syncWildcards(ctx)
 	})
+	// Panic takes the tunnels down first — before its flush, while it refuses
+	// every apply — so a tunnel going down can't re-add the surviving
+	// tunnels' routes after the flush (their withdrawals are refused; the
+	// flush removes the routes, and the manager's retry then has nothing to do).
+	srv.SetBeforePanic(func(context.Context) {
+		tunnels.DisconnectAll() // back to baseline: no tunnel, no tunnel routes
+	})
 	// Panic restores the DNS baseline alongside routes/PF: stop the learner and
 	// rewrite resolver files to the user selection only (dropping the learner's
 	// proxy-pointing entries), so nothing dangles at a stopped proxy. The learner
@@ -457,7 +546,11 @@ func run() error {
 	// so a single bad snapshot can never crash the daemon (which would kill an
 	// armed watchdog and strand the user).
 	poller := netmon.NewPoller(prov, pollInterval)
-	rec := reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
+	rec = reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
+	// A transaction on probation settling is when a tunnel apply it refused
+	// can go through, and when a rollback may have withdrawn routes the
+	// tunnels still want: re-apply them then.
+	proto.SetOnSettled(tunnels.Kick)
 	go supervise(ctx, logger, "poller", poller.Run)
 	go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
 	go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
@@ -527,10 +620,36 @@ func run() error {
 		}
 	})
 	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
+	// A server pin the startup drop couldn't withdraw is still recorded:
+	// withdraw it through the protocol — ungated by auto-apply, like every
+	// tunnel change, and retried if refused for now — before auto-connect
+	// brings tunnels back.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("recovered panic starting tunnels", "panic", r)
+			}
+		}()
+		if svc.OwnsTunnelRoutes(ctx) {
+			logger.Info("withdrawing routes left by the previous run's tunnels")
+			tunnels.Resync(ctx)
+		}
+		if ctx.Err() == nil {
+			tunnels.StartAuto()
+		}
+	}()
 
 	logger.Info("riftrouted listening", "socket", socketPath, "db", dbPath, "version", version,
 		"build", buildinfo.Short(build), "uid", allowUID)
 	serveErr := srv.Serve(ctx, ln)
+
+	// Tunnels first: their routes are withdrawn on the way down (tunnel
+	// applies commit at once). A restart the daemon does on its own (an
+	// update, a rollback) brings the connected ones back.
+	if restartCode.Load() != 0 {
+		tunnels.RememberForRestart()
+	}
+	tunnels.Shutdown()
 
 	// Graceful shutdown: resolve any in-flight transactions (commit auto-applied,
 	// roll back unconfirmed) so a clean reboot doesn't trip crash-recovery. An

@@ -22,8 +22,8 @@ GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
-.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e vet fmt tidy cross clean run-daemon bindings \
-        dist dist-binaries checksums package-deb package-dmg package-appimage tray
+.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e test-tunnels-linux vet fmt tidy cross clean run-daemon bindings \
+        dist dist-binaries checksums package-deb package-dmg package-appimage tray openvpn
 
 all: build
 
@@ -68,6 +68,11 @@ test:
 test-e2e:
 	go test -count=1 ./test/e2e/...
 
+## test-tunnels-linux: real Linux check of OpenVPN tunnels in Docker — the
+## Linux daemon, a router, and an old-style OpenVPN server (needs Docker)
+test-tunnels-linux:
+	test/tunnels-linux/run.sh
+
 vet:
 	go vet $(CORE_PKGS)
 
@@ -88,16 +93,41 @@ cross:
 run-daemon: daemon
 	./bin/riftrouted -socket /tmp/riftroute-dev.sock -db /tmp/riftroute-dev.db -provider fake -log debug
 
+## openvpn: build the openvpn that ships on macOS (macOS host; scripts/build-openvpn.sh)
+openvpn:
+	scripts/build-openvpn.sh arm64 $(OPENVPN_DIR)/arm64
+	scripts/build-openvpn.sh x86_64 $(OPENVPN_DIR)/x86_64
+	scripts/build-openvpn.sh universal $(OPENVPN_DIR)/universal
+
+# The openvpn the darwin tarballs ship next to riftrouted, per architecture:
+# $(OPENVPN_DIR)/<arm64|x86_64>/openvpn and licenses/ (`make openvpn`, or the
+# release workflow's openvpn job). Without it the tarballs still build — and
+# tunnels on macOS then say they need a release that includes it; never
+# Homebrew's. REQUIRE_OPENVPN=1 makes a missing one an error.
+OPENVPN_DIR ?= build/openvpn
+
 ## dist-binaries: cross-compile CLI+daemon tarballs for all release targets
 dist-binaries:
 	@mkdir -p dist
-	@for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do \
+	@set -e; for t in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do \
 		os=$${t%/*}; arch=$${t#*/}; \
 		echo "→ $$os/$$arch"; \
 		d=$$(mktemp -d); \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $$d/riftrouted ./cmd/riftrouted; \
 		GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $$d/riftroute  ./cmd/riftroute; \
-		tar -C $$d -czf dist/riftroute_$(VERSION)_$${os}_$${arch}.tar.gz riftroute riftrouted; \
+		files="riftroute riftrouted"; \
+		if [ $$os = darwin ]; then \
+			ov=$(OPENVPN_DIR)/$$( [ $$arch = amd64 ] && echo x86_64 || echo $$arch ); \
+			if [ -f $$ov/openvpn ] && [ -d $$ov/licenses ]; then \
+				cp $$ov/openvpn $$d/openvpn; chmod 755 $$d/openvpn; cp -R $$ov/licenses $$d/licenses; \
+				files="$$files openvpn licenses"; echo "  + openvpn from $$ov"; \
+			elif [ -n "$(REQUIRE_OPENVPN)" ]; then \
+				echo "missing $$ov/openvpn (+ licenses/) — build it with scripts/build-openvpn.sh" >&2; exit 1; \
+			else \
+				echo "  (no $$ov/openvpn: this tarball ships without openvpn; tunnels won't be available on macOS)"; \
+			fi; \
+		fi; \
+		tar -C $$d -czf dist/riftroute_$(VERSION)_$${os}_$${arch}.tar.gz $$files; \
 		rm -rf $$d; \
 	done
 	@echo "binaries in dist/"

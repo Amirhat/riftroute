@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"time"
@@ -84,6 +85,9 @@ func daemonInstallCmd() *cobra.Command {
 		Long: "Installs the riftrouted binary (macOS: /Library/PrivilegedHelperTools,\n" +
 			"Linux: /usr/local/bin), writes the launchd plist / systemd unit, and\n" +
 			"(re)starts it. Run with sudo.\n\n" +
+			"On macOS the openvpn that ships next to riftrouted is installed beside it\n" +
+			"(/Library/PrivilegedHelperTools/riftroute-openvpn): tunnels run only that\n" +
+			"one. On Linux they use the distribution's openvpn package.\n\n" +
 			"The daemon runs as root but authorizes --allow-uid (default: the invoking\n" +
 			"user, even under sudo) for mutating calls, so an unprivileged GUI/CLI can\n" +
 			"control it.\n\n" +
@@ -110,6 +114,7 @@ func daemonInstallCmd() *cobra.Command {
 				}
 			}
 			fmt.Fprintf(out, "installing riftrouted %s\n  from %s\n", buildinfo.Short(candidate), bin)
+			reportOpenVPN(out, cmd.ErrOrStderr(), bin)
 			if allowUID < 0 {
 				allowUID = invokingUID()
 			}
@@ -130,6 +135,28 @@ func daemonInstallCmd() *cobra.Command {
 	cmd.Flags().IntVar(&allowUID, "allow-uid", -1, "uid allowed to control the daemon (default: invoking user)")
 	cmd.Flags().BoolVar(&allowDowngrade, "allow-downgrade", false, "install even if the binary is older than the installed daemon")
 	return cmd
+}
+
+// reportOpenVPN says what install does about tunnels' openvpn: on macOS the
+// one shipped next to riftrouted is installed beside the daemon (tunnels
+// never run any other); without one, an earlier copy stays, or the daemon's
+// update check fetches it (the updater's repair). On Linux the
+// distribution's is used and there's nothing to say.
+func reportOpenVPN(out, errw io.Writer, daemonBin string) {
+	dst := platform.InstalledOpenVPNPath()
+	if dst == "" {
+		return
+	}
+	if src := platform.BundledOpenVPN(daemonBin); src != "" {
+		fmt.Fprintf(out, "installing openvpn for tunnels\n  from %s\n  to   %s\n", src, dst)
+		return
+	}
+	if _, err := os.Stat(dst); err == nil {
+		fmt.Fprintf(errw, "note: this build doesn't include openvpn; tunnels keep using the one already at %s\n", dst)
+		return
+	}
+	fmt.Fprintf(errw, "note: this build doesn't include openvpn (none next to %s), so tunnels won't be available\n"+
+		"until it's installed: `riftroute update check` fetches the one the newest release ships\n", daemonBin)
 }
 
 // systemClient talks to the installed service's socket — the daemon install

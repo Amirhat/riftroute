@@ -4,6 +4,81 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-09-27
+
+Tunnels: an OpenVPN split tunnel next to your main VPN (thanks @ssenerg for
+the first version).
+
+### Added
+- **Tunnels: run an OpenVPN connection next to your main VPN.** Connecting a
+  second VPN client used to knock the first one off (Windscribe dropped when
+  OpenVPN Connect came up): the OpenVPN server pushes `redirect-gateway` and its
+  own DNS, which take over everything. RiftRoute can now run the OpenVPN
+  profile itself as a split tunnel — `riftroute tunnel add <name> <profile.ovpn>
+  --route <cidr>…`, or the new **Tunnels** page. Only the networks you list go
+  through it; the server's redirect-gateway, pushed routes, and pushed DNS are
+  ignored, so the main VPN keeps the default route. The tunnel's routes go
+  through the guarded Apply Protocol (visible as `tunnel:<name>` in the routing
+  table and route-explain) and are removed on disconnect, panic, and shutdown.
+  By default the OpenVPN server is reached around the main VPN, like OpenVPN
+  Connect does (`--via default` to go through it). The profile is checked
+  against an allowlist before the root daemon runs it, and the profile and
+  password are kept in a root-only directory, never in the database or API
+  responses.
+  `riftroute tunnel log <name>` shows openvpn's own output, and a connection
+  that can't reach its server says why (e.g. another VPN's firewall). While a
+  tunnel is up, its networks win over exclude profiles, so a wildcard domain
+  that resolves an internal host to a private address can't pull it back out.
+  Include rules are cut around a live tunnel's networks too, and what gave
+  way to a tunnel — an exclude route inside its networks, the part of an
+  include rule it took — comes back when it disconnects, with auto-apply off
+  too; a profile deleted or disabled meanwhile stays out.
+  Profiles made for OpenVPN Connect work against older servers too: the
+  profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
+  openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
+  Files a profile names are read only from its own folder (a login file only
+  from right beside it). The addressing a server hands the tunnel is checked
+  too: a network wider than its own, one that overlaps your networks, or a
+  peer at your router, DNS server or connectivity check is refused. Tunnels
+  you connected come back after an automatic update restarts the daemon.
+  Works on macOS and Linux.
+- **openvpn comes with RiftRoute on macOS.** A static OpenVPN 2.6 build ships
+  in the app, the release tarballs and the Homebrew formula, and installing
+  the daemon puts it root-owned beside it — never Homebrew's openvpn, which
+  the user who installed Homebrew could swap for something the daemon would
+  run as root. On Linux tunnels use the distribution's (2.5 or newer; the
+  `.deb` recommends it): until it's there, the Tunnels page and `riftroute
+  tunnel list` say so up front, with the install command for your system
+  (apt, dnf, pacman, zypper, apk, …), and pick it up without a restart. Only
+  a root-owned openvpn in a root-owned folder is ever run.
+- **Updates keep openvpn in step (macOS).** An update installs its release's
+  openvpn together with the daemon and checks it the same way (signed hash, a
+  self-test); rolling the update back puts the previous openvpn back — or
+  keeps the one the update added, which every daemon can use.
+- **A missing openvpn is put back (macOS).** A daemon updated by 0.2.6's
+  updater, which knew only the daemon, has no openvpn: the next update check
+  installs the one the newest signed release ships (never a halted one) —
+  also while the daemon itself is held back from that release, and on
+  **Check for updates**, which the Tunnels page offers, even with updates
+  off.
+
+### Changed
+- **The daemon gets 40 s to stop on macOS** (launchd's ExitTimeOut, up from
+  its default 20 s, for daemons installed from this version on): on shutdown
+  it takes every tunnel down and settles pending route changes first, instead
+  of being killed halfway.
+
+### Fixed
+- **Only one daemon runs per install.** The daemon locks its state before
+  doing anything; a second copy (say, a manual run beside the service) stops
+  with a clear message instead of touching the running daemon's routes and
+  tunnels.
+- **Updates: a release built for another architecture is skipped** on macOS
+  instead of being downloaded again at every check.
+- **Dialogs work with the keyboard and screen readers:** Escape closes them,
+  Tab stays inside, focus returns to where it was, and each is announced by
+  its title.
+
 ## [0.2.8] — 2026-09-26
 
 ### Added
@@ -63,14 +138,6 @@ date — and can't be handed anything the maintainer didn't sign.
 
 **This version itself is installed the usual way** (it's the first with the
 updater); later versions arrive on their own.
-
-### Fixed
-- **Tinted colors in the app.** Faded backgrounds and borders — error and
-  warning boxes, the sidebar's selected item, owner and state badges, hover
-  highlights — rendered with no color at all: the theme colors were plain CSS
-  variables, which Tailwind can't make translucent, so those classes produced
-  no CSS. Theme colors are now RGB channels, and every tint shows in both the
-  light and dark themes.
 
 ## [0.2.5] — 2026-09-24
 

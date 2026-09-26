@@ -7,7 +7,16 @@ class Riftroute < Formula
   desc "Cross-platform split-tunneling / policy-based routing controller"
   homepage "https://github.com/Amirhat/riftroute"
   version "0.0.0"
-  license "MIT"
+  # RiftRoute itself is MIT. The macOS tarballs also carry the openvpn that
+  # tunnels run — a separate program, statically linked with OpenSSL, LZO and
+  # LZ4 — with its licenses (see THIRD_PARTY.md).
+  license all_of: [
+    "MIT",
+    { "GPL-2.0-only" => { with: "openvpn-openssl-exception" } }, # OpenVPN
+    "GPL-2.0-or-later", # LZO
+    "Apache-2.0",       # OpenSSL
+    "BSD-2-Clause",     # LZ4
+  ]
 
   on_macos do
     on_arm do
@@ -33,7 +42,17 @@ class Riftroute < Formula
 
   def install
     bin.install "riftroute"
-    bin.install "riftrouted"
+    if OS.mac? && File.exist?("openvpn") && File.directory?("licenses")
+      # Tunnels' openvpn stays beside the daemon, off PATH: `riftroute daemon
+      # install` copies both into /Library/PrivilegedHelperTools, root-owned.
+      # The daemon never runs an openvpn from this (user-writable) prefix.
+      # It is never installed without its licenses.
+      libexec.install "riftrouted", "openvpn"
+      bin.install_symlink libexec/"riftrouted"
+      pkgshare.install "licenses"
+    else
+      bin.install "riftrouted"
+    end
   end
 
   def caveats
@@ -42,6 +61,10 @@ class Riftroute < Formula
       start it as a service deliberately:
 
         sudo riftroute daemon install   # writes the launchd/systemd unit
+
+      On macOS this also installs the openvpn that ships with RiftRoute (for
+      tunnels) beside the daemon. On Linux tunnels use your distribution's
+      openvpn package.
 
       RiftRoute never mutates routes without the Apply Protocol's guardrails.
     EOS

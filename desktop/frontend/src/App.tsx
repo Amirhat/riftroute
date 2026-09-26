@@ -5,6 +5,7 @@ import type { View } from './components/Sidebar'
 import { Dashboard } from './views/Dashboard'
 import { RoutesView } from './views/RoutesView'
 import { Profiles } from './views/Profiles'
+import { Tunnels } from './views/Tunnels'
 import { Flows } from './views/Flows'
 import { Diagnostics } from './views/Diagnostics'
 import { History } from './views/History'
@@ -24,6 +25,7 @@ const titles: Record<View, string> = {
   dashboard: 'Dashboard',
   routes: 'Routing Table',
   profiles: 'Profiles',
+  tunnels: 'Tunnels',
   flows: 'Live Flows',
   diagnostics: 'Diagnostics',
   history: 'History',
@@ -41,6 +43,18 @@ export default function App() {
   // Set by View → Explain (⌘3); cleared once the lookup box has the cursor.
   const [focusLookup, setFocusLookup] = useState(false)
   const lookupFocused = useCallback(() => setFocusLookup(false), [])
+  // Set by a link into part of another view (Tunnels → Settings → Updates);
+  // cleared once that part has been scrolled into sight.
+  const [anchor, setAnchor] = useState<string | null>(null)
+  const navigate = useCallback((to: View, id?: string) => {
+    setView(to)
+    setAnchor(id ?? null)
+  }, [])
+  useEffect(() => {
+    if (!anchor) return
+    document.getElementById(anchor)?.scrollIntoView?.({ block: 'start' })
+    setAnchor(null)
+  }, [anchor, view])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -127,6 +141,7 @@ export default function App() {
               onToggleTheme={toggleTheme}
               focusLookup={focusLookup}
               onLookupFocused={lookupFocused}
+              onNavigate={navigate}
             />
           </ErrorBoundary>
         </main>
@@ -157,12 +172,14 @@ function ViewRouter({
   onToggleTheme,
   focusLookup,
   onLookupFocused,
+  onNavigate,
 }: {
   view: View
   theme: Theme
   onToggleTheme: () => void
   focusLookup: boolean
   onLookupFocused: () => void
+  onNavigate: (to: View, anchor?: string) => void
 }) {
   switch (view) {
     case 'dashboard':
@@ -171,6 +188,8 @@ function ViewRouter({
       return <RoutesView focusLookup={focusLookup} onLookupFocused={onLookupFocused} />
     case 'profiles':
       return <Profiles />
+    case 'tunnels':
+      return <Tunnels onOpenUpdates={() => onNavigate('settings', 'updates')} />
     case 'flows':
       return <Flows />
     case 'diagnostics':

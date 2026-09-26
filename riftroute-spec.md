@@ -45,7 +45,7 @@ A developer/power-user on macOS or Linux who runs a corporate or commercial VPN 
 7. **Cross-platform parity where it exists; honest about where it doesn't.** macOS is more constrained than Linux; surface that rather than fake it.
 
 ### 1.4 Non-goals / scope
-- **Not a VPN.** RiftRoute configures routing *around/with* whatever tunnel the user already runs (WireGuard, OpenVPN, corporate clients, utun/tun/wg interfaces). It does not establish tunnels.
+- **Not a VPN implementation.** RiftRoute configures routing *around/with* whatever tunnel the user already runs (WireGuard, OpenVPN, corporate clients, utun/tun/wg interfaces). It implements no tunnel protocol. The one exception to "doesn't establish tunnels" is **managed tunnels** (`internal/tunnel`): the daemon may *run* the system `openvpn` binary as a split tunnel — route-noexec, pushed routes/DNS filtered — so a second VPN can coexist with one that owns the default route. RiftRoute installs that tunnel's routes itself through the Apply Protocol; the tunnel never changes routing or DNS on its own.
 - **Windows is out of scope for v1** (mac + linux only, per the user). Keep the platform layer pluggable so Windows can be added later; ship a no-op stub so the project always compiles (`AGENTS.md §8`).
 - Not a packet-level firewall manager beyond the specific kill-switch / leak-protection features specified here.
 

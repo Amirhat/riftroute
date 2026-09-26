@@ -54,6 +54,12 @@ import {
   CreateBugReport,
   SaveBugReport,
   OpenIssuePage,
+  GetTunnelEngine,
+  SaveTunnel,
+  DeleteTunnel,
+  ConnectTunnel,
+  DisconnectTunnel,
+  OpenTunnelProfileDialog,
   GetAppUpdate,
   InstallAppUpdate,
   RestartApp,
@@ -83,6 +89,11 @@ import type {
   AppUpdateStatus,
   Preferences,
   BugReport,
+  TunnelStatus,
+  TunnelEngine,
+  TunnelSpec,
+  TunnelProfileFile,
+  TunnelResult,
 } from '../types'
 
 export const api = {
@@ -156,6 +167,15 @@ export const api = {
   installUpdate: () => InstallUpdate() as unknown as Promise<UpdateStatus>,
   rollbackUpdate: () => RollbackUpdate() as Promise<void>,
   openReleaseNotes: (url: string) => OpenReleaseNotes(url) as Promise<void>,
+  // Tunnels: VPN connections RiftRoute runs itself (split only). The list
+  // comes with the state (useStateQuery), which live events keep fresh.
+  tunnelEngine: () => GetTunnelEngine() as unknown as Promise<TunnelEngine>,
+  saveTunnel: (spec: TunnelSpec) =>
+    SaveTunnel(spec as unknown as Parameters<typeof SaveTunnel>[0]) as unknown as Promise<TunnelResult>,
+  deleteTunnel: (name: string) => DeleteTunnel(name) as Promise<void>,
+  connectTunnel: (name: string) => ConnectTunnel(name) as unknown as Promise<TunnelStatus>,
+  disconnectTunnel: (name: string) => DisconnectTunnel(name) as unknown as Promise<TunnelStatus>,
+  openTunnelProfile: () => OpenTunnelProfileDialog() as unknown as Promise<TunnelProfileFile>,
   // The app's own update: it follows the daemon to the same release.
   appUpdate: () => GetAppUpdate() as unknown as Promise<AppUpdateStatus>,
   installAppUpdate: () => InstallAppUpdate() as unknown as Promise<AppUpdateStatus>,

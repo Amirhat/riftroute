@@ -46,6 +46,20 @@ type DesiredInput struct {
 	// §5.1 domain rules); the daemon re-resolves these in the background.
 	Domains map[string][]string
 
+	// Tunnels are the VPN connections RiftRoute runs itself (internal/tunnel).
+	Tunnels []TunnelInput
+	// Occupied are main-table destinations routed by someone else (another
+	// VPN, the system): masked CIDR → interface. A tunnel route for the exact
+	// same destination can't be added beside it (the kernel keeps one), and
+	// claiming it would mean deleting the other owner's route on teardown.
+	Occupied map[string]string
+	// DNSServers are the resolvers in use, and Anchors the addresses the
+	// connectivity watchdog probes. A tunnel route containing one is left
+	// out: every name lookup, or the check guarding every change, would
+	// otherwise ride the tunnel.
+	DNSServers []netip.Addr
+	Anchors    []netip.Addr
+
 	Platform      string // "darwin" | "linux" | "fake"
 	PolicyRouting bool   // whether Model B (include mode) is available
 	Now           time.Time
@@ -66,39 +80,23 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 	var rules []domain.ManagedRule
 	includeFamilies := map[domain.Family]bool{}
 
+	tunnels := PlanTunnels(in)
 	for _, p := range profs {
 		if !p.Enabled {
 			continue
 		}
-		byFamily := map[domain.Family][]netip.Prefix{}
-		for _, r := range p.Rules {
-			if pfx, fam, ok := ruleToPrefix(r); ok {
-				byFamily[fam] = append(byFamily[fam], pfx)
-				continue
-			}
-			// domain rules expand to their resolved A/AAAA addresses (asn/country
-			// need a GeoIP DB — deferred).
-			if r.Type == domain.RuleDomain {
-				for _, ip := range in.Domains[r.Value] {
-					if pfx, fam, ok := entryToPrefix(ip); ok {
-						byFamily[fam] = append(byFamily[fam], pfx)
-					}
-				}
-			}
-		}
-		// Expand referenced lists (static + fetched remote entries).
-		for _, listName := range p.Lists {
-			for _, e := range in.Lists[listName] {
-				if pfx, fam, ok := entryToPrefix(e); ok {
-					byFamily[fam] = append(byFamily[fam], pfx)
-				}
-			}
-		}
+		byFamily := profilePrefixes(p, in)
 
 		switch p.Mode {
 		case domain.ModeInclude:
 			if !in.PolicyRouting {
 				return nil, nil, fmt.Errorf("profile %q: include mode requires policy routing (Linux Model B / macOS PF route-to); unavailable on this platform", p.Name)
+			}
+			// A live tunnel's networks win here too, as with exclude — but a
+			// policy rule beats the tunnel's more specific route, so the
+			// destinations are cut around them (aroundTunnels).
+			for fam, prefixes := range byFamily {
+				byFamily[fam] = aroundTunnels(prefixes, tunnels.nets)
 			}
 			if in.Platform == "darwin" {
 				// macOS: PF route-to anchors — the Darwin analogue of Model B. No
@@ -135,6 +133,9 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			skipped, families := 0, 0
 			var skipErr error
 			for fam, prefixes := range byFamily {
+				if prefixes = outsideTunnels(prefixes, tunnels.nets); len(prefixes) == 0 {
+					continue
+				}
 				families++
 				gw, iface, err := resolveGateway(p.Gateway, fam, in)
 				if err != nil {
@@ -169,6 +170,8 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			}
 		}
 	}
+
+	tunnels.place(seenRoute, &routes)
 
 	// For each family with include rules, the dedicated table needs a default via
 	// the tunnel (spec §5.4 Model B). Refuse if no tunnel is active (fail-safe).
@@ -263,6 +266,191 @@ func buildDarwinInclude(p domain.Profile, byFamily map[domain.Family][]netip.Pre
 		}
 	}
 	return nil
+}
+
+// profilePrefixes are the destinations p routes, by family: its CIDR rules,
+// its domain rules' resolved addresses (in.Domains) and its lists' entries.
+func profilePrefixes(p domain.Profile, in DesiredInput) map[domain.Family][]netip.Prefix {
+	byFamily := map[domain.Family][]netip.Prefix{}
+	for _, r := range p.Rules {
+		if pfx, fam, ok := ruleToPrefix(r); ok {
+			byFamily[fam] = append(byFamily[fam], pfx)
+			continue
+		}
+		// domain rules expand to their resolved A/AAAA addresses (asn/country
+		// need a GeoIP DB — deferred).
+		if r.Type == domain.RuleDomain {
+			for _, ip := range in.Domains[r.Value] {
+				if pfx, fam, ok := entryToPrefix(ip); ok {
+					byFamily[fam] = append(byFamily[fam], pfx)
+				}
+			}
+		}
+	}
+	// Expand referenced lists (static + fetched remote entries).
+	for _, listName := range p.Lists {
+		for _, e := range in.Lists[listName] {
+			if pfx, fam, ok := entryToPrefix(e); ok {
+				byFamily[fam] = append(byFamily[fam], pfx)
+			}
+		}
+	}
+	return byFamily
+}
+
+// Destinations are the networks the enabled profiles route, by mode and
+// family, as if no tunnel were up — what a full apply's routes and include
+// rules are made of, before they are cut around live tunnels. Only which
+// destinations matters, not where they go: they need no gateway or VPN.
+type Destinations struct {
+	exclude, include map[domain.Family][]netip.Prefix // aggregated
+	// unsure holds, per enabled profile, the families it may route more of
+	// than is known: a domain rule of its has no address of that family
+	// (in.Domains) — not resolved yet, or a partial answer. Its own items
+	// of those families can't be judged unrouted.
+	unsure map[string]map[domain.Family]bool
+	mode   map[string]domain.Mode // the enabled profiles
+	// includes are the enabled include profiles' own destinations, in
+	// profile order (aggregated), for telling whose a rule is.
+	includes []profileNets
+}
+
+type profileNets struct {
+	id   string
+	nets map[domain.Family][]netip.Prefix
+}
+
+// ProfileDestinations reads the destinations from in's Profiles, Domains and
+// Lists.
+func ProfileDestinations(in DesiredInput) Destinations {
+	d := Destinations{
+		exclude: map[domain.Family][]netip.Prefix{}, include: map[domain.Family][]netip.Prefix{},
+		unsure: map[string]map[domain.Family]bool{}, mode: map[string]domain.Mode{},
+	}
+	for _, p := range in.Profiles {
+		if !p.Enabled {
+			continue
+		}
+		d.mode[p.ID] = p.Mode
+		into := d.exclude
+		if p.Mode == domain.ModeInclude {
+			into = d.include
+		}
+		own := profilePrefixes(p, in)
+		for fam, pfxs := range own {
+			into[fam] = append(into[fam], pfxs...)
+		}
+		if p.Mode == domain.ModeInclude {
+			for fam, pfxs := range own {
+				own[fam] = Aggregate(pfxs)
+			}
+			d.includes = append(d.includes, profileNets{id: p.ID, nets: own})
+		}
+		for _, r := range p.Rules {
+			if r.Type != domain.RuleDomain {
+				continue
+			}
+			has := map[domain.Family]bool{}
+			for _, ip := range in.Domains[r.Value] {
+				if _, fam, ok := entryToPrefix(ip); ok {
+					has[fam] = true
+				}
+			}
+			for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+				if !has[fam] {
+					if d.unsure[p.ID] == nil {
+						d.unsure[p.ID] = map[domain.Family]bool{}
+					}
+					d.unsure[p.ID][fam] = true
+				}
+			}
+		}
+	}
+	for _, m := range []map[domain.Family][]netip.Prefix{d.exclude, d.include} {
+		for fam, pfxs := range m {
+			m[fam] = Aggregate(pfxs)
+		}
+	}
+	return d
+}
+
+// unsureOf reports whether profile — an enabled include one, or exclude
+// (any other mode) — is unsure of fam. A deleted or disabled profile never
+// is.
+func (d Destinations) unsureOf(profile string, include bool, fam domain.Family) bool {
+	m, ok := d.mode[profile]
+	return ok && (m == domain.ModeInclude) == include && d.unsure[profile][fam]
+}
+
+// HoldsRoute reports whether an exclude profile still routes r's whole
+// destination. A route it can't judge holds: one in a table, an unparsable
+// one, and one whose own profile is unsure of its family.
+func (d Destinations) HoldsRoute(r domain.ManagedRoute) bool {
+	if r.Table != "" {
+		return true
+	}
+	pfx, err := netip.ParsePrefix(r.DstCIDR)
+	if err != nil {
+		return true
+	}
+	return within(pfx.Masked(), d.exclude[r.Family]) || d.unsureOf(r.ProfileID, false, r.Family)
+}
+
+// HoldsRule reports whether an include profile still routes a destination
+// rule's whole network ("to <prefix>"). A rule it can't judge holds: an
+// app's, an unparsable one, and one whose own profile is unsure of its
+// family. One with no profile — no enabled profile routed it when it was
+// recorded (see IncludeOwner) — is judged by coverage alone.
+func (d Destinations) HoldsRule(r domain.ManagedRule) bool {
+	pfx, ok := ruleNet(r.PolicyRule)
+	if !ok {
+		return true
+	}
+	return within(pfx, d.include[r.Family]) || d.unsureOf(r.ProfileID, true, r.Family)
+}
+
+// IncludeOwner is the enabled include profile that routes a destination
+// rule's whole network most tightly — whose rule one read from the kernel
+// is: a domain's /32 inside another profile's /8 is the domain's — or ""
+// if none does. A tie goes to the first in profile order.
+func (d Destinations) IncludeOwner(r domain.PolicyRule) string {
+	pfx, ok := ruleNet(r)
+	if !ok {
+		return ""
+	}
+	owner, tightest := "", -1
+	for _, p := range d.includes {
+		for _, a := range p.nets[r.Family] {
+			if a.Bits() <= pfx.Bits() && a.Contains(pfx.Addr()) && a.Bits() > tightest {
+				owner, tightest = p.id, a.Bits()
+			}
+		}
+	}
+	return owner
+}
+
+// ruleNet is a destination rule's network ("to <prefix>"), masked.
+func ruleNet(r domain.PolicyRule) (netip.Prefix, bool) {
+	dst, ok := strings.CutPrefix(r.Selector, "to ")
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	pfx, err := netip.ParsePrefix(dst)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	return pfx.Masked(), true
+}
+
+// within reports whether pfx lies inside one of the aggregated prefixes: an
+// aligned block inside their union lies inside one of its maximal blocks.
+func within(pfx netip.Prefix, aggregated []netip.Prefix) bool {
+	for _, a := range aggregated {
+		if a.Bits() <= pfx.Bits() && a.Contains(pfx.Addr()) {
+			return true
+		}
+	}
+	return false
 }
 
 func addRoute(seen map[string]bool, out *[]domain.ManagedRoute, rt domain.Route, profile string, now time.Time) bool {
@@ -391,8 +579,14 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 		}
 		switch kind {
 		case domain.OpAddRoute:
+			if r.Gateway == "" { // on-link, e.g. into a tunnel interface
+				return []string{"route", "-n", "add", scope, r.DstCIDR, "-interface", r.Iface}
+			}
 			return []string{"route", "-n", "add", scope, r.DstCIDR, r.Gateway}
 		case domain.OpDelRoute:
+			if r.Gateway == "" {
+				return []string{"route", "-n", "delete", scope, r.DstCIDR}
+			}
 			return []string{"route", "-n", "delete", scope, r.DstCIDR, r.Gateway}
 		}
 	}
@@ -448,6 +642,9 @@ func humanForRoute(kind domain.OpKind, r domain.Route) string {
 	t := ""
 	if r.Table != "" {
 		t = " table " + r.Table
+	}
+	if r.Gateway == "" {
+		return fmt.Sprintf("%s %s dev %s%s", verb, r.DstCIDR, r.Iface, t)
 	}
 	return fmt.Sprintf("%s %s via %s dev %s%s", verb, r.DstCIDR, r.Gateway, r.Iface, t)
 }

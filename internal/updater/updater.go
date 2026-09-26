@@ -6,8 +6,9 @@
 // restarts the daemon; BootGuard (boot.go) rolls back on its own, without any
 // network, if the new version doesn't come up healthy.
 //
-// Only the installed daemon binary is ever replaced. The desktop app and
-// package-managed installs are notified, never modified.
+// Only the installed daemon binary — and on macOS the openvpn that ships
+// beside it — is ever replaced. The desktop app and package-managed installs
+// are notified, never modified.
 package updater
 
 import (
@@ -59,7 +60,14 @@ type Env struct {
 	GOOS        string
 	GOARCH      string
 
-	Binary   string // the installed daemon binary this process runs
+	Binary string // the installed daemon binary this process runs
+	// OpenVPN is the installed openvpn that ships with RiftRoute, beside the
+	// daemon (platform.InstalledOpenVPNPath: macOS). A release's openvpn is
+	// installed there together with its daemon, and rolled back with it (one
+	// the update added stays); a missing one is taken from the newest
+	// release (repairOpenVPN). "" where none ships (Linux uses the
+	// distribution's).
+	OpenVPN  string
 	StateDir string // marker, status, staging, database backup
 	DBPath   string
 
@@ -310,6 +318,16 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 		s.Action, s.Reason, s.NotesURL = string(d.Action), d.Reason, f.m.NotesURL
 	})
 	u.env.Log.Info("update check", "latest", f.m.Version, "source", f.source, "action", d.Action, "reason", d.Reason)
+	if d.Action != update.ActionInstall {
+		// An update being installed brings its openvpn with it. Otherwise a
+		// missing one comes from this release, before the verdict is
+		// reported: a "check now" meant to bring it back answers once it's in
+		// place (or decideWait has passed). Never from a halted release: a
+		// halt may be about that very openvpn.
+		if f.advice == nil || !f.advice.Halt {
+			u.repairOpenVPN(ctx, f.m)
+		}
+	}
 	signal()
 	if d.Action != update.ActionInstall {
 		// Whatever was staged is no longer wanted (a halt, a rollout cut
@@ -394,13 +412,15 @@ func (u *Updater) installLocked(ctx context.Context) {
 		u.waiting(s.version, why)
 		return
 	}
-	if sum, err := fileSHA256(s.path); err != nil || sum != s.sum {
-		u.dropStaged()
-		release()
-		u.set(func(st *domain.UpdateStatus) {
-			st.State, st.Error = "error", "the staged update changed on disk; it will be downloaded again"
-		})
-		return
+	for path, want := range s.files() {
+		if sum, err := fileSHA256(path); err != nil || sum != want {
+			u.dropStaged()
+			release()
+			u.set(func(st *domain.UpdateStatus) {
+				st.State, st.Error = "error", "the staged update changed on disk; it will be downloaded again"
+			})
+			return
+		}
 	}
 	if err := u.swap(s); err != nil {
 		release()
@@ -462,8 +482,11 @@ func (u *Updater) stillWanted(ctx context.Context, version string) bool {
 	return true
 }
 
-// swap backs up the database and the current binary, puts the new binary in
+// swap backs up the database and the current binaries, puts the new ones in
 // place atomically, and leaves the marker BootGuard reads on the next start.
+// openvpn goes first and the daemon last: the daemon's rename is the commit
+// point. A crash before it leaves the previous daemon running, and BootGuard
+// puts the previous openvpn back beside it.
 func (u *Updater) swap(s *staged) error {
 	dir := u.env.StateDir
 	_ = os.Remove(backupPath(dir))
@@ -473,16 +496,66 @@ func (u *Updater) swap(s *staged) error {
 	if err := copyFileAtomic(u.env.Binary, prevBinary(u.env.Binary), 0o755); err != nil {
 		return fmt.Errorf("keep current binary: %w", err)
 	}
+	how, err := u.keepOpenVPN(s)
+	if err != nil {
+		return err
+	}
 	if err := writeMarker(dir, marker{From: u.env.Current, To: s.version, At: u.env.Now()}); err != nil {
 		return err
 	}
 	u.keepRunningManifest(s)
+	if s.openvpn != "" {
+		if err := copyFileAtomic(s.openvpn, u.env.OpenVPN, 0o755); err != nil {
+			_ = os.Remove(pendingPath(dir))
+			return fmt.Errorf("install openvpn: %w", err)
+		}
+	}
 	if err := copyFileAtomic(s.path, u.env.Binary, 0o755); err != nil {
 		_ = os.Remove(pendingPath(dir))
+		if rerr := restoreOpenVPN(u.env.OpenVPN, how); rerr != nil {
+			u.env.Log.Error("update: putting the previous openvpn back failed", "err", rerr)
+		}
 		return fmt.Errorf("install binary: %w", err)
 	}
 	_ = os.RemoveAll(stagingDir(dir))
 	return nil
+}
+
+// keepOpenVPN prepares openvpn's side of a swap and records it, so that a
+// rollback — by BootGuard or by the user, however much later — puts back
+// exactly what was there:
+//   - the release ships openvpn and one is installed: it is kept as .prev
+//     (openvpnReplaced);
+//   - it ships one and none is installed: nothing to keep (openvpnAdded — a
+//     rollback keeps it: every openvpn RiftRoute ships runs every daemon's
+//     tunnels, and a daemon from before tunnels ignores it);
+//   - it ships none: openvpn isn't touched, and a .prev left by an earlier
+//     update goes, since it doesn't belong to this one.
+func (u *Updater) keepOpenVPN(s *staged) (string, error) {
+	how := ""
+	if u.env.OpenVPN != "" {
+		prev := prevBinary(u.env.OpenVPN)
+		switch {
+		case s.openvpn == "":
+			_ = os.Remove(prev)
+		case fileExists(u.env.OpenVPN):
+			if err := copyFileAtomic(u.env.OpenVPN, prev, 0o755); err != nil {
+				return "", fmt.Errorf("keep current openvpn: %w", err)
+			}
+			how = openvpnReplaced
+		default:
+			_ = os.Remove(prev)
+			how = openvpnAdded
+		}
+	}
+	ps, err := updateState(u.env.StateDir, func(ps *persisted) { ps.OpenVPNSwap = how })
+	if err != nil {
+		return "", fmt.Errorf("record the openvpn swap: %w", err)
+	}
+	u.mu.Lock()
+	u.ps = ps
+	u.mu.Unlock()
+	return how, nil
 }
 
 // RequestRollback asks for the previous binary back. It waits for a quiet

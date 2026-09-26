@@ -362,6 +362,54 @@ func (p *Provider) SetVPN(up bool) {
 	}
 }
 
+// PurgeIface drops every route through iface, as the kernel does when the
+// interface goes away (tests) — whoever owned them.
+func (p *Provider) PurgeIface(iface string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	keep := func(in []domain.Route) []domain.Route {
+		out := in[:0:0]
+		for _, r := range in {
+			if r.Iface != iface {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	p.routesV4, p.routesV6 = keep(p.routesV4), keep(p.routesV6)
+}
+
+// SetPhysGateway moves the physical gateway — a network change (tests). The
+// caller adds whatever on-link route makes it reachable.
+func (p *Provider) SetPhysGateway(fam domain.Family, gw netip.Addr, iface string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.physGW[fam], p.physIface = gw, iface
+}
+
+// SetDNS replaces the resolvers DNSConfig reports (tests).
+func (p *Provider) SetDNS(servers ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dns.Servers = append([]string(nil), servers...)
+}
+
+// SetTunnelIface adds (up) or removes a tunnel interface holding addr — the
+// fake tunnel launcher's stand-in for openvpn opening and closing its utun.
+func (p *Provider) SetTunnelIface(name, addr string, up bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.ifaces {
+		if p.ifaces[i].Name == name {
+			p.ifaces = append(p.ifaces[:i], p.ifaces[i+1:]...)
+			break
+		}
+	}
+	if up {
+		p.ifaces = append(p.ifaces, domain.Iface{Name: name, Up: true, Kind: domain.IfaceKindUtun, Addrs: []string{addr + "/24"}, IsVPN: true})
+	}
+}
+
 // --- internals (caller holds p.mu) ---
 
 func (p *Provider) appendRoute(rt domain.Route) {

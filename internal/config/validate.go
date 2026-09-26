@@ -12,6 +12,7 @@ import (
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // Severity is the level of a validation Issue.
@@ -245,6 +246,11 @@ func ValidateProfile(p domain.Profile, platform string, knownLists map[string]bo
 	}
 	if strings.TrimSpace(p.Name) == "" {
 		add(SevError, "name", "profile name is required")
+	}
+	// Tunnels own their routes under this tag; a profile carrying it would
+	// have its routes withdrawn by every tunnel apply.
+	if strings.HasPrefix(p.ID, routing.TunnelProfilePrefix) {
+		add(SevError, "id", fmt.Sprintf("profile ids starting with %q are reserved for tunnels", routing.TunnelProfilePrefix))
 	}
 	mode := string(p.Mode)
 	if mode == "" {

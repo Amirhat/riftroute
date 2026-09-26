@@ -91,6 +91,8 @@ type State struct {
 	// Preferences are the user's update/telemetry choices.
 	Preferences Preferences `json:"preferences"`
 	// Update is the updater's status (nil on daemons without one).
-	Update      *UpdateStatus `json:"update,omitempty"`
-	GeneratedAt time.Time     `json:"generated_at"`
+	Update *UpdateStatus `json:"update,omitempty"`
+	// Tunnels are the VPN connections RiftRoute runs itself.
+	Tunnels     []TunnelStatus `json:"tunnels,omitempty"`
+	GeneratedAt time.Time      `json:"generated_at"`
 }

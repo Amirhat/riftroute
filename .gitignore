@@ -36,3 +36,6 @@ desktop/frontend/package.json.md5
 
 # Local bug reports written by `riftroute bugreport` (may hold redacted diagnostics)
 riftroute-bugreport-*.txt
+
+# openvpn build (scripts/build-openvpn.sh): sources, work tree, outputs
+/build/
