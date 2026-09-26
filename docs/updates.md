@@ -134,12 +134,51 @@ User-Agent is just `riftroute`. The server keeps no access log.
   one came from a Developer-ID-signed build, macOS may show its "background
   item" notice once after the first automatic update.
 
+## The desktop app
+
+The app follows the daemon to the same release; it never gets ahead of it
+(the daemon checks a release on this machine and can roll it back) and
+never goes backwards.
+
+- After every check the daemon keeps the manifest it verified, exactly as
+  signed, beside its update state (`update-manifest.json` + `.sig`), and serves
+  it at `GET /update/manifest`.
+- Each state push carries the daemon's version and update mode. When the
+  daemon runs a release newer than the app, the app fetches that manifest,
+  **verifies it again** against the compiled-in release keys, and takes its
+  own asset: the macOS app's DMG (`darwin/universal/app-dmg`) or the AppImage
+  (`linux/amd64/app-appimage`). The download must match the signed SHA-256 and
+  size.
+- macOS: the DMG is mounted read-only. The app in it must carry this app's
+  bundle identifier, be the release's version (its bundled `riftrouted
+  -version`), and pass `codesign --verify --deep --strict`. It is copied beside
+  the running app and swapped in with two renames in one folder; the previous
+  app is kept as `.RiftRoute.app.prev`.
+- Linux: the AppImage is copied beside the running one (`$APPIMAGE`) and swapped
+  in the same way, keeping `.RiftRoute.AppImage.prev`.
+- All of it runs as the user who runs the app — no root — and only where that
+  user can write. Anything else (a folder they can't change, a macOS
+  translocated copy, a `.deb`, a development build) reports why and is updated
+  the way it was installed.
+- Mode: `auto` installs on its own, `notify` waits for *Update the app*, `off`
+  does nothing. The running app keeps running from the moved files; a banner
+  asks for a restart, which starts the new app once the old one has exited.
+  Nothing more happens in that process until the restart (a second swap would
+  delete the bundle it runs from). A failed attempt is shown and retried after
+  an hour, then two, … up to a day; *Try again* retries at once.
+- The app moves only once the daemon has confirmed the release (it is on
+  probation until it came up healthy), and only to the release the daemon
+  runs: the daemon serves that release's manifest (kept at the swap, and after
+  a rollback the previous one), not a newer one it holds back. If the daemon
+  rolls the release back before the app restarts, the app puts its previous
+  version back.
+
 ## Where auto-install is NOT used
 
 - **Linux `.deb` installs** — the package manager owns those files; the daemon
   only notifies. (Detected by whether the `riftroute` package is installed.)
-- **The desktop app** (`RiftRoute.app` / AppImage) — notify with a download
-  link; macOS app bundles need re-signing and the app replaces itself poorly.
+- **The desktop app** where it can't replace itself (see "The desktop app"
+  above): a folder its user can't change, a `.deb`, a development build.
 - A daemon that is not installed as a service (dev runs) never updates itself.
 
 ## Server (riftroute-server)

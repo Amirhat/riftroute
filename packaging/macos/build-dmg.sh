@@ -44,6 +44,11 @@ build_universal() {
 build_universal "${ROOT}/cmd/riftroute"  "${BINDIR}/riftroute"
 build_universal "${ROOT}/cmd/riftrouted" "${BINDIR}/riftrouted"
 
+# The bundle says which release it is (Finder's Get Info; Wails' template
+# leaves 1.0.0).
+plutil -replace CFBundleShortVersionString -string "${VERSION}" "${APP}/Contents/Info.plist"
+plutil -replace CFBundleVersion -string "${VERSION}" "${APP}/Contents/Info.plist"
+
 # Re-sign AFTER bundling — adding files under Contents/ invalidates the signature
 # Wails applied at build time. A VALID signature is REQUIRED even without a
 # Developer ID: an app with a broken signature is reported by macOS as "damaged

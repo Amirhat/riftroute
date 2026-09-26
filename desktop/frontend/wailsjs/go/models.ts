@@ -41,6 +41,31 @@ export namespace apiclient {
 
 }
 
+export namespace appupdate {
+	
+	export class Status {
+	    state: string;
+	    current: string;
+	    target?: string;
+	    why?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new Status(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.state = source["state"];
+	        this.current = source["current"];
+	        this.target = source["target"];
+	        this.why = source["why"];
+	        this.error = source["error"];
+	    }
+	}
+
+}
+
 export namespace config {
 	
 	export class Issue {
@@ -1044,6 +1069,7 @@ export namespace domain {
 	    installed_at: any;
 	    can_roll_back: boolean;
 	    self_updatable: boolean;
+	    probation?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateStatus(source);
@@ -1067,6 +1093,7 @@ export namespace domain {
 	        this.installed_at = this.convertValues(source["installed_at"], null);
 	        this.can_roll_back = source["can_roll_back"];
 	        this.self_updatable = source["self_updatable"];
+	        this.probation = source["probation"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

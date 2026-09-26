@@ -42,6 +42,10 @@ export function ExportConfigDialog() {
   return window['go']['main']['App']['ExportConfigDialog']();
 }
 
+export function GetAppUpdate() {
+  return window['go']['main']['App']['GetAppUpdate']();
+}
+
 export function GetAudit() {
   return window['go']['main']['App']['GetAudit']();
 }
@@ -106,6 +110,10 @@ export function GetSystemUsers() {
   return window['go']['main']['App']['GetSystemUsers']();
 }
 
+export function InstallAppUpdate() {
+  return window['go']['main']['App']['InstallAppUpdate']();
+}
+
 export function InstallDaemon() {
   return window['go']['main']['App']['InstallDaemon']();
 }
@@ -140,6 +148,10 @@ export function Reachable() {
 
 export function RefreshList(arg1) {
   return window['go']['main']['App']['RefreshList'](arg1);
+}
+
+export function RestartApp() {
+  return window['go']['main']['App']['RestartApp']();
 }
 
 export function RestartDaemon() {

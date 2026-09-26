@@ -4,6 +4,22 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.8] — 2026-09-26
+
+### Added
+- **The desktop app updates itself too.** It follows the daemon: once the
+  daemon runs a newer release, the app installs that same release — on its own
+  (updates: auto) or when you click *Update the app* in Settings → Updates
+  (notify) — and asks you to restart it; nothing is closed for you. It checks
+  the release's signature itself, installs only the app the release signed,
+  and keeps the previous one. On macOS it updates the app where you installed
+  it; on Linux, an AppImage. This is the last version whose app you install by
+  hand.
+
+### Fixed
+- `riftroute update` says "checked 5 minutes ago" instead of "checked 5m0s ago".
+- The app bundle says which version it is (Finder's Get Info showed 1.0.0).
+
 ## [0.2.7] — 2026-09-26
 
 ### Fixed
