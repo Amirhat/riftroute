@@ -230,7 +230,8 @@ func (m *Manager) Status(name string) (domain.TunnelStatus, bool) {
 
 func brokenStatus(name string, err error) domain.TunnelStatus {
 	return domain.TunnelStatus{
-		Name: name, Type: domain.TunnelOpenVPN, State: domain.TunnelFailed, Routes: []string{}, Servers: []string{},
+		Name: name, Type: domain.TunnelOpenVPN, Via: domain.TunnelViaDirect, Unreadable: true,
+		State: domain.TunnelFailed, Routes: []string{}, Servers: []string{},
 		LastError: "its saved definition can't be read (" + err.Error() + "); delete it and add it again",
 	}
 }
@@ -507,6 +508,10 @@ func normalizeRoutes(in []string) ([]string, []string) {
 func (m *Manager) Connect(name string) error {
 	m.mu.Lock()
 	d, p, perr := m.defs[name], m.profs[name], m.perrs[name]
+	if _, bad := m.broken[name]; bad {
+		m.mu.Unlock()
+		return fmt.Errorf("tunnel %s's saved definition can't be read; delete it and add it again", name)
+	}
 	if d == nil {
 		m.mu.Unlock()
 		return fmt.Errorf("no tunnel named %q", name)

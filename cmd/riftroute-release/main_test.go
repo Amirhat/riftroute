@@ -1,6 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -59,11 +62,15 @@ func (r rewrite) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func fakeRelease(t *testing.T, tamper bool) *http.Client {
+	return fakeReleaseOf(t, "0.2.6", []byte("darwin arm64 bits"), tamper)
+}
+
+func fakeReleaseOf(t *testing.T, v string, darwinTarball []byte, tamper bool) *http.Client {
 	files := map[string][]byte{
-		"riftroute_0.2.6_darwin_arm64.tar.gz": []byte("darwin arm64 bits"),
-		"riftroute_0.2.6_linux_amd64.tar.gz":  []byte("linux amd64 bits"),
-		"RiftRoute_0.2.6.dmg":                 []byte("dmg bits"),
-		"notes.txt":                           []byte("not a release file"),
+		"riftroute_" + v + "_darwin_arm64.tar.gz": darwinTarball,
+		"riftroute_" + v + "_linux_amd64.tar.gz":  []byte("linux amd64 bits"),
+		"RiftRoute_" + v + ".dmg":                 []byte("dmg bits"),
+		"notes.txt":                               []byte("not a release file"),
 	}
 	var sums strings.Builder
 	for name, b := range files {
@@ -71,20 +78,20 @@ func fakeRelease(t *testing.T, tamper bool) *http.Client {
 		fmt.Fprintf(&sums, "%s  %s\n", hex.EncodeToString(s[:]), name)
 	}
 	if tamper {
-		files["riftroute_0.2.6_linux_amd64.tar.gz"] = []byte("swapped after checksums were made")
+		files["riftroute_"+v+"_linux_amd64.tar.gz"] = []byte("swapped after checksums were made")
 	}
 	files["checksums.txt"] = []byte(sums.String())
 	var assets []map[string]any
 	for name, b := range files {
 		assets = append(assets, map[string]any{"name": name, "size": len(b),
-			"browser_download_url": "https://github.com/Amirhat/riftroute/releases/download/v0.2.6/" + name})
+			"browser_download_url": "https://github.com/Amirhat/riftroute/releases/download/v" + v + "/" + name})
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/repos/Amirhat/riftroute/releases/tags/v0.2.6", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v0.2.6", "html_url": "https://github.com/Amirhat/riftroute/releases/tag/v0.2.6",
+	mux.HandleFunc("/repos/Amirhat/riftroute/releases/tags/v"+v, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v" + v, "html_url": "https://github.com/Amirhat/riftroute/releases/tag/v" + v,
 			"published_at": "2026-10-01T12:00:00Z", "assets": assets})
 	})
-	mux.HandleFunc("/Amirhat/riftroute/releases/download/v0.2.6/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/Amirhat/riftroute/releases/download/v"+v+"/", func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		b, ok := files[name]
 		if !ok {
@@ -129,5 +136,36 @@ func TestBuildManifestRefusesAMismatchedAsset(t *testing.T) {
 	_, err := buildManifest(context.Background(), hc, "https://api.github.com/repos/Amirhat/riftroute", "v0.2.6", "stable", "", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "doesn't match") {
 		t.Fatalf("want a mismatch error, got %v", err)
+	}
+}
+
+func tgz(t *testing.T, names ...string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, n := range names {
+		_ = tw.WriteHeader(&tar.Header{Name: n, Mode: 0o755, Size: 1, Typeflag: tar.TypeReg})
+		_, _ = tw.Write([]byte("x"))
+	}
+	_ = tw.Close()
+	_ = gz.Close()
+	return buf.Bytes()
+}
+
+// From 0.3.0 on, a macOS tarball without openvpn is a broken release: every
+// macOS install of it would have no tunnels. It isn't signed.
+func TestBuildManifestRefusesAMacTarballWithoutOpenVPN(t *testing.T) {
+	api := "https://api.github.com/repos/Amirhat/riftroute"
+	_, err := buildManifest(context.Background(), fakeReleaseOf(t, "0.3.0", tgz(t, "riftroute", "riftrouted"), false), api, "v0.3.0", "stable", "", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "no openvpn") {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+	if _, err := buildManifest(context.Background(), fakeReleaseOf(t, "0.3.0", tgz(t, "riftroute", "riftrouted", "openvpn"), false), api, "v0.3.0", "stable", "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// Releases before it never shipped one.
+	if _, err := buildManifest(context.Background(), fakeReleaseOf(t, "0.2.7", tgz(t, "riftroute", "riftrouted"), false), api, "v0.2.7", "stable", "", io.Discard); err != nil {
+		t.Fatal(err)
 	}
 }

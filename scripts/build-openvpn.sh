@@ -81,7 +81,12 @@ OUT="$(cd "$OUT" && pwd)"
 log() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'build-openvpn: %s\n' "$*" >&2; exit 1; }
 
-for tool in clang make perl lipo otool codesign strip shasum curl tar; do
+# The system's tools only: openvpn's configure compiles in the absolute path
+# of the ifconfig/route it finds on PATH, and the root daemon runs those on
+# every connect — a user-writable directory early on PATH (Homebrew, ~/bin)
+# must never be where they come from.
+export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+for tool in clang make perl lipo otool codesign strip strings shasum curl tar; do
   command -v "$tool" >/dev/null 2>&1 || die "missing build tool: $tool (install the Xcode command line tools: xcode-select --install)"
 done
 
@@ -126,9 +131,17 @@ check_links() {
   otool -L "$bin" >&2
   bad=$(otool -L "$bin" | awk '/^\t/ {print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)' || true)
   [ -z "$bad" ] || die "$(basename "$bin") links libraries outside /usr/lib and /System: ${bad}"
-  if otool -l "$bin" | grep -q LC_RPATH; then
+  # Not `otool | grep -q`: under pipefail, grep exiting early makes the
+  # pipeline fail and the check pass.
+  if otool -l "$bin" | grep -c LC_RPATH >/dev/null; then
     die "$(basename "$bin") has an LC_RPATH; it must not look for libraries anywhere"
   fi
+  # The tools it runs as root are the system's.
+  local tools
+  tools=$(strings -a "$bin" | grep -E '^/[^ ]*/(ifconfig|route|netstat|ip)$' | sort -u || true)
+  for t in $tools; do
+    case "$t" in /sbin/ifconfig | /sbin/route | /usr/sbin/netstat) ;; *) die "$(basename "$bin") would run $t" ;; esac
+  done
 }
 
 # check_version <binary> <arch>: run it (as this user, with the daemon's
@@ -226,6 +239,7 @@ build_arch() {
     # dir is searched first for configure's -llz4 probe, so the linker can't
     # pick a same-named dylib from a default search path instead.
     ./configure --host="$host" --build="$build" \
+      IFCONFIG=/sbin/ifconfig ROUTE=/sbin/route NETSTAT=/usr/sbin/netstat \
       --with-crypto-library=openssl --without-openssl-engine \
       --disable-plugins --disable-plugin-auth-pam --disable-plugin-down-root \
       --disable-pkcs11 --disable-dco --disable-unit-tests \
@@ -284,8 +298,8 @@ LZ4 ${LZ4_VERSION} library (BSD-2-Clause, licenses/lz4)
   ${LZ4_URL}
   sha256 ${LZ4_SHA256}
 
-The same OpenVPN and LZO source tarballs are attached to every RiftRoute
-release that ships this program.
+These four source tarballs — everything the program is built from — are
+attached to every RiftRoute release that ships it.
 EOF
 }
 

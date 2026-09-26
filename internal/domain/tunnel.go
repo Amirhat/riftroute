@@ -74,6 +74,10 @@ type TunnelStatus struct {
 	// contain its router, or another owner already routes that destination).
 	Blocked []TunnelBlocked `json:"blocked,omitempty"`
 
+	// Unreadable: the saved definition can't be read; the tunnel can only
+	// be deleted (and added again).
+	Unreadable bool `json:"unreadable,omitempty"`
+
 	State TunnelState `json:"state"`
 	// Detail is the OpenVPN phase while connecting ("auth", "get_config", …)
 	// or the reason for a reconnect.
