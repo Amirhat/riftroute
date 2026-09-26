@@ -93,9 +93,16 @@ func (r *Reconciler) ApplyTunnels(ctx context.Context) error {
 // the other owned routes it carries over untouched may be stale (auto-apply
 // off after a network move) and must not stop a tunnel installing or
 // withdrawing its own.
+//
+// It commits without a guard (safety.Options.Unguarded): what it changes
+// can't cut the gateway, a resolver or an anchor — a tunnel route holding one
+// is left out (routing.TunnelRouteBlock) — and a watchdog rollback would do
+// harm: re-add a withdrawn on-link route into an interface that's gone, or
+// withdraw a live tunnel's routes with nothing to put them back.
 func (r *Reconciler) applyTunnels(ctx context.Context) (safety.Result, error) {
 	opts := options()
 	opts.VetChangesOnly = true
+	opts.Unguarded = true
 	return r.proto.ApplyBuilt(ctx, func(ctx context.Context, owned []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 		desired, rules, physGW, err := r.svc.DesiredTunnelsOnly(ctx, owned)
 		o.UseGateway(physGW)

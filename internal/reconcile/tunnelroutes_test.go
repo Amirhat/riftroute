@@ -29,6 +29,8 @@ type tunnelHarness struct {
 	proto     *safety.Protocol
 	rec       *reconcile.Reconciler
 	autoApply atomic.Bool
+	clock     *safety.FakeClock
+	prober    *safety.FakeProber
 
 	mu     sync.Mutex
 	inputs []routing.TunnelInput
@@ -106,7 +108,8 @@ func newTunnelHarness(t *testing.T) *tunnelHarness {
 	t.Cleanup(func() { _ = st.Close() })
 	h.st = st
 	h.svc = core.New(h.prov, st, "test")
-	h.proto = safety.NewProtocol(h.prov, st, safety.NewFakeClock(time.Unix(0, 0)), func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	h.clock, h.prober = safety.NewFakeClock(time.Unix(0, 0)), safety.NewFakeProber()
+	h.proto = safety.NewProtocol(h.prov, st, h.clock, func() safety.Prober { return h.prober }, "fake", nil)
 	t.Cleanup(h.proto.ShutdownResolve)
 	h.rec = reconcile.New(h.svc, h.proto, slog.New(slog.NewTextHandler(io.Discard, nil)), 0, h.autoApply.Load)
 	h.svc.SetTunnels(func() []routing.TunnelInput {

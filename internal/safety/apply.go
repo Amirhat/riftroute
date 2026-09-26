@@ -76,6 +76,17 @@ type Options struct {
 	// withdraw anything. The unresolved-gateway fail-safe still covers every
 	// main-table route the plan adds or removes.
 	VetChangesOnly bool
+	// Unguarded commits the change as soon as it is applied: no watchdog,
+	// guard window or commit-confirm, so nothing rolls it back later. Only
+	// for a change that can't cut what the watchdog guards by construction,
+	// and whose rollback would do harm — a tunnel transition: a tunnel route
+	// never contains the gateway, a resolver in use or an anchor
+	// (routing.TunnelRouteBlock), and the guardrails still vet what it adds;
+	// rolled back, a withdrawal would re-add an on-link route into an
+	// interface that's gone (or another VPN's now), and a connect would lose
+	// a live tunnel's routes with nothing to put them back. The journal
+	// still covers a crash mid-execution.
+	Unguarded bool
 }
 
 // UseGateway points the guardrails and the watchdog at physGW, the physical
@@ -473,6 +484,15 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 	}
 	p.audit(opts.Actor, action, "applied", "", &plan, false)
 
+	if opts.Unguarded {
+		p.clearPending(txID)
+		p.txmu.Lock()
+		p.resolved[txID] = domain.TxCommitted
+		p.txmu.Unlock()
+		p.audit(opts.Actor, "confirm", "committed", "unguarded", nil, false)
+		return Result{TxID: txID, Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
+	}
+
 	// ARM watchdog + commit-confirm and resolve in the background.
 	ctxTx, cancel := context.WithCancel(context.Background())
 	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, ownership: ownership, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
@@ -521,9 +541,12 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.log.Error("recovered panic resolving tx; forcing rollback", "tx", pt.id, "panic", r)
-			_ = NewExecutor(p.prov).RunOps(context.Background(), pt.plan.Inverse)
+			inverse := withoutTunnelLinks(pt.plan.Inverse)
+			_ = NewExecutor(p.prov).RunOps(context.Background(), inverse)
 			if pt.ownership {
-				p.applyOwnership(pt.plan, true)
+				for _, op := range inverse {
+					p.recordOwnership(op)
+				}
 			}
 			pt.result = domain.TxRolledBack
 			p.finishTx(pt)
@@ -537,24 +560,54 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		p.clearPending(pt.id) // resolved cleanly → no crash-recovery needed
 		p.audit(actor, "confirm", "committed", "", nil, false)
 	} else {
-		exec := NewExecutor(p.prov)
-		if rbErr := exec.RunOps(context.Background(), pt.plan.Inverse); rbErr != nil {
-			// The kernel wasn't fully reverted. KEEP the ownership records AND the
-			// pending-tx journal so Panic / startup RecoverPending can retry the
-			// revert; report the true outcome rather than a false "rolled back".
+		if left, rbErr := p.rollBack(pt); rbErr != nil {
+			// The kernel wasn't fully reverted. The ownership records follow
+			// what was; the journal KEEPS what wasn't, so Panic / startup
+			// RecoverPending can retry it — report the true outcome rather
+			// than a false "rolled back".
+			if p.store != nil {
+				if err := p.store.PutPendingTx(pt.id, left); err != nil {
+					p.log.Warn("could not narrow the journal to the incomplete rollback", "tx", pt.id, "err", err)
+				}
+			}
 			pt.result = domain.TxRolledBack
 			p.audit(actor, "rollback", "rollback_incomplete", rbErr.Error(), nil, true)
 			p.finishTx(pt)
 			return
-		}
-		if pt.ownership {
-			p.applyOwnership(pt.plan, true)
 		}
 		p.clearPending(pt.id)
 		pt.result = domain.TxRolledBack
 		p.audit(actor, "rollback", "rolled_back", "watchdog or missed confirm", nil, true)
 	}
 	p.finishTx(pt)
+}
+
+// rollBack replays a transaction's inverse op by op, less the re-adds of a
+// tunnel's on-link routes (see withoutTunnelLinks): the tunnel may be gone
+// and its interface name another VPN's by now — the tunnels re-apply their
+// routes once the transaction has settled. The ownership map follows each op
+// that went through, so it agrees with the kernel even when some fail (a pin
+// re-added while the on-link route beside it failed must not be left in the
+// kernel unrecorded). It returns what failed as a plan of its own: those ops'
+// forward effect is still in place, and left.Inverse still undoes it.
+func (p *Protocol) rollBack(pt *pendingTx) (left domain.Plan, err error) {
+	exec := NewExecutor(p.prov)
+	for _, op := range withoutTunnelLinks(pt.plan.Inverse) {
+		if e := exec.do(context.Background(), op); e != nil {
+			if err == nil {
+				err = e
+			}
+			left.Inverse = append(left.Inverse, op)
+			continue
+		}
+		if pt.ownership {
+			p.recordOwnership(op)
+		}
+	}
+	for i := len(left.Inverse) - 1; i >= 0; i-- {
+		left.Ops = append(left.Ops, inverseOp(left.Inverse[i]))
+	}
+	return left, err
 }
 
 func (p *Protocol) clearPending(id string) {
@@ -798,10 +851,12 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// withoutTunnelLinks drops the re-adds of tunnel on-link routes from a crash
-// recovery replay: no tunnel runs at startup, and such a route would go into
-// whatever interface has the recorded name now. (DropTunnelRoutes then drops
-// their records.)
+// withoutTunnelLinks drops the re-adds of tunnel on-link routes from a
+// replayed inverse. In crash recovery no tunnel runs yet, and such a route
+// would go into whatever interface has the recorded name now
+// (DropTunnelRoutes then drops their records); in a guard's rollback the
+// tunnel may be gone too, and the tunnels re-apply what they still route
+// once it has settled.
 func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
 	out := ops[:0:0]
 	for _, op := range ops {
@@ -870,22 +925,25 @@ func providerManaged(ctx context.Context, prov provider.RouteProvider) []domain.
 }
 
 func (p *Protocol) applyOwnership(plan domain.Plan, undo bool) {
-	if p.store == nil {
+	for _, op := range plan.Ops {
+		if undo {
+			op = inverseOp(op)
+		}
+		p.recordOwnership(op)
+	}
+}
+
+// recordOwnership records what a route op that went through did: an added
+// route is RiftRoute's, a deleted one no longer is.
+func (p *Protocol) recordOwnership(op domain.PlanOp) {
+	if p.store == nil || op.Route == nil {
 		return
 	}
-	for _, op := range plan.Ops {
-		if op.Route == nil {
-			continue
-		}
-		add := op.Kind == domain.OpAddRoute
-		if undo {
-			add = !add
-		}
-		if add {
-			_ = p.store.AddOwned(*op.Route)
-		} else {
-			_ = p.store.DelOwned(*op.Route)
-		}
+	switch op.Kind {
+	case domain.OpAddRoute:
+		_ = p.store.AddOwned(*op.Route)
+	case domain.OpDelRoute:
+		_ = p.store.DelOwned(*op.Route)
 	}
 }
 
