@@ -212,9 +212,12 @@ app, which doesn't include it:
 - **macOS: nothing to install.** RiftRoute ships its own openvpn (OpenVPN 2.6,
   built from source — see [THIRD_PARTY.md](THIRD_PARTY.md)) in the app and the
   release tarballs, and installing the daemon — the app's **Install** button,
-  or `sudo riftroute daemon install` — puts it beside the daemon. Homebrew's
-  openvpn is not used (why: below). A daemon installed from a release that
-  predates this has no openvpn: reinstall it from a current release.
+  or `sudo riftroute daemon install` — puts it beside the daemon, and updates
+  keep it in step. Homebrew's openvpn is not used (why: below). If it's
+  missing — a daemon updated by an older release's updater, which knew only
+  the daemon — **Check for updates** on the Tunnels page (or `riftroute update
+  check`) installs it from the newest signed release, even with updates off;
+  reinstalling the daemon from a current release puts it in place too.
 - **Linux:** install your distribution's package:
 
 | System | Install |

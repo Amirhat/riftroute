@@ -51,7 +51,7 @@ func TestInstallHelpPerSystem(t *testing.T) {
 		cmds   string
 		note   string
 	}{
-		{"macOS: the openvpn that ships with RiftRoute", mac, "macOS", "", "ships with RiftRoute — reinstall the daemon"},
+		{"macOS: the openvpn that ships with RiftRoute", mac, "macOS", "", "Checking for updates installs it"},
 		{"Ubuntu", linuxHost("PRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nID=ubuntu\nID_LIKE=debian\n"), "Ubuntu 24.04.1 LTS", "sudo apt install openvpn", ""},
 		{"Debian", linuxHost("PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nID=debian\n"), "Debian GNU/Linux 12 (bookworm)", "sudo apt install openvpn", ""},
 		{"Mint via ID_LIKE", linuxHost("NAME=\"Linux Mint\"\nID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"), "Linux Mint", "sudo apt install openvpn", ""},
@@ -71,6 +71,13 @@ func TestInstallHelpPerSystem(t *testing.T) {
 		if in.System != c.system || strings.Join(in.Commands, " && ") != c.cmds || !strings.Contains(in.Note, c.note) {
 			t.Errorf("%s: got %+v", c.name, in)
 		}
+		want := domain.TunnelInstallPackage // Linux: the distribution's package
+		if c.h.goos == "darwin" {
+			want = domain.TunnelInstallUpdate // an update check installs it
+		}
+		if in.Action != want {
+			t.Errorf("%s: action %q, want %q", c.name, in.Action, want)
+		}
 	}
 }
 
@@ -87,24 +94,41 @@ func TestDetectEngine(t *testing.T) {
 	var seen []domain.TunnelEngine
 	check := func(e domain.TunnelEngine) domain.TunnelEngine { seen = append(seen, e); return e }
 
-	// macOS: whatever is wrong, the fix is RiftRoute's own openvpn — never Homebrew.
+	// macOS: whatever is wrong, the fix is RiftRoute's own openvpn — never
+	// Homebrew. Missing: an update check installs it (the updater's repair),
+	// and the note says how from the CLI as well as the app.
 	if e := check(detectEngine(mac, found("", errNotFound), nil)); e.Available || e.Problem != "OpenVPN isn't installed" ||
-		e.Install == nil || len(e.Install.Commands) != 0 || e.Install.Note != macReinstall || e.Install.URL != releasesURL {
+		e.Install == nil || len(e.Install.Commands) != 0 || e.Install.Action != domain.TunnelInstallUpdate ||
+		e.Install.Note != macUpdate || e.Install.URL != releasesURL {
 		t.Errorf("missing on macOS: %+v %+v", e, e.Install)
+	}
+	for _, want := range []string{"riftroute update check", "Check for updates", "updates off", "sudo riftroute daemon install"} {
+		if !strings.Contains(macUpdate, want) {
+			t.Errorf("the macOS install note doesn't mention %q: %s", want, macUpdate)
+		}
+	}
+	// There but unusable: an update check never replaces an openvpn that's
+	// present, so the fix is reinstalling the daemon — in the app, too.
+	for _, want := range []string{"sudo riftroute daemon install", "Settings → Daemon service"} {
+		if !strings.Contains(macReinstall, want) {
+			t.Errorf("the macOS reinstall note doesn't mention %q: %s", want, macReinstall)
+		}
 	}
 	notRoots := &unsafeError{Bin: shipped, Path: shipped, Why: "isn't owned by root"}
 	if e := check(detectEngine(mac, found(shipped, notRoots), nil)); e.Available || !strings.Contains(e.Problem, "isn't owned by root") ||
-		!strings.Contains(e.Install.Note, "reinstall it rather than") || !strings.Contains(e.Install.Note, macReinstall) {
+		!strings.Contains(e.Install.Note, "reinstall it rather than") || !strings.Contains(e.Install.Note, macReinstall) ||
+		e.Install.Action != domain.TunnelInstallReinstall {
 		t.Errorf("unsafe on macOS: %+v %+v", e, e.Install)
 	}
 	broken := func(string, os.FileInfo) (string, error) {
 		return "", errors.New(shipped + " doesn't run: dyld: Library not loaded")
 	}
 	if e := check(detectEngine(mac, found(shipped, nil), broken)); e.Available || !strings.Contains(e.Problem, "doesn't run") ||
-		e.Install.Note != macReinstall {
+		e.Install.Note != macReinstall || e.Install.Action != domain.TunnelInstallReinstall {
 		t.Errorf("broken on macOS: %+v %+v", e, e.Install)
 	}
-	if e := check(detectEngine(mac, found(shipped, nil), ver("2.4.9"))); e.Available || e.Install.Note != macReinstall {
+	if e := check(detectEngine(mac, found(shipped, nil), ver("2.4.9"))); e.Available || e.Install.Note != macReinstall ||
+		e.Install.Action != domain.TunnelInstallReinstall {
 		t.Errorf("too old on macOS: %+v", e.Install)
 	}
 	if e := check(detectEngine(mac, found(shipped, nil), ver("2.6.23"))); !e.Available || e.Problem != "" ||
@@ -148,7 +172,8 @@ func TestDetectEngine(t *testing.T) {
 		t.Errorf("unsafe, unknown distro: %+v", e.Install)
 	}
 	if e := check(detectEngine(linuxHost("ID=ubuntu\n"), found(bin, nil), ver("2.4.7"))); e.Available ||
-		!strings.Contains(e.Problem, "2.4.7 is too old") || e.Install.URL == "" || e.Version != "2.4.7" {
+		!strings.Contains(e.Problem, "2.4.7 is too old") || e.Install.URL == "" || e.Version != "2.4.7" ||
+		e.Install.Action != domain.TunnelInstallPackage {
 		t.Errorf("too old: %+v", e)
 	}
 	if e := check(detectEngine(hostInfo{goos: "windows"}, found("", errNotFound), nil)); e.Available || !strings.Contains(e.Problem, "windows") {
@@ -157,6 +182,9 @@ func TestDetectEngine(t *testing.T) {
 	for _, e := range seen {
 		if s := e.Problem + " " + e.Install.Summary(); strings.Contains(strings.ToLower(s), "brew") {
 			t.Errorf("Homebrew advice: %q", s)
+		}
+		if e.Install != nil && e.Install.System == "macOS" && strings.Contains(e.Install.Summary(), "yourself") {
+			t.Errorf("macOS advice to install openvpn yourself: %q", e.Install.Summary())
 		}
 	}
 }

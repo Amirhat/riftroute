@@ -113,17 +113,39 @@ type TunnelEngine struct {
 }
 
 // TunnelInstall is how to install (or fix) openvpn on this system: on macOS,
-// reinstalling the daemon from a release that ships it; on Linux, the
+// RiftRoute's own openvpn — an update check installs a missing one, and
+// reinstalling the daemon from a current release puts it back; on Linux, the
 // distribution's package manager.
 type TunnelInstall struct {
 	// System names the OS the steps are for ("macOS", "Ubuntu 24.04.1 LTS").
 	System string `json:"system"`
+	// Action is the kind of fix, for a client that offers it as a button
+	// rather than as text. Empty from daemons that predate it.
+	Action TunnelInstallAction `json:"action,omitempty"`
 	// Commands are run in a terminal, in order; empty when there is no
 	// one-line install (Note and URL say what to do instead).
 	Commands []string `json:"commands,omitempty"`
 	Note     string   `json:"note,omitempty"`
 	URL      string   `json:"url,omitempty"`
 }
+
+// TunnelInstallAction is what fixes openvpn here (TunnelInstall.Action).
+type TunnelInstallAction string
+
+const (
+	// TunnelInstallUpdate: RiftRoute's own openvpn (macOS) is missing. The
+	// daemon's update check installs the one the newest release ships — even
+	// with updates off, as long as the daemon is the installed service — and
+	// reinstalling the daemon from a current release puts it in place too.
+	TunnelInstallUpdate TunnelInstallAction = "update"
+	// TunnelInstallReinstall: RiftRoute's own openvpn (macOS) is there but
+	// can't be used. Reinstalling the daemon from a current release replaces
+	// it; an update check doesn't touch an openvpn that's present.
+	TunnelInstallReinstall TunnelInstallAction = "reinstall"
+	// TunnelInstallPackage: the system's openvpn package (Linux) — Commands,
+	// Note and URL say how to install, upgrade or reinstall it.
+	TunnelInstallPackage TunnelInstallAction = "install"
+)
 
 // Summary renders the steps on one line, for errors, logs, and doctor:
 // "run `sudo dnf install openvpn`. OpenVPN comes from EPEL on RHEL … https://…".
