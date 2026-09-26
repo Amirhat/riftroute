@@ -9,13 +9,16 @@ import (
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
-// repairOpenVPN installs the openvpn the running release ships with when it's
-// missing. An update applied by an older updater — one that knew only about
-// the daemon — leaves it out, and macOS tunnels can't run without it. Only
-// the running version's own signed release is used: the same checks as an
-// update (signed hash and size, a plain file, a self-test), and the openvpn
-// that belongs with this daemon rather than a newer one. Runs inside a job
-// (holding u.busy).
+// repairOpenVPN installs the openvpn RiftRoute ships when it's missing. An
+// update applied by an older updater — one that knew only about the daemon —
+// leaves it out, and macOS tunnels can't run without it. It comes from m, the
+// newest signed release the check fetched, even when the daemon isn't
+// updating to it (a rollout, a halt, a Skip or updates off hold it back):
+// every openvpn RiftRoute ships runs every daemon's tunnels. Only openvpn is
+// taken, never the daemon, with the same checks as an update (signed hash
+// and size, a plain file, a self-test); a release whose openvpn can't be
+// installed for good (it ships none, or one that doesn't run here) is tried
+// once. Runs inside a job (holding u.busy).
 func (u *Updater) repairOpenVPN(ctx context.Context, m update.Manifest) {
 	if u.env.OpenVPN == "" || fileExists(u.env.OpenVPN) || !u.env.SelfUpdatable {
 		return
@@ -32,7 +35,7 @@ func (u *Updater) repairOpenVPN(ctx context.Context, m update.Manifest) {
 	}
 
 	giveUp := func(why string) {
-		u.env.Log.Warn("can't install the openvpn this release ships with", "version", m.Version, "why", why)
+		u.env.Log.Warn("can't install the openvpn a release ships", "release", m.Version, "running", u.env.Current, "why", why)
 		u.save(func(ps *persisted) { ps.OpenVPNRepair = m.Version })
 	}
 	dir := filepath.Join(stagingDir(u.env.StateDir), "repair")
@@ -69,5 +72,5 @@ func (u *Updater) repairOpenVPN(ctx context.Context, m update.Manifest) {
 		u.env.Log.Warn("openvpn repair: install failed", "err", err)
 		return
 	}
-	u.env.Log.Info("installed the openvpn this release ships with", "version", m.Version, "path", u.env.OpenVPN)
+	u.env.Log.Info("installed the openvpn RiftRoute ships", "release", m.Version, "running", u.env.Current, "path", u.env.OpenVPN)
 }

@@ -109,8 +109,7 @@ User-Agent is just `riftroute`. The server keeps no access log.
   and fails, its tarball lacks a proper `riftrouted` or has a malformed
   `openvpn`, a binary in it is for another architecture — macOS says
   EBADARCH, not ENOEXEC — its openvpn doesn't run, its version doesn't
-  match). A
-  cancelled, interrupted or I/O-failed attempt is retried later.
+  match). A cancelled, interrupted or I/O-failed attempt is retried later.
 - **Idle gate:** the daemon takes its apply lock only if nothing is being
   applied, nothing awaits confirmation, and no change started in the last 10
   minutes — and keeps it from the swap until it exits, so no change can
@@ -131,8 +130,11 @@ User-Agent is just `riftroute`. The server keeps no access log.
   `schema_min_reader` past it), records who rolled back and from what, and
   exits so the service manager starts the old binary. On macOS the openvpn
   goes back first, to what was there before the update (restored from
-  `riftroute-openvpn.prev`, removed if the update added it, untouched if the
-  update didn't carry one) — safe to repeat if a crash interrupts the
+  `riftroute-openvpn.prev`, untouched if the update didn't carry one). One
+  the update *added* is kept: removing it would leave the previous daemon —
+  which may run tunnels too — without openvpn, every openvpn RiftRoute ships
+  works with every daemon, and a daemon from before tunnels simply ignores
+  it. The restore is safe to repeat if a crash interrupts the
   rollback, which runs again until the daemon is restored. No network needed. A
   rolled-back version is not offered again until a newer one appears. If the
   rollback itself can't be done, that is recorded and shown, and the current
@@ -141,15 +143,22 @@ User-Agent is just `riftroute`. The server keeps no access log.
   nothing: the next start (the old daemon) puts the previous openvpn back if
   it was already replaced, and clears the marker without skipping the
   release. A user's rollback restores openvpn the same way as a health one.
-- An update applied by an older updater (0.2.x knew only the daemon) leaves
-  macOS without the openvpn its new release ships. When a check finds the
-  running version is the latest and openvpn is missing, the daemon fetches
-  its own signed release, takes only openvpn from it (same hash, size and
-  self-test checks) and installs it. A release that ships none, or a broken
-  one, is tried once.
-- Only the daemon binary — and on macOS the openvpn that ships beside it,
-  from the same release — is replaced. The CLI inside the app bundle (or
-  wherever it was installed) and the desktop app are not touched.
+- **openvpn repair.** An update applied by an older updater (0.2.x knew only
+  the daemon) leaves macOS without the openvpn its new release ships. When a
+  check (automatic, or "Check now" — which works with updates off) finds
+  openvpn missing, the daemon takes it from the newest signed release it
+  just fetched — even one it isn't updating to, because a rollout hasn't
+  reached it, the rollout is halted, the version is skipped, or updates are
+  in notify mode or off: every openvpn RiftRoute ships works with every
+  daemon. Only openvpn is taken from it, never the daemon, with the same
+  hash, size, plain-file and self-test checks as an update. A release that
+  ships none, or one that doesn't run here, is tried once; a newer release
+  is tried again. When the check is installing an update, the update brings
+  openvpn itself. "Check now" answers once the repair is done (or after ten
+  seconds), so the app's Tunnels page can offer it as the fix.
+- Only the daemon binary — and on macOS the openvpn that ships beside it —
+  is replaced. The CLI inside the app bundle (or wherever it was installed)
+  and the desktop app are not touched.
 - `daemon install` / `uninstall` clear the previous binaries, the database
   backup and any pending marker.
 - **macOS:** the release tarball's daemon and openvpn are ad-hoc signed; if

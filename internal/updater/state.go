@@ -52,31 +52,27 @@ func pendingPath(dir string) string { return filepath.Join(dir, "update-pending.
 // What an update did to the installed openvpn (persisted.OpenVPNSwap).
 const (
 	openvpnReplaced = "replaced" // the previous one is kept as .prev
-	openvpnAdded    = "added"    // there was none before
+	openvpnAdded    = "added"    // there was none before; a rollback keeps it
 )
 
-// restoreOpenVPN undoes openvpn's side of the last swap (see keepOpenVPN).
-// Running it again after it succeeded (a crash before the daemon's own
+// restoreOpenVPN undoes openvpn's side of the last swap (see keepOpenVPN):
+// an openvpn the update replaced goes back. One it added stays — removing it
+// would leave a daemon that runs tunnels without openvpn, and every openvpn
+// RiftRoute ships works with every daemon (one from before tunnels ignores
+// it). Running it again after it succeeded (a crash before the daemon's own
 // restore) changes nothing.
 func restoreOpenVPN(path, how string) error {
-	if path == "" {
+	if path == "" || how != openvpnReplaced {
 		return nil
 	}
-	switch how {
-	case openvpnReplaced:
-		prev := prevBinary(path)
-		if !fileExists(prev) {
-			return nil // already restored, or cleared by a manual install
-		}
-		if err := copyFileAtomic(prev, path, 0o755); err != nil {
-			return err
-		}
-		_ = os.Remove(prev)
-	case openvpnAdded:
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+	prev := prevBinary(path)
+	if !fileExists(prev) {
+		return nil // already restored, or cleared by a manual install
 	}
+	if err := copyFileAtomic(prev, path, 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(prev)
 	return nil
 }
 

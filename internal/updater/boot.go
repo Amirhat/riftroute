@@ -231,9 +231,9 @@ func rollback(env GuardEnv, m marker, by string) error {
 	return nil
 }
 
-// restoreOpenVPNFor puts back the openvpn the last update replaced (or
-// removes the one it added). A failure is logged, not fatal: the daemon
-// matters more, and every openvpn RiftRoute ships runs every daemon's tunnels.
+// restoreOpenVPNFor puts back the openvpn the last update replaced (one it
+// added stays). A failure is logged, not fatal: the daemon matters more, and
+// every openvpn RiftRoute ships runs every daemon's tunnels.
 func restoreOpenVPNFor(env GuardEnv) {
 	if env.OpenVPN == "" {
 		return
@@ -247,7 +247,11 @@ func restoreOpenVPNFor(env GuardEnv) {
 		return
 	}
 	_, _ = updateState(env.StateDir, func(ps *persisted) { ps.OpenVPNSwap = "" })
-	env.Log.Warn("rolled back openvpn with the daemon", "was", ps.OpenVPNSwap)
+	if ps.OpenVPNSwap == openvpnReplaced {
+		env.Log.Warn("rolled back openvpn with the daemon")
+	} else {
+		env.Log.Info("kept the openvpn the rolled-back update added")
+	}
 }
 
 func recordRolledBack(dir, version, by string) {
