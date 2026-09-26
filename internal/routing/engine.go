@@ -285,14 +285,36 @@ func Reconcile(desiredRoutes, actualRoutes []domain.ManagedRoute, desiredRules, 
 	drl := indexRules(desiredRules)
 	arl := indexRules(actualRules)
 
-	var routeAdds, routeDels, ruleAdds, ruleDels []domain.PlanOp
-	for _, d := range desiredRoutes {
-		if _, ok := ar[RouteKey(d.Route)]; !ok {
-			routeAdds = append(routeAdds, makeRouteOp(domain.OpAddRoute, d, platform))
-		}
-	}
+	// A destination whose next hop changes (a new gateway after Wi-Fi →
+	// Ethernet, a VPN's new peer) is replaced delete-first. The kernel holds
+	// one route per destination: adding the new one while the old is there
+	// fails with "File exists" (which the providers treat as success, leaving
+	// the old route), and deleting the old one afterwards matches by
+	// destination — it would remove the only route. The same holds for the
+	// inverse, so a rollback puts the old route back.
+	replaced := map[string]bool{} // RouteKey of actual routes deleted as a replacement
+	byDst := map[string][]domain.ManagedRoute{}
 	for _, a := range actualRoutes {
 		if _, ok := dr[RouteKey(a.Route)]; !ok {
+			byDst[dstKey(a.Route)] = append(byDst[dstKey(a.Route)], a)
+		}
+	}
+
+	var routeAdds, routeDels, ruleAdds, ruleDels []domain.PlanOp
+	for _, d := range desiredRoutes {
+		if _, ok := ar[RouteKey(d.Route)]; ok {
+			continue
+		}
+		for _, old := range byDst[dstKey(d.Route)] {
+			if k := RouteKey(old.Route); !replaced[k] {
+				replaced[k] = true
+				routeAdds = append(routeAdds, makeRouteOp(domain.OpDelRoute, old, platform))
+			}
+		}
+		routeAdds = append(routeAdds, makeRouteOp(domain.OpAddRoute, d, platform))
+	}
+	for _, a := range actualRoutes {
+		if _, ok := dr[RouteKey(a.Route)]; !ok && !replaced[RouteKey(a.Route)] {
 			routeDels = append(routeDels, makeRouteOp(domain.OpDelRoute, a, platform))
 		}
 	}
@@ -307,9 +329,9 @@ func Reconcile(desiredRoutes, actualRoutes []domain.ManagedRoute, desiredRules, 
 		}
 	}
 
-	// Order: add routes (incl. table defaults) → add rules → del rules → del
-	// routes. So a rule is never live without its table, and the table default
-	// outlives the rules during teardown.
+	// Order: add routes (incl. table defaults, and next-hop replacements) → add
+	// rules → del rules → del routes. So a rule is never live without its table,
+	// and the table default outlives the rules during teardown.
 	ops := append(append(append(append([]domain.PlanOp{}, routeAdds...), ruleAdds...), ruleDels...), routeDels...)
 	return domain.Plan{Ops: ops, Inverse: invert(ops, platform)}
 }
@@ -450,6 +472,11 @@ func humanForRule(kind domain.OpKind, r domain.PolicyRule) string {
 // RouteKey identifies a route for set membership: family|table|dst|gateway|iface.
 func RouteKey(r domain.Route) string {
 	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
+}
+
+// dstKey is what the kernel keeps one route per: family|table|dst.
+func dstKey(r domain.Route) string {
+	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR
 }
 
 // RuleKey identifies a policy rule: priority|selector|table|family, plus the
