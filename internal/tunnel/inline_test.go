@@ -173,6 +173,46 @@ func TestInlineFilesRefusesHiddenCredentialFiles(t *testing.T) {
 	}
 }
 
+// The credentials file must sit right next to the profile: a profile in
+// ~/Downloads (or in ~) could otherwise name any file below it — say
+// Library/Keychains/…, or a project's secrets — and send its first two lines
+// to its server. Key and certificate files may still come from folders under
+// it.
+func TestInlineFilesReadsCredentialsOnlyFromTheProfilesOwnFolder(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "creds.txt", "bob\npw\n")
+	write(t, dir, "Library/Application Support/app/token", "SECRET-USER\nSECRET-PASS\n")
+	write(t, dir, "vpn/creds.txt", "SECRET-USER\nSECRET-PASS\n")
+	write(t, dir, "certs/ca.crt", "CA\n")
+	symlink(t, "vpn/creds.txt", filepath.Join(dir, "link-down"))
+	symlink(t, "creds.txt", filepath.Join(dir, "link-beside"))
+	symlink(t, filepath.Join(dir, "vpn"), filepath.Join(dir, "vpn-link"))
+
+	for _, ref := range []string{
+		"vpn/creds.txt",
+		"./vpn/creds.txt",
+		"vpn/../vpn/creds.txt",
+		"'Library/Application Support/app/token'",
+		filepath.Join(dir, "vpn", "creds.txt"),
+		"link-down",          // a symlink beside the profile into a folder under it
+		"vpn-link/creds.txt", // a symlinked folder
+	} {
+		res, err := InlineFiles("client\nremote 192.0.2.1\nauth-user-pass "+ref+"\n", dir)
+		if err == nil || !strings.Contains(err.Error(), "right next to the profile") {
+			t.Errorf("%s: got %v, want it refused as not next to the profile", ref, err)
+		}
+		if res != nil && res.Creds != nil {
+			t.Errorf("%s: read credentials %+v", ref, res.Creds)
+		}
+	}
+	for _, ref := range []string{"creds.txt", "./creds.txt", "sub/../creds.txt", filepath.Join(dir, "creds.txt"), "link-beside"} {
+		res, err := InlineFiles("client\nremote 192.0.2.1\nauth-user-pass "+quote(ref)+"\nca certs/ca.crt\n", dir)
+		if err != nil || res.Creds == nil || res.Creds.Username != "bob" || !strings.Contains(res.Config, "<ca>\nCA\n</ca>") {
+			t.Errorf("%s: credentials next to the profile (and a CA under it): %+v, %v", ref, res, err)
+		}
+	}
+}
+
 func TestReadProfileFile(t *testing.T) {
 	dir := t.TempDir()
 	p := write(t, dir, "office.ovpn", "client\nremote 192.0.2.1\n")

@@ -266,7 +266,10 @@ Or use the **Tunnels** page in the app. How it works:
   tunnel's other routes still apply.
 - The profile is checked against an allowlist before a root process sees it:
   scripts, plugins, OpenSSL engines, and file paths are refused; files it
-  references are inlined by the CLI/app as *you*. The profile and password are
+  references are inlined by the CLI/app as *you* — only from the profile's
+  folder (keys and certificates also from folders under it; an
+  `auth-user-pass` login file only from right beside the profile, and never a
+  dotfile), and each file read is listed. The profile and password are
   stored in a root-only (`0700`/`0600`) directory next to the database, never in
   the database itself, and are never returned by the API.
 - Username/password, certificate, and inline-key profiles work. Not yet:
