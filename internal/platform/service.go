@@ -45,6 +45,57 @@ func NewServiceManager() ServiceManager { return newServiceManager() }
 // ("" where service install is unsupported).
 func InstalledDaemonPath() string { return installedBin }
 
+// InstalledOpenVPNPath is where install (and the updater) place the openvpn
+// that ships with RiftRoute, beside the daemon. It is "" where none ships:
+// on Linux, tunnels run the distribution's openvpn.
+func InstalledOpenVPNPath() string { return installedOpenVPN }
+
+// bundledOpenVPNName is the openvpn's name next to riftrouted wherever a build
+// ships it: the release tarball, the app bundle's Contents/Resources/bin.
+const bundledOpenVPNName = "openvpn"
+
+// BundledOpenVPN returns the openvpn shipped next to the daemon binary being
+// installed, or "" when this platform ships none or this build doesn't
+// include it.
+func BundledOpenVPN(daemonBin string) string {
+	if installedOpenVPN == "" {
+		return ""
+	}
+	return openVPNNextTo(daemonBin)
+}
+
+// openVPNNextTo looks beside daemonBin and, when that is a symlink (a
+// package manager's bin/ link), beside the file it points to.
+func openVPNNextTo(daemonBin string) string {
+	if daemonBin == "" {
+		return ""
+	}
+	dirs := []string{filepath.Dir(daemonBin)}
+	if real, err := filepath.EvalSymlinks(daemonBin); err == nil && filepath.Dir(real) != dirs[0] {
+		dirs = append(dirs, filepath.Dir(real))
+	}
+	for _, d := range dirs {
+		p := filepath.Join(d, bundledOpenVPNName)
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return p
+		}
+	}
+	return ""
+}
+
+// installOpenVPN copies the shipped openvpn into place and makes it root's
+// alone (secure is secureRootFile; tests, which can't chown, pass a stand-in).
+// The daemon runs it as root, and runs nothing else.
+func installOpenVPN(src, dst string, secure func(string, os.FileMode) error) error {
+	if err := copyFile(src, dst, 0o755); err != nil {
+		return fmt.Errorf("install openvpn: %w", err)
+	}
+	if err := secure(dst, 0o755); err != nil {
+		return fmt.Errorf("secure openvpn: %w", err)
+	}
+	return nil
+}
+
 // FindDaemonBinary locates the riftrouted binary: next to the running CLI, then
 // on PATH.
 func FindDaemonBinary() (string, error) {
@@ -200,11 +251,15 @@ func cmdContains(needle string, name string, args ...string) bool {
 }
 
 // clearUpdateFiles removes what the daemon's updater keeps beside the
-// installed binary and database: the previous binary, the pre-update
-// database backup, a pending-update marker and staged downloads. (The
-// updater's small state file — rollout bucket, skipped version — stays.)
+// installed binary and database: the previous binaries (daemon and openvpn),
+// the pre-update database backup, a pending-update marker and staged
+// downloads. (The updater's small state file — rollout bucket, skipped
+// version — stays.)
 func clearUpdateFiles() {
 	_ = os.Remove(installedBin + ".prev")
+	if installedOpenVPN != "" {
+		_ = os.Remove(installedOpenVPN + ".prev")
+	}
 	dir := DefaultPaths().StateDir
 	for _, f := range []string{"update-backup.db", "update-pending.json"} {
 		_ = os.Remove(filepath.Join(dir, f))

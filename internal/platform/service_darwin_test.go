@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -207,5 +208,42 @@ func TestDialUntilWaitsForListener(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("listener came up but dialUntil failed: %v", err)
+	}
+}
+
+// Stopping the daemon stops every tunnel (an openvpn that ignores SIGTERM
+// gets ~15s) before resolving pending route transactions: launchd must wait
+// longer than its default 20s before SIGKILL — and bootout's wait longer still.
+func TestPlistGivesTheDaemonTimeToStop(t *testing.T) {
+	p := renderPlist(installedBin, systemSocket, 501)
+	if !strings.Contains(p, "<key>ExitTimeOut</key><integer>40</integer>") {
+		t.Fatalf("plist has no 40s ExitTimeOut:\n%s", p)
+	}
+	if unloadTimeout <= exitTimeout {
+		t.Fatalf("bootout wait %s must outlast the exit timeout %s", unloadTimeout, exitTimeout)
+	}
+	f := filepath.Join(t.TempDir(), "com.riftroute.daemon.plist")
+	if err := os.WriteFile(f, []byte(p), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("/usr/bin/plutil", "-lint", f).CombinedOutput(); err != nil {
+		t.Fatalf("plutil -lint: %v: %s", err, out)
+	}
+}
+
+// macOS ships RiftRoute's own openvpn, installed beside the daemon in the
+// root-only helper directory — never a Homebrew path.
+func TestOpenVPNInstallsBesideTheDaemon(t *testing.T) {
+	if got := InstalledOpenVPNPath(); got != "/Library/PrivilegedHelperTools/riftroute-openvpn" {
+		t.Fatalf("InstalledOpenVPNPath = %q", got)
+	}
+	if filepath.Dir(InstalledOpenVPNPath()) != filepath.Dir(InstalledDaemonPath()) {
+		t.Fatal("openvpn must live beside the daemon")
+	}
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "riftrouted"), "daemon")
+	writeExe(t, filepath.Join(dir, "openvpn"), "openvpn")
+	if got := BundledOpenVPN(filepath.Join(dir, "riftrouted")); got != filepath.Join(dir, "openvpn") {
+		t.Fatalf("BundledOpenVPN = %q", got)
 	}
 }
