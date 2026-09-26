@@ -212,6 +212,14 @@ func run() error {
 		Dir:      filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher: launcher,
 		Ifaces:   prov.Interfaces,
+		Routes: func(ctx context.Context) ([]domain.Route, error) {
+			v4, err := prov.ListRoutes(ctx, domain.FamilyV4)
+			if err != nil {
+				return nil, err
+			}
+			v6, _ := prov.ListRoutes(ctx, domain.FamilyV6) // v4-only hosts: none
+			return append(v4, v6...), nil
+		},
 		Resolve: func(ctx context.Context, host string) ([]netip.Addr, error) {
 			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		},

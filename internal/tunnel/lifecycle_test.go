@@ -3,7 +3,11 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -188,7 +192,7 @@ func TestStopProcessEscalatesAndChecksIdentity(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	time.Sleep(200 * time.Millisecond) // let the trap install
+	time.Sleep(200 * time.Millisecond)                                // let the trap install
 	_ = stopProcess(cmd.Process.Pid, func(int) bool { return false }) // not ours: left alone
 	select {
 	case <-done:
@@ -234,4 +238,71 @@ func count(xs []string, x string) int {
 		}
 	}
 	return n
+}
+
+// One unreadable definition must not stop the daemon: the manager starts,
+// lists it as failed with what to do, and deleting it removes the file.
+func TestUnreadableDefinitionIsListedNotFatal(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	h.m.Shutdown()
+	if err := os.WriteFile(filepath.Join(h.dir, "broken.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Options{Dir: h.dir, Launcher: h.fl, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatalf("one bad file stopped the manager: %v", err)
+	}
+	t.Cleanup(m.Shutdown)
+	st, ok := m.Status("broken")
+	if !ok || st.State != domain.TunnelFailed || !strings.Contains(st.LastError, "can't be read") {
+		t.Fatalf("broken tunnel status = %+v, %v", st, ok)
+	}
+	if len(m.List()) != 2 {
+		t.Fatalf("list = %+v", m.List())
+	}
+	if err := m.Delete(context.Background(), "broken"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, "broken.json")); !os.IsNotExist(err) {
+		t.Fatal("broken definition file not removed")
+	}
+}
+
+// A pushed ifconfig whose peer is outside the tunnel's own /30 (here, the LAN
+// router) puts a host route to it into the tunnel: the connection is refused.
+func TestRefusesAStrayRouteIntoTheTunnel(t *testing.T) {
+	for _, tc := range []struct {
+		dst    string
+		refuse bool
+	}{
+		{"10.99.0.0/24", false},  // the tunnel's own subnet
+		{"10.99.0.1/32", false},  // its net30 peer
+		{"224.0.0.0/4", false},   // multicast plumbing
+		{"192.168.1.1/32", true}, // the LAN router
+		{"8.8.8.8/32", true},     // someone's DNS
+		{"10.0.0.0/8", true},     // wider than its network
+	} {
+		h := newHarness(t)
+		h.m.o.Routes = func(context.Context) ([]domain.Route, error) {
+			return []domain.Route{{DstCIDR: tc.dst, Iface: "utun9", Family: domain.FamilyV4, Owner: domain.OwnerSystem}}, nil
+		}
+		if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.m.Connect("infra"); err != nil {
+			t.Fatal(err)
+		}
+		if tc.refuse {
+			st := waitState(t, h.m, "infra", domain.TunnelFailed)
+			if !strings.Contains(st.LastError, tc.dst) {
+				t.Errorf("%s: last error = %q", tc.dst, st.LastError)
+			}
+		} else {
+			waitState(t, h.m, "infra", domain.TunnelConnected)
+		}
+		h.m.Shutdown()
+	}
 }

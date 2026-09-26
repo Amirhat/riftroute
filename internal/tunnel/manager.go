@@ -32,6 +32,9 @@ type Options struct {
 	Launcher Launcher
 	// Ifaces lists interfaces, to find a tunnel's by its assigned address.
 	Ifaces func(ctx context.Context) ([]domain.Iface, error)
+	// Routes lists the kernel's routes (both families), to check what a
+	// connection added on its own; nil skips that check.
+	Routes func(ctx context.Context) ([]domain.Route, error)
 	// Resolve looks up a server host name (via: direct pins its addresses).
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Apply installs the tunnels' current routes (Inputs) through the Apply
@@ -52,11 +55,14 @@ type Manager struct {
 
 	ap *applier
 
-	mu     sync.Mutex
-	defs   map[string]*def
-	profs  map[string]*Profile
-	perrs  map[string]error
-	rt     map[string]*live
+	mu    sync.Mutex
+	defs  map[string]*def
+	profs map[string]*Profile
+	perrs map[string]error
+	rt    map[string]*live
+	// broken are saved definitions that can't be read: listed as failed, so
+	// the user sees them and can delete them.
+	broken map[string]error
 	closed chan struct{}
 	shut   sync.Once
 }
@@ -131,7 +137,7 @@ func New(o Options) (*Manager, error) {
 	m := &Manager{
 		o: o, store: st, runDir: o.Dir,
 		defs: map[string]*def{}, profs: map[string]*Profile{}, perrs: map[string]error{},
-		rt: map[string]*live{}, closed: make(chan struct{}),
+		rt: map[string]*live{}, broken: map[string]error{}, closed: make(chan struct{}),
 	}
 	m.ap = newApplier(func(ctx context.Context) error {
 		if m.o.Apply == nil {
@@ -148,12 +154,16 @@ func New(o Options) (*Manager, error) {
 		}
 	}
 	m.reapStale()
-	defs, err := st.list()
+	defs, broken, err := st.scan()
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range defs {
 		m.cache(d)
+	}
+	for name, err := range broken {
+		o.Log.Warn("tunnel definition unreadable; skipped", "tunnel", name, "err", err)
+		m.broken[name] = err
 	}
 	return m, nil
 }
@@ -192,9 +202,12 @@ func (m *Manager) cache(d *def) {
 func (m *Manager) List() []domain.TunnelStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]domain.TunnelStatus, 0, len(m.defs))
+	out := make([]domain.TunnelStatus, 0, len(m.defs)+len(m.broken))
 	for _, d := range m.defs {
 		out = append(out, m.statusLocked(d.Name))
+	}
+	for name, err := range m.broken {
+		out = append(out, brokenStatus(name, err))
 	}
 	slices.SortFunc(out, func(a, b domain.TunnelStatus) int { return strings.Compare(a.Name, b.Name) })
 	return out
@@ -204,10 +217,20 @@ func (m *Manager) List() []domain.TunnelStatus {
 func (m *Manager) Status(name string) (domain.TunnelStatus, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err, ok := m.broken[name]; ok {
+		return brokenStatus(name, err), true
+	}
 	if m.defs[name] == nil {
 		return domain.TunnelStatus{}, false
 	}
 	return m.statusLocked(name), true
+}
+
+func brokenStatus(name string, err error) domain.TunnelStatus {
+	return domain.TunnelStatus{
+		Name: name, Type: domain.TunnelOpenVPN, State: domain.TunnelFailed, Routes: []string{}, Servers: []string{},
+		LastError: "its saved definition can't be read (" + err.Error() + "); delete it and add it again",
+	}
 }
 
 func (m *Manager) statusLocked(name string) domain.TunnelStatus {
@@ -374,6 +397,7 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	}
 
 	m.mu.Lock()
+	delete(m.broken, d.Name) // a new definition replaces an unreadable one
 	m.cache(d)
 	live := m.rt[d.Name].sess != nil
 	m.mu.Unlock()
@@ -399,6 +423,15 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 // removal would be an openvpn nothing tracks.
 func (m *Manager) Delete(ctx context.Context, name string) error {
 	m.mu.Lock()
+	if _, ok := m.broken[name]; ok {
+		delete(m.broken, name)
+		m.mu.Unlock()
+		if err := m.store.remove(name); err != nil {
+			return err
+		}
+		m.changed()
+		return nil
+	}
 	r := m.rt[name]
 	if m.defs[name] == nil || r == nil {
 		m.mu.Unlock()
@@ -698,7 +731,8 @@ func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *s
 
 	sock, cfg := m.sockPath(name), m.cfgPath(name)
 	_ = os.Remove(sock)
-	if err := os.WriteFile(cfg, []byte(p.Render(RenderOptions{Remotes: remotes, Management: sock})), 0o600); err != nil {
+	opts := RenderOptions{Remotes: remotes, Management: sock, IPv6: RoutesNeedIPv6(d.Routes)}
+	if err := os.WriteFile(cfg, []byte(p.Render(opts)), 0o600); err != nil {
 		m.setErr(name, "write config: "+err.Error())
 		return
 	}
@@ -772,6 +806,10 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 			iface, nets := m.findIface(ctx, st.localIP)
 			if wide, ok := tooWide(nets); ok {
 				stop(fmt.Sprintf("the server gave the tunnel the network %s, which would send traffic beyond the routes you listed into it; refusing", wide))
+				return
+			}
+			if stray, ok := m.strayRoute(ctx, iface, nets); ok {
+				stop(fmt.Sprintf("the server's settings put a route to %s into the tunnel, outside its own network; refusing", stray))
 				return
 			}
 			now := time.Now()
@@ -1005,6 +1043,54 @@ func tooWide(nets []netip.Prefix) (netip.Prefix, bool) {
 		}
 	}
 	return netip.Prefix{}, false
+}
+
+// strayRoute finds a route into the tunnel's interface that neither RiftRoute
+// installed nor the interface's own addressing explains. route-nopull keeps
+// pushed routes out, but a pushed ifconfig still makes the kernel route its
+// peer: net30/p2p gives a host route to the peer address, which a hostile
+// server could set to the router or a DNS server. The peer of a local
+// address belongs in the same /30 (openvpn's net30); anything else is stray.
+func (m *Manager) strayRoute(ctx context.Context, iface string, nets []netip.Prefix) (netip.Prefix, bool) {
+	if m.o.Routes == nil || iface == "" {
+		return netip.Prefix{}, false
+	}
+	routes, err := m.o.Routes(ctx)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	for _, r := range routes {
+		if r.Iface != iface || r.Owner == domain.OwnerRiftRoute {
+			continue
+		}
+		dst, err := netip.ParsePrefix(r.DstCIDR)
+		if err != nil || explained(dst, nets) {
+			continue
+		}
+		return dst, true
+	}
+	return netip.Prefix{}, false
+}
+
+// explained reports whether a route on the tunnel's interface follows from
+// its addressing: inside one of its networks, the net30 peer beside a local
+// address, or link-local/multicast plumbing the OS adds to any interface.
+func explained(dst netip.Prefix, nets []netip.Prefix) bool {
+	a := dst.Addr()
+	if a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsLinkLocalMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return true
+	}
+	for _, n := range nets {
+		if n.Masked().Contains(a) && dst.Bits() >= n.Bits() {
+			return true
+		}
+		if a.Is4() && n.Addr().Is4() && dst.Bits() == 32 {
+			if slash30, _ := n.Addr().Prefix(30); slash30.Contains(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // finish records the end of a session and withdraws its routes.

@@ -29,6 +29,8 @@ func gatherBugReport(ctx context.Context, svc *core.Service, st *store.Store) bu
 	} else {
 		in.State.Health = svc.Health()
 		in.State.Health.Reason = err.Error()
+		// Still name the tunnels, so their usernames and servers get redacted.
+		in.State.Tunnels = svc.TunnelStatuses(ctx)
 	}
 	if st != nil {
 		in.Profiles, _ = st.ListProfiles()

@@ -138,10 +138,10 @@ func TestInlineFilesReadsOnlySmallRegularFiles(t *testing.T) {
 		write(t, dir, n, chunk)
 	}
 	for line, want := range map[string]string{
-		"ca certs":                               "not a regular file",
-		"ca big.crt":                             "larger than 256 KiB",
+		"ca certs":   "not a regular file",
+		"ca big.crt": "larger than 256 KiB",
 		"ca a.crt\ncert b.crt\nextra-certs c.crt": "larger than 512 KiB",
-		"ca missing.crt":                         "missing.crt",
+		"ca missing.crt": "missing.crt",
 	} {
 		_, err := InlineFiles("client\nremote 192.0.2.1\n"+line+"\n", dir)
 		if err == nil || !strings.Contains(err.Error(), want) {

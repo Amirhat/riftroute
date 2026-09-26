@@ -50,12 +50,6 @@ func openDefStore(dir string) (*defStore, error) {
 
 func (s *defStore) path(name string) string { return filepath.Join(s.dir, name+".json") }
 
-// list returns the readable definitions, skipping broken ones (see scan).
-func (s *defStore) list() ([]*def, error) {
-	defs, _, err := s.scan()
-	return defs, err
-}
-
 // scan returns every readable definition, sorted by name, and — separately —
 // the ones that can't be read or decoded, by tunnel name. One bad file must
 // not take the rest down with it: the daemon (routing, the kill switch)

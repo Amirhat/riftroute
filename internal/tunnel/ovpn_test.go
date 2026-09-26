@@ -181,8 +181,8 @@ func TestParseRefusesDangerousDirectives(t *testing.T) {
 
 func TestParseRejectsBrokenInput(t *testing.T) {
 	for _, in := range []string{
-		"client\n",                    // no remote
-		"remote 192.0.2.1\n<ca>\nx\n", // unclosed block
+		"client\n",                                 // no remote
+		"remote 192.0.2.1\n<ca>\nx\n",              // unclosed block
 		"remote 192.0.2.1\n<ca>\n</cert>\n</ca>\n", // a closing tag inside a block
 		"remote 192.0.2.1\n<ca>\n</ca>\n",          // empty block
 		"remote bad_host!\n",                       // bad host

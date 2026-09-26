@@ -37,10 +37,6 @@ func TestStoreSkipsBrokenDefinitions(t *testing.T) {
 		t.Errorf("broken = %v, want bad and dir", broken)
 	}
 
-	defs, err = s.list()
-	if err != nil || len(defs) != 1 || defs[0].Name != "good" {
-		t.Errorf("list = %+v, %v; want just good", defs, err)
-	}
 }
 
 func TestStoreScanFailsOnlyForTheDirectory(t *testing.T) {
