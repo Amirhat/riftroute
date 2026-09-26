@@ -464,7 +464,11 @@ auth-nocache
 auth-retry none
 `)
 	fmt.Fprintf(&b, "verb %d\n", min(max(p.verb, 3), 5))
-	fmt.Fprintf(&b, "management %s unix\nmanagement-hold\nmanagement-query-passwords\n", quote(o.Management))
+	// management-signal: if the daemon dies, its management connection drops
+	// and openvpn restarts (SIGUSR1). Held, and asking for credentials over
+	// management, it then waits for a daemon instead of staying connected
+	// with nobody supervising it.
+	fmt.Fprintf(&b, "management %s unix\nmanagement-hold\nmanagement-query-passwords\nmanagement-signal\n", quote(o.Management))
 	return b.String()
 }
 

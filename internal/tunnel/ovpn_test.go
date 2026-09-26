@@ -426,3 +426,18 @@ func TestRoutesNeedIPv6(t *testing.T) {
 		}
 	}
 }
+
+// If the daemon dies, its management connection drops: openvpn must restart
+// and park (hold + credentials over management), not stay up unsupervised.
+func TestRenderRestartsOpenVPNWhenTheDaemonGoesAway(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := p.Render(RenderOptions{Management: "/m"})
+	for _, must := range []string{"management-signal\n", "management-hold\n", "management-query-passwords\n"} {
+		if !strings.Contains(out, must) {
+			t.Errorf("rendered config lacks %q:\n%s", must, out)
+		}
+	}
+}
