@@ -4,7 +4,7 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] — 2026-09-26
+## [0.3.0] — 2026-09-27
 
 Tunnels: an OpenVPN split tunnel next to your main VPN (thanks @ssenerg for
 the first version).
@@ -29,6 +29,10 @@ the first version).
   that can't reach its server says why (e.g. another VPN's firewall). While a
   tunnel is up, its networks win over exclude profiles, so a wildcard domain
   that resolves an internal host to a private address can't pull it back out.
+  Include rules are cut around a live tunnel's networks too, and what gave
+  way to a tunnel — an exclude route inside its networks, the part of an
+  include rule it took — comes back when it disconnects, with auto-apply off
+  too; a profile deleted or disabled meanwhile stays out.
   Profiles made for OpenVPN Connect work against older servers too: the
   profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
   openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
