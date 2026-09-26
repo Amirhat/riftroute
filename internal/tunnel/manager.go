@@ -2,8 +2,11 @@ package tunnel
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/netip"
 	"os"
@@ -47,13 +50,15 @@ type Manager struct {
 	store  *defStore
 	runDir string
 
-	mu       sync.Mutex
-	defs     map[string]*def
-	profs    map[string]*Profile
-	perrs    map[string]error
-	rt       map[string]*live
-	retrying bool
-	closed   chan struct{}
+	ap *applier
+
+	mu     sync.Mutex
+	defs   map[string]*def
+	profs  map[string]*Profile
+	perrs  map[string]error
+	rt     map[string]*live
+	closed chan struct{}
+	shut   sync.Once
 }
 
 type live struct {
@@ -71,6 +76,11 @@ type live struct {
 	in, out uint64
 	bypass  []netip.Addr
 	sess    *session
+	// deleting refuses new connections while Delete tears the tunnel down.
+	deleting bool
+	// failures counts attempts that ended before connecting, since the last
+	// successful connection (or the start of the session).
+	failures int
 }
 
 type session struct {
@@ -79,7 +89,34 @@ type session struct {
 	stopping atomic.Bool
 	mgmt     atomic.Pointer[mgmtConn]
 	proc     atomic.Value // Process
+	released atomic.Bool  // the first management hold was released
+	resolved atomic.Int64 // unix time of the last server re-resolve
 }
+
+// shutdownApplyWait bounds how long Shutdown waits for the tunnels' routes
+// to be withdrawn.
+var shutdownApplyWait = 5 * time.Second
+
+// Connection attempt limits.
+var (
+	// maxFailedAttempts: a tunnel that has never connected in this session
+	// gives up after this many failed attempts, rather than retrying a
+	// rejected login (or a server that hangs up after it) until the account
+	// is locked out.
+	maxFailedAttempts = 6
+	// reresolveAfter: a tunnel that was up and has failed this many
+	// reconnects in a row looks its servers' names up again (their
+	// addresses may have moved; openvpn only knows the pinned ones).
+	reresolveAfter = 3
+	// holdBackoff bounds the pause before releasing a management hold after
+	// the first: openvpn's own connect-retry backoff when it reports one.
+	holdBackoffMin, holdBackoffMax = 2 * time.Second, 5 * time.Minute
+)
+
+// A server may push the tunnel a network (topology subnet + ifconfig); the
+// kernel then routes all of it into the tunnel, whatever routes the user
+// listed. Anything wider than these is refused.
+const minTunPrefixV4, minTunPrefixV6 = 16, 48
 
 // New opens the definition store and cleans up after a previous daemon that
 // died without stopping its tunnels.
@@ -96,10 +133,17 @@ func New(o Options) (*Manager, error) {
 		defs: map[string]*def{}, profs: map[string]*Profile{}, perrs: map[string]error{},
 		rt: map[string]*live{}, closed: make(chan struct{}),
 	}
+	m.ap = newApplier(func(ctx context.Context) error {
+		if m.o.Apply == nil {
+			return nil
+		}
+		return m.o.Apply(ctx)
+	}, o.Log)
 	// A unix socket path is capped (~104 bytes on macOS); a long home
-	// directory in dev can exceed it.
+	// directory in dev can exceed it. The fallback is stable per definitions
+	// directory, so the next start still finds (and reaps) what this one ran.
 	if len(filepath.Join(o.Dir, strings.Repeat("x", 32)+".sock")) > 100 {
-		if m.runDir, err = os.MkdirTemp("", "rr-tun-"); err != nil {
+		if m.runDir, err = shortRunDir(o.Dir); err != nil {
 			return nil, err
 		}
 	}
@@ -112,6 +156,25 @@ func New(o Options) (*Manager, error) {
 		m.cache(d)
 	}
 	return m, nil
+}
+
+// shortRunDir is a private directory under the system temp dir named after
+// dir: created 0700, and refused if it exists as anything but a directory of
+// ours that only we can use.
+func shortRunDir(dir string) (string, error) {
+	sum := sha256.Sum256([]byte(dir))
+	p := filepath.Join(os.TempDir(), "rr-tun-"+hex.EncodeToString(sum[:6]))
+	if err := os.Mkdir(p, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+		return "", err
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return "", err
+	}
+	if !fi.IsDir() || fi.Mode().Perm() != 0o700 || !ownedByUs(fi) {
+		return "", fmt.Errorf("%s isn't a private directory of this user; remove it", p)
+	}
+	return p, nil
 }
 
 func (m *Manager) cache(d *def) {
@@ -261,6 +324,7 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		Password: spec.Password, Via: spec.Via, Routes: routes, AutoConnect: spec.AutoConnect,
 		UpdatedAt: time.Now(),
 	}
+	keptPassword := false
 	if prev != nil {
 		if d.Config == "" {
 			d.Config = prev.Config
@@ -268,8 +332,8 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		if d.Username == "" {
 			d.Username = prev.Username
 		}
-		if d.Password == "" {
-			d.Password = prev.Password
+		if d.Password == "" && prev.Password != "" {
+			d.Password, keptPassword = prev.Password, true
 		}
 	}
 	if strings.TrimSpace(d.Config) == "" {
@@ -277,6 +341,18 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	} else if p, err := Parse(d.Config); err != nil {
 		bad("config", err.Error())
 	} else {
+		// A saved password goes only to the servers it was entered for: a
+		// profile swapped for one with other servers (or another CA to trust
+		// them by) needs it typed again, or anyone who may edit tunnels could
+		// have it sent to a server of their choosing.
+		if keptPassword && prev.Config != d.Config {
+			if pp, perr := Parse(prev.Config); perr != nil || !sameServers(pp, p) {
+				d.Password = ""
+				if p.NeedsAuth && p.InlinePass == "" {
+					bad("password", "the profile's servers or certificate authority changed; enter the password again")
+				}
+			}
+		}
 		if d.Username == "" {
 			d.Username = p.InlineUser
 		}
@@ -311,25 +387,36 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 			return domain.TunnelStatus{}, err
 		}
 	case live:
-		m.apply(ctx)
+		_ = m.applyAndWait(ctx, 10*time.Second)
 	}
 	m.changed()
 	st, _ := m.Status(d.Name)
 	return st, nil
 }
 
-// Delete disconnects and removes a tunnel.
+// Delete disconnects and removes a tunnel. From its first step on, no new
+// connection can start: one that slipped in between the disconnect and the
+// removal would be an openvpn nothing tracks.
 func (m *Manager) Delete(ctx context.Context, name string) error {
 	m.mu.Lock()
-	exists := m.defs[name] != nil
-	m.mu.Unlock()
-	if !exists {
+	r := m.rt[name]
+	if m.defs[name] == nil || r == nil {
+		m.mu.Unlock()
 		return fmt.Errorf("no tunnel named %q", name)
 	}
+	if r.deleting {
+		m.mu.Unlock()
+		return fmt.Errorf("tunnel %s is already being deleted", name)
+	}
+	r.deleting = true
+	m.mu.Unlock()
+	undo := func() { m.update(name, func(r *live) { r.deleting = false }) }
 	if err := m.Disconnect(ctx, name); err != nil {
+		undo()
 		return err
 	}
 	if err := m.store.remove(name); err != nil {
+		undo()
 		return err
 	}
 	m.mu.Lock()
@@ -340,6 +427,22 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 	m.mu.Unlock()
 	m.changed()
 	return nil
+}
+
+// sameServers reports whether two profiles connect to the same servers and
+// trust them through the same certificate authority.
+func sameServers(a, b *Profile) bool {
+	sa, sb := slices.Sorted(slices.Values(a.Servers())), slices.Sorted(slices.Values(b.Servers()))
+	return slices.Equal(sa, sb) && blockBody(a, "ca") == blockBody(b, "ca")
+}
+
+func blockBody(p *Profile, name string) string {
+	for _, l := range p.lines {
+		if l.block && l.name == name {
+			return strings.TrimSpace(l.body)
+		}
+	}
+	return ""
 }
 
 func normalizeRoutes(in []string) ([]string, []string) {
@@ -390,6 +493,10 @@ func (m *Manager) Connect(name string) error {
 		return fmt.Errorf("no tunnel named %q", name)
 	}
 	r := m.rt[name]
+	if r.deleting {
+		m.mu.Unlock()
+		return fmt.Errorf("tunnel %s is being deleted", name)
+	}
 	if r.sess != nil {
 		m.mu.Unlock()
 		return nil
@@ -416,7 +523,7 @@ func (m *Manager) Connect(name string) error {
 		m.mu.Unlock()
 		cancel()
 		return errShuttingDown
-	case r == nil || m.defs[name] != d:
+	case r == nil || m.defs[name] != d || r.deleting:
 		m.mu.Unlock()
 		cancel()
 		return fmt.Errorf("tunnel %s changed while connecting; try again", name)
@@ -492,9 +599,12 @@ func (m *Manager) StartAuto() {
 			return
 		} else if err != nil {
 			m.o.Log.Warn("tunnel auto-connect failed", "tunnel", n, "err", err)
-			m.mu.Lock()
-			m.rt[n].state, m.rt[n].lastErr = domain.TunnelFailed, err.Error()
-			m.mu.Unlock()
+			m.update(n, func(r *live) { // it may have been deleted meanwhile
+				if r.sess == nil {
+					r.state, r.lastErr = domain.TunnelFailed, err.Error()
+				}
+			})
+			m.changed()
 		}
 	}
 }
@@ -516,17 +626,29 @@ func (m *Manager) isClosed() bool {
 // apply is refused for now). At startup it withdraws the routes a daemon that
 // died with tunnels up left behind — a server pin outlives the tunnel's
 // interface.
-func (m *Manager) Resync(ctx context.Context) { m.apply(ctx) }
+func (m *Manager) Resync(ctx context.Context) { _ = m.ap.wait(ctx, m.ap.request()) }
 
-// Shutdown stops every tunnel (daemon exit).
+// Shutdown stops every tunnel (daemon exit) and withdraws their routes. The
+// withdrawal is waited for only briefly: when something holds the Apply
+// Protocol (the updater does, until the process exits) the routes are left
+// for the next start to clean up rather than stalling the exit.
 func (m *Manager) Shutdown() {
-	select {
-	case <-m.closed:
-		return
-	default:
+	m.shut.Do(func() {
 		close(m.closed)
-	}
-	m.DisconnectAll()
+		m.DisconnectAll()
+		_ = m.applyAndWait(context.Background(), shutdownApplyWait)
+		m.ap.close()
+	})
+}
+
+// requestApply asks for the tunnels' routes to be applied, without waiting.
+func (m *Manager) requestApply() { m.ap.request() }
+
+// applyAndWait asks for an apply and waits up to d for it to finish.
+func (m *Manager) applyAndWait(ctx context.Context, d time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+	return m.ap.wait(ctx, m.ap.request())
 }
 
 // DisconnectAll stops every running tunnel (panic, shutdown).
@@ -568,7 +690,10 @@ func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *s
 	}
 	m.update(name, func(r *live) { r.bypass, r.detail = bypass, "starting openvpn" })
 	if len(bypass) > 0 {
-		m.apply(ctx) // pin the server to the physical gateway before the first packet
+		// Pin the server to the physical gateway before the first packet.
+		if err := m.applyAndWait(ctx, 10*time.Second); err != nil {
+			m.o.Log.Warn("tunnel server not pinned yet; connecting anyway", "tunnel", name, "err", err)
+		}
 	}
 
 	sock, cfg := m.sockPath(name), m.cfgPath(name)
@@ -590,7 +715,7 @@ func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *s
 	go func() { _ = proc.Wait(); close(exited) }()
 
 	dctx, dcancel := context.WithTimeout(ctx, 15*time.Second)
-	mc, err := dialMgmt(dctx, sock)
+	mc, err := dialMgmt(dctx, sock, exited)
 	dcancel()
 	if err != nil {
 		_ = proc.Kill()
@@ -609,7 +734,9 @@ func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *s
 	if s.stopping.Load() {
 		_ = mc.send("signal SIGTERM")
 	}
-	for _, c := range []string{"state on", "bytecount 5", "hold release"} {
+	// openvpn waits in its management hold until released; the HOLD
+	// notification it sends on our connecting does that (see handle).
+	for _, c := range []string{"state on", "bytecount 5"} {
 		_ = mc.send(c)
 	}
 	if d.Via == domain.TunnelViaDirect {
@@ -642,10 +769,14 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 		st := parseState(ev.body)
 		switch st.name {
 		case "CONNECTED":
-			iface := m.findIface(ctx, st.localIP)
+			iface, nets := m.findIface(ctx, st.localIP)
+			if wide, ok := tooWide(nets); ok {
+				stop(fmt.Sprintf("the server gave the tunnel the network %s, which would send traffic beyond the routes you listed into it; refusing", wide))
+				return
+			}
 			now := time.Now()
 			m.update(name, func(r *live) {
-				r.state, r.detail, r.lastErr = domain.TunnelConnected, "", ""
+				r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 				if st.desc == "ERROR" {
 					r.detail = "connected with errors"
 				}
@@ -659,20 +790,37 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 					r.lastErr = fmt.Sprintf("connected, but no interface holds %s — routes not installed", st.localIP)
 				}
 			})
-			m.apply(ctx)
+			m.requestApply()
 		case "RECONNECTING":
 			var tail []string
 			if p, ok := s.proc.Load().(Process); ok {
 				tail = p.Tail()
 			}
+			var giveUp, reresolve bool
 			m.update(name, func(r *live) {
 				r.state, r.detail = domain.TunnelReconnecting, st.desc
+				r.failures++
 				if r.since == nil { // never got through: explain why, if openvpn's output says
 					if why := diagnose(name, st.desc, tail); why != "" {
 						r.lastErr = why
 					}
+					giveUp = r.failures >= maxFailedAttempts
+				} else {
+					reresolve = r.failures%reresolveAfter == 0
 				}
 			})
+			if giveUp {
+				m.update(name, func(r *live) {
+					if r.lastErr == "" {
+						r.lastErr = fmt.Sprintf("couldn't connect after %d attempts (%s)", r.failures, st.desc)
+					} else {
+						r.lastErr = fmt.Sprintf("gave up after %d attempts: %s", r.failures, r.lastErr)
+					}
+				})
+				_ = mc.send("signal SIGTERM")
+			} else if reresolve && d.Via == domain.TunnelViaDirect {
+				go m.reresolve(ctx, name, d, s)
+			}
 		case "EXITING":
 			m.update(name, func(r *live) {
 				r.detail = st.desc
@@ -708,9 +856,24 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 			stop("openvpn asked for a secret RiftRoute doesn't support: " + ev.body)
 		}
 	case "HOLD":
-		// management-hold pauses openvpn at start AND at every restart
-		// (ping-restart, …): release it each time.
-		_ = mc.send("hold release")
+		// management-hold pauses openvpn at start so nothing happens before
+		// the daemon is listening. Release that one and turn the hold off:
+		// on a restart openvpn then applies its own connect-retry backoff. A
+		// later hold (it shouldn't come) waits out the backoff openvpn
+		// reports instead of retrying at once.
+		if s.released.CompareAndSwap(false, true) {
+			_ = mc.send("hold off")
+			_ = mc.send("hold release")
+			return
+		}
+		wait := min(max(parseHold(ev.body), holdBackoffMin), holdBackoffMax)
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-time.After(wait):
+				_ = mc.send("hold release")
+			}
+		}()
 	case "FATAL":
 		m.setErr(name, ev.body)
 	case "INFOMSG":
@@ -784,6 +947,66 @@ func diagnose(name, reason string, tail []string) string {
 	return ""
 }
 
+// reresolve looks a connected-before tunnel's server names up again after
+// repeated failed reconnects, and restarts the session when their addresses
+// moved: openvpn only knows (and the pins only cover) the old ones.
+func (m *Manager) reresolve(ctx context.Context, name string, d *def, s *session) {
+	now := time.Now().Unix()
+	if last := s.resolved.Load(); now-last < 60 || !s.resolved.CompareAndSwap(last, now) {
+		return // at most once a minute
+	}
+	m.mu.Lock()
+	p, r := m.profs[name], m.rt[name]
+	if p == nil || r == nil || r.sess != s {
+		m.mu.Unlock()
+		return
+	}
+	old := append([]netip.Addr(nil), r.bypass...)
+	m.mu.Unlock()
+	if !hasHostname(p.Remotes) {
+		return
+	}
+	_, pins, err := m.resolveRemotes(ctx, d.Via, p.Remotes)
+	if err != nil || sameAddrs(old, pins) {
+		return
+	}
+	m.o.Log.Info("tunnel server addresses changed; reconnecting", "tunnel", name)
+	m.mu.Lock()
+	current := m.rt[name] != nil && m.rt[name].sess == s
+	m.mu.Unlock()
+	if !current || s.stopping.Load() {
+		return
+	}
+	dctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := m.Disconnect(dctx, name); err == nil {
+		_ = m.Connect(name)
+	}
+}
+
+func hasHostname(rs []Remote) bool {
+	for _, r := range rs {
+		if !IsAddr(r.Host) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameAddrs(a, b []netip.Addr) bool {
+	return slices.Equal(slices.SortedFunc(slices.Values(a), netip.Addr.Compare), slices.SortedFunc(slices.Values(b), netip.Addr.Compare))
+}
+
+// tooWide returns the first network wider than a tunnel may be given.
+func tooWide(nets []netip.Prefix) (netip.Prefix, bool) {
+	for _, n := range nets {
+		if (n.Addr().Is4() && n.Bits() < minTunPrefixV4) || (n.Addr().Is6() && !n.Addr().IsLinkLocalUnicast() && n.Bits() < minTunPrefixV6) {
+			return n.Masked(), true
+		}
+	}
+	return netip.Prefix{}, false
+}
+
 // finish records the end of a session and withdraws its routes.
 func (m *Manager) finish(name string, s *session) {
 	m.mu.Lock()
@@ -807,9 +1030,14 @@ func (m *Manager) finish(name string, s *session) {
 		_ = os.Remove(f)
 	}
 	s.cancel()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	m.apply(ctx)
+	// Withdraw its routes. A shutdown doesn't wait per tunnel (Shutdown
+	// withdraws once, after all of them); otherwise Disconnect returns once
+	// the routes are gone, or soon after if the protocol is busy.
+	if m.isClosed() {
+		m.requestApply()
+	} else {
+		_ = m.applyAndWait(context.Background(), 10*time.Second)
+	}
 	m.changed()
 }
 
@@ -837,6 +1065,16 @@ func (m *Manager) resolveRemotes(ctx context.Context, via domain.TunnelVia, rs [
 		}
 		for _, a := range addrs {
 			a = a.Unmap()
+			if !pinnable(a) {
+				// A pin routes the address around every other VPN: never for
+				// loopback, link-local, multicast or "any" — whatever a
+				// profile or its DNS says.
+				m.o.Log.Warn("tunnel server address not usable; skipped", "host", r.Host, "addr", a)
+				continue
+			}
+			if !seen[a] && len(pins) == maxPins {
+				continue // enough: openvpn gets at most maxPins servers
+			}
 			out = append(out, Remote{Host: a.String(), Port: r.Port, Proto: r.Proto})
 			if !seen[a] {
 				seen[a] = true
@@ -845,7 +1083,7 @@ func (m *Manager) resolveRemotes(ctx context.Context, via domain.TunnelVia, rs [
 		}
 	}
 	if len(out) == 0 {
-		return nil, nil, errors.New("couldn't resolve any of the profile's servers")
+		return nil, nil, errors.New("couldn't resolve any of the profile's servers to a usable address")
 	}
 	// IPv4 first: openvpn tries remotes in order, and a v4 pin is the one a
 	// v4-only network can honor.
@@ -855,32 +1093,58 @@ func (m *Manager) resolveRemotes(ctx context.Context, via domain.TunnelVia, rs [
 	return out, pins, nil
 }
 
+// maxPins caps the server addresses one tunnel pins to the physical gateway
+// (each is a route around the other VPNs).
+const maxPins = 16
+
+// pinnable reports whether a server address may be pinned to the physical
+// gateway.
+func pinnable(a netip.Addr) bool {
+	return a.IsValid() && !a.IsUnspecified() && !a.IsLoopback() && !a.IsMulticast() &&
+		!a.IsLinkLocalUnicast() && !a.IsLinkLocalMulticast() && !a.IsInterfaceLocalMulticast()
+}
+
 // findIface finds the interface holding ip (openvpn doesn't report its
-// device name), waiting briefly for the address to appear.
-func (m *Manager) findIface(ctx context.Context, ip string) string {
+// device name), waiting briefly for the address to appear, and returns the
+// networks assigned to it.
+func (m *Manager) findIface(ctx context.Context, ip string) (string, []netip.Prefix) {
 	want, err := netip.ParseAddr(ip)
 	if err != nil || m.o.Ifaces == nil {
-		return ""
+		return "", nil
 	}
 	for range 30 {
 		ifs, _ := m.o.Ifaces(ctx)
 		for _, ifc := range ifs {
+			if !holds(ifc.Addrs, want) {
+				continue
+			}
+			var nets []netip.Prefix
 			for _, a := range ifc.Addrs {
-				if p, err := netip.ParsePrefix(a); err == nil && p.Addr() == want {
-					return ifc.Name
-				}
-				if x, err := netip.ParseAddr(a); err == nil && x == want {
-					return ifc.Name
+				if p, err := netip.ParsePrefix(a); err == nil {
+					nets = append(nets, p)
 				}
 			}
+			return ifc.Name, nets
 		}
 		select {
 		case <-ctx.Done():
-			return ""
+			return "", nil
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	return ""
+	return "", nil
+}
+
+func holds(addrs []string, want netip.Addr) bool {
+	for _, a := range addrs {
+		if p, err := netip.ParsePrefix(a); err == nil && p.Addr() == want {
+			return true
+		}
+		if x, err := netip.ParseAddr(a); err == nil && x == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) update(name string, fn func(*live)) {
@@ -903,42 +1167,6 @@ func (m *Manager) changed() {
 	}
 }
 
-// apply installs the current tunnel routes. A failure (an interactive change
-// awaiting confirmation blocks applies) is retried in the background.
-func (m *Manager) apply(ctx context.Context) {
-	if m.o.Apply == nil {
-		return
-	}
-	err := m.o.Apply(ctx)
-	if err == nil {
-		return
-	}
-	m.o.Log.Warn("tunnel routes not applied yet; retrying", "err", err)
-	m.mu.Lock()
-	if m.retrying {
-		m.mu.Unlock()
-		return
-	}
-	m.retrying = true
-	m.mu.Unlock()
-	go func() {
-		defer func() { m.mu.Lock(); m.retrying = false; m.mu.Unlock() }()
-		for range 40 {
-			select {
-			case <-m.closed:
-				return
-			case <-time.After(3 * time.Second):
-			}
-			actx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			err := m.o.Apply(actx)
-			cancel()
-			if err == nil {
-				return
-			}
-		}
-	}()
-}
-
 // reapStale stops openvpn processes a previous daemon left running (it was
 // killed before it could stop them) and clears their runtime files, so an
 // auto-connect doesn't open a second session beside an orphan.
@@ -954,9 +1182,11 @@ func (m *Manager) reapStale() {
 			data, _ := os.ReadFile(filepath.Join(m.runDir, n))
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 1 && m.isOurOpenVPN(pid) {
 				m.o.Log.Info("stopping openvpn left by a previous daemon", "pid", pid)
-				_ = terminate(pid)
-				for i := 0; i < 30 && alive(pid); i++ {
-					time.Sleep(100 * time.Millisecond)
+				if !stopProcess(pid, m.isOurOpenVPN) {
+					// Keep its pid file: the next start tries again rather
+					// than running a second session beside it.
+					m.o.Log.Error("openvpn left by a previous daemon won't stop", "pid", pid)
+					continue
 				}
 			}
 			_ = os.Remove(filepath.Join(m.runDir, n))
@@ -964,6 +1194,22 @@ func (m *Manager) reapStale() {
 			_ = os.Remove(filepath.Join(m.runDir, n))
 		}
 	}
+}
+
+// stopProcess sends pid SIGTERM, then SIGKILL if it's still there after 3
+// seconds, re-checking before each signal that it's still the process ours
+// says it is (pids get reused). It reports whether the process is gone.
+func stopProcess(pid int, ours func(int) bool) bool {
+	for _, kill := range []func(int) error{terminate, forceKill} {
+		if !alive(pid) || !ours(pid) {
+			return true
+		}
+		_ = kill(pid)
+		for i := 0; i < 30 && alive(pid); i++ {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return !alive(pid)
 }
 
 // Engine reports whether tunnels can run on this machine, and if not, how
@@ -990,7 +1236,8 @@ func processArgs(pid int) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	// A fixed path: a root daemon never takes ps from its environment.
+	out, err := exec.CommandContext(ctx, "/bin/ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return ""
 	}

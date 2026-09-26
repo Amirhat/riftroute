@@ -103,6 +103,14 @@ func run() error {
 		dbPath = paths.DB
 	}
 
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+	// One daemon per state directory, decided before anything else runs.
+	if err := lockInstance(filepath.Dir(dbPath)); err != nil {
+		return err
+	}
+
 	// Before the database is opened: confirm, count or roll back an update.
 	// The version the updater compares is the one -version prints first
 	// ("0.2.6" for a release, "0.2.6-3-gabc1234" for a dev build).
@@ -114,10 +122,6 @@ func run() error {
 	guard, _ := bootGuard(current, exe, updateDir, dbPath, logger)
 	if guard.RestartNow {
 		return restartExit(updater.RestartExitCode)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
 	}
 
 	st, err := store.Open(dbPath)
@@ -574,6 +578,11 @@ func run() error {
 	// auto-apply, like every tunnel change, and retried if refused for now —
 	// before auto-connect brings tunnels back.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("recovered panic starting tunnels", "panic", r)
+			}
+		}()
 		if svc.OwnsTunnelRoutes(ctx) {
 			logger.Info("withdrawing routes left by the previous run's tunnels")
 			tunnels.Resync(ctx)

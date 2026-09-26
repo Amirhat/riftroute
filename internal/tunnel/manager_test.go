@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -20,20 +21,22 @@ import (
 
 type harness struct {
 	m       *Manager
+	fl      *FakeLauncher
 	dir     string
 	mu      sync.Mutex
 	ifaces  []domain.Iface
 	applies [][]routing.TunnelInput
+	bits    int // prefix length of the fake tunnel's address (default 24)
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...func(*FakeLauncher)) *harness {
 	t.Helper()
-	h := &harness{dir: filepath.Join(t.TempDir(), "tunnels")}
+	h := &harness{dir: filepath.Join(t.TempDir(), "tunnels"), bits: 24}
 	fl := &FakeLauncher{
 		OnUp: func(iface, ip string) {
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			h.ifaces = append(h.ifaces, domain.Iface{Name: iface, Up: true, Addrs: []string{ip + "/24"}, IsVPN: true})
+			h.ifaces = append(h.ifaces, domain.Iface{Name: iface, Up: true, Addrs: []string{fmt.Sprintf("%s/%d", ip, h.bits)}, IsVPN: true})
 		},
 		OnDown: func(iface, _ string) {
 			h.mu.Lock()
@@ -41,6 +44,10 @@ func newHarness(t *testing.T) *harness {
 			h.ifaces = nil
 		},
 	}
+	for _, o := range opts {
+		o(fl)
+	}
+	h.fl = fl
 	m, err := New(Options{
 		Dir:      h.dir,
 		Launcher: fl,
@@ -87,6 +94,17 @@ func waitState(t *testing.T, m *Manager, name string, want domain.TunnelState) d
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("tunnel %s: state %s (%s), want %s", name, st.State, st.LastError, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting: %s", what)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -344,19 +362,20 @@ func TestDeleteRacingConnectLeavesNoOrphan(t *testing.T) {
 		}
 		done := make(chan struct{})
 		go func() { _ = h.m.Connect("infra"); close(done) }()
-		_ = h.m.Delete(ctx, "infra")
+		derr := h.m.Delete(ctx, "infra")
 		<-done
-		// Whatever won, a session must either be tracked or not exist.
+		// Whatever won, no openvpn may run for a tunnel that's gone.
 		h.m.mu.Lock()
 		r := h.m.rt["infra"]
 		h.m.mu.Unlock()
-		if r == nil && len(h.m.Inputs()) != 0 {
-			t.Fatal("inputs for a deleted tunnel")
+		if derr == nil {
+			if r != nil {
+				t.Fatal("a deleted tunnel is still listed")
+			}
+			waitFor(t, "no openvpn left for a deleted tunnel", func() bool { return h.fl.Running() == 0 })
 		}
 		h.m.Shutdown()
-		if r != nil && r.sess != nil {
-			t.Fatal("a session survived Shutdown")
-		}
+		waitFor(t, "no openvpn left after Shutdown", func() bool { return h.fl.Running() == 0 })
 	}
 }
 

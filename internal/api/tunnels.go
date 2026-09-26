@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"time"
 
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -90,7 +91,7 @@ func (s *Server) handleTunnelSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	st, err := s.tunnels.Save(r.Context(), spec)
+	st, err := s.tunnels.Save(teardownCtx(r), spec)
 	var ve *tunnel.ValidationError
 	if errors.As(err, &ve) {
 		writeJSON(w, http.StatusBadRequest, TunnelResp{Issues: ve.Issues})
@@ -137,7 +138,7 @@ func (s *Server) handleTunnelDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no tunnel named %q", name))
 		return
 	}
-	if err := s.tunnels.Delete(r.Context(), name); err != nil {
+	if err := s.tunnels.Delete(teardownCtx(r), name); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -161,7 +162,7 @@ func (s *Server) handleTunnelConnect(connect bool) http.HandlerFunc {
 			err = s.tunnels.Connect(name)
 		} else {
 			action = "tunnel-disconnect"
-			err = s.tunnels.Disconnect(r.Context(), name)
+			err = s.tunnels.Disconnect(teardownCtx(r), name)
 		}
 		if err != nil {
 			s.auditTunnel(r, action, name, "failed", err.Error())
@@ -186,4 +187,13 @@ func (s *Server) auditTunnel(_ *http.Request, action, name, result, reason strin
 	_, _ = s.store.AppendAudit(domain.AuditEvent{
 		Actor: domain.ActorUI, Action: action, Profile: "tunnel:" + name, Result: result, Reason: reason,
 	})
+}
+
+// teardownCtx is the context for stopping a tunnel on a request's behalf. It
+// isn't the request's: a client that gives up waiting mustn't turn a clean
+// openvpn shutdown into a kill. It still has a bound.
+func teardownCtx(r *http.Request) context.Context {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Second)
+	context.AfterFunc(ctx, cancel)
+	return ctx
 }

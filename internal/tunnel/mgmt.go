@@ -26,8 +26,10 @@ type mgmtConn struct {
 	wmu  sync.Mutex
 }
 
-// dialMgmt connects to the management socket, retrying while openvpn starts.
-func dialMgmt(ctx context.Context, path string) (*mgmtConn, error) {
+// dialMgmt connects to the management socket, retrying while openvpn starts
+// — and giving up at once if it exits (a config it refused) rather than
+// waiting out ctx.
+func dialMgmt(ctx context.Context, path string, exited <-chan struct{}) (*mgmtConn, error) {
 	var d net.Dialer
 	for {
 		c, err := d.DialContext(ctx, "unix", path)
@@ -37,6 +39,8 @@ func dialMgmt(ctx context.Context, path string) (*mgmtConn, error) {
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("openvpn's management socket never came up: %w", err)
+		case <-exited:
+			return nil, errors.New("openvpn exited while starting")
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
@@ -97,6 +101,21 @@ func parseState(body string) stateInfo {
 		return ""
 	}
 	return stateInfo{name: at(1), desc: at(2), localIP: at(3), remoteIP: at(4), remotePort: at(5), localIPv6: at(8)}
+}
+
+// parseHold returns the N of ">HOLD:Waiting for hold release:N": how long
+// openvpn would have paused before this attempt (its connect-retry backoff),
+// 0 when absent.
+func parseHold(body string) time.Duration {
+	i := strings.LastIndexByte(body, ':')
+	if i < 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(body[i+1:]))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
 }
 
 // parseBytecount parses ">BYTECOUNT:in,out".

@@ -3,6 +3,7 @@
 package tunnel
 
 import (
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -12,14 +13,24 @@ import (
 
 // ownProcessGroup puts openvpn in its own process group: a Ctrl-C aimed at a
 // dev daemon must reach the daemon, which then shuts openvpn down cleanly
-// over the management socket.
+// over the management socket. On Linux openvpn also gets SIGTERM if the
+// daemon dies (see parentDeath).
 func ownProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	parentDeath(cmd.SysProcAttr)
 }
 
 func terminate(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
 
+func forceKill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }
+
 func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+// ownedByUs reports whether a file belongs to the effective user.
+func ownedByUs(fi fs.FileInfo) bool {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Geteuid()
+}
 
 // unprivileged makes a root daemon run cmd as "nobody": for probing a binary
 // (openvpn --version) that root doesn't need to trust yet. As any other user

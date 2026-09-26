@@ -4,6 +4,7 @@ package tunnel
 
 import (
 	"errors"
+	"io/fs"
 	"os/exec"
 )
 
@@ -16,4 +17,8 @@ func unprivileged(*exec.Cmd) {}
 
 func terminate(int) error { return errors.New("not supported on windows") }
 
+func forceKill(int) error { return errors.New("not supported on windows") }
+
 func alive(int) bool { return false }
+
+func ownedByUs(fs.FileInfo) bool { return false }
