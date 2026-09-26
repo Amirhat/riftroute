@@ -518,6 +518,15 @@ describe('Tunnels view — macOS openvpn', () => {
     ).toBeInTheDocument()
   })
 
+  it('says so when the check is installing an update, which brings openvpn itself', async () => {
+    withMac(update())
+    mockApi.checkUpdate.mockResolvedValue(update({ action: 'install', latest: '0.3.1', state: 'downloading' }))
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Check for updates' }))
+    expect(await screen.findByText(/RiftRoute is installing 0\.3\.1, which brings openvpn with it/)).toBeInTheDocument()
+    expect(screen.queryByText(/If openvpn is still missing/)).not.toBeInTheDocument()
+  })
+
   it('shows why the check failed', async () => {
     withMac(update())
     mockApi.checkUpdate.mockResolvedValue(update({ state: 'error', error: 'no route to host' }))

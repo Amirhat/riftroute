@@ -219,11 +219,12 @@ function EngineBanner({
   // openvpn; until the state says, assume it is.
   const canFetch = action === 'update' && (update ? update.self_updatable : true)
   const [copied, setCopied] = useState(false)
-  const [fetching, setFetching] = useState<{ busy: boolean; done: boolean; error: string | null }>({
-    busy: false,
-    done: false,
-    error: null,
-  })
+  const [fetching, setFetching] = useState<{
+    busy: boolean
+    done: boolean
+    error: string | null
+    installing: string | null // the update the check is installing instead
+  }>({ busy: false, done: false, error: null, installing: null })
   async function copy() {
     try {
       setCopied(await copyText(cmds.join('\n')))
@@ -232,16 +233,20 @@ function EngineBanner({
     }
   }
   // checkForUpdates runs the daemon's update check, which installs a missing
-  // openvpn before it answers, then looks at openvpn again.
+  // openvpn before it answers — unless it's installing an update, which
+  // brings openvpn with it — then looks at openvpn again.
   async function checkForUpdates() {
-    setFetching({ busy: true, done: false, error: null })
+    setFetching({ busy: true, done: false, error: null, installing: null })
     let error: string | null = null
+    let installing: string | null = null
     try {
-      error = (await api.checkUpdate()).error || null
+      const st = await api.checkUpdate()
+      error = st.error || null
+      if (!error && st.action === 'install') installing = st.latest || 'the update'
     } catch (e) {
       error = friendly(e)
     }
-    setFetching({ busy: false, done: true, error })
+    setFetching({ busy: false, done: true, error, installing })
     qc.invalidateQueries({ queryKey: stateKey })
     onRecheck()
   }
@@ -312,6 +317,11 @@ function EngineBanner({
             {fetching.done &&
               (fetching.error ? (
                 <p className="text-danger">The update check failed: {fetching.error}</p>
+              ) : fetching.installing ? (
+                <p className="text-muted">
+                  RiftRoute is installing {fetching.installing}, which brings openvpn with it; the daemon restarts
+                  when it's in place.
+                </p>
               ) : (
                 <p className="text-muted">
                   Checked. If openvpn is still missing in a minute, reinstall the daemon from a current release.
