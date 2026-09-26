@@ -206,13 +206,19 @@ VPN's default route) and its own DNS. RiftRoute can run the OpenVPN connection
 itself as a **split tunnel** instead, so a VPN that already carries everything
 (Windscribe, …) stays up and only the networks you list go through OpenVPN.
 
-Tunnels run on the `openvpn` program (2.5 or newer), which **you install
-yourself** — RiftRoute doesn't bundle it, and the OpenVPN Connect app doesn't
-include it:
+Tunnels run on the `openvpn` program (2.5 or newer) — not the OpenVPN Connect
+app, which doesn't include it:
+
+- **macOS: nothing to install.** RiftRoute ships its own openvpn (OpenVPN 2.6,
+  built from source — see [THIRD_PARTY.md](THIRD_PARTY.md)) in the app and the
+  release tarballs, and installing the daemon — the app's **Install** button,
+  or `sudo riftroute daemon install` — puts it beside the daemon. Homebrew's
+  openvpn is not used (why: below). A daemon installed from a release that
+  predates this has no openvpn: reinstall it from a current release.
+- **Linux:** install your distribution's package:
 
 | System | Install |
 |---|---|
-| macOS | `brew install openvpn` ([Homebrew](https://brew.sh)) |
 | Debian, Ubuntu, Mint | `sudo apt install openvpn` |
 | Fedora | `sudo dnf install openvpn` |
 | Rocky, Alma, CentOS Stream | `sudo dnf install epel-release && sudo dnf install openvpn` |
@@ -220,8 +226,8 @@ include it:
 | openSUSE | `sudo zypper install openvpn` |
 | Alpine | `sudo apk add openvpn` |
 
-You don't need to look this up: until it's installed, the **Tunnels** page and
-`riftroute tunnel list` say so and show the command for your system, and the
+You don't need to look this up: until openvpn is usable, the **Tunnels** page
+and `riftroute tunnel list` say so and show what to do on your system, and the
 daemon picks it up as soon as it's there — no restart.
 
 ```bash
@@ -267,11 +273,19 @@ Or use the **Tunnels** page in the app. How it works:
   challenge/2FA logins, encrypted private keys, proxies, `<connection>` blocks,
   TAP tunnels.
 
-`openvpn` runs as root from a fixed list of install paths (never `$PATH`), with
-symlinks resolved; a binary other users can modify is refused, and checking
-its version (to show whether tunnels can run) runs it as `nobody`, not root. On macOS that is Homebrew's, which is
-owned by the admin user who installed it — as with any root service built from
-Homebrew, only install it on a machine where that account is trusted.
+`openvpn` runs as root, so the daemon runs only one that nobody but root can
+change: on macOS the copy RiftRoute installs at
+`/Library/PrivilegedHelperTools/riftroute-openvpn`, on Linux the
+distribution's in `/usr/sbin`, `/usr/bin` or `/sbin` — never one found on
+`$PATH` or under `/usr/local`. Symlinks are resolved, and the file and every
+folder above it must be owned by root and writable by no one else; anything
+else is refused, with how to fix it. Homebrew's openvpn is never used: its
+folder belongs to the user who installed Homebrew, so any program running as
+that user could replace it — or a library or OpenSSL config it loads — and
+have it run as root. The macOS build is static (it links only macOS's own
+libraries), has no plugins or OpenSSL engines, reads no `openssl.cnf`, and is
+updated and rolled back together with the daemon. Checking its version (to
+show whether tunnels can run) runs it as `nobody`, not root.
 
 ## CLI
 

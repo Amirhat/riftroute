@@ -1,5 +1,7 @@
 name: CI
 
+# The macOS openvpn that ships with RiftRoute is built by openvpn.yml, only
+# when scripts/build-openvpn.sh changes (it is slow).
 on:
   push:
     branches: [main]

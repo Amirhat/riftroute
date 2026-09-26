@@ -22,9 +22,16 @@ var (
 	sleep        = time.Sleep
 )
 
+// exitTimeout is the plist's ExitTimeOut: how long launchd lets the daemon
+// shut down after SIGTERM before it sends SIGKILL (launchd's default is 20s).
+// Stopping stops every tunnel — up to ~15s for an openvpn that ignores
+// SIGTERM, in parallel — and then resolves pending route transactions, which
+// 20s could cut short.
+const exitTimeout = 40 * time.Second
+
 // unloadTimeout bounds the wait for bootout to finish: launchd sends SIGTERM,
-// then SIGKILL after the job's exit timeout (20s by default).
-const unloadTimeout = 25 * time.Second
+// then SIGKILL after the job's exit timeout.
+const unloadTimeout = exitTimeout + 5*time.Second
 
 // startTimeout bounds how long start/restart/install wait for the daemon to
 // accept connections. It exceeds launchd's 10s respawn throttle, so a throttled
@@ -132,7 +139,10 @@ const (
 	// root (LPE). /Library/PrivilegedHelperTools is root:wheel.
 	installDir   = "/Library/PrivilegedHelperTools"
 	installedBin = installDir + "/riftrouted"
-	logDir       = "/var/log/riftroute"
+	// The openvpn that ships with RiftRoute, which the daemon runs as root for
+	// tunnels: beside the daemon, for the same reason (never Homebrew's).
+	installedOpenVPN = installDir + "/riftroute-openvpn"
+	logDir           = "/var/log/riftroute"
 )
 
 type launchdManager struct{}
@@ -181,6 +191,14 @@ func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
 	if err := secureRootFile(installedBin, 0o755); err != nil {
 		return fmt.Errorf("secure binary: %w", err)
 	}
+	// Tunnels run the openvpn shipped next to the daemon binary. A build
+	// without one leaves an earlier copy alone; until there is one, tunnels
+	// say how to get it (the CLI reports which case this is).
+	if src := BundledOpenVPN(daemonBin); src != "" {
+		if err := installOpenVPN(src, installedOpenVPN, secureRootFile); err != nil {
+			return err
+		}
+	}
 	// Harden the log dir; reject a pre-planted symlink (arbitrary-root-write).
 	if err := secureRootDir(logDir); err != nil {
 		return fmt.Errorf("secure log dir: %w", err)
@@ -205,7 +223,8 @@ func (launchdManager) Uninstall() error {
 		return err // don't delete the binary out from under a live daemon
 	}
 	_ = os.Remove(launchdPlist)
-	_ = os.Remove(installedBin) // remove the privileged binary too
+	_ = os.Remove(installedBin) // remove the privileged binaries too
+	_ = os.Remove(installedOpenVPN)
 	clearUpdateFiles()
 	return nil
 }
@@ -260,9 +279,10 @@ func renderPlist(bin, socket string, allowUID int) string {
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>ExitTimeOut</key><integer>%d</integer>
   <key>StandardOutPath</key><string>/var/log/riftroute/riftrouted.log</string>
   <key>StandardErrorPath</key><string>/var/log/riftroute/riftrouted.err.log</string>
 </dict>
 </plist>
-`, launchdLabel, bin, socket, allowArg)
+`, launchdLabel, bin, socket, allowArg, int(exitTimeout/time.Second))
 }

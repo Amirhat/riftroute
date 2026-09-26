@@ -94,9 +94,10 @@ type TunnelBlocked struct {
 }
 
 // TunnelEngine reports whether the program tunnels run on (openvpn) is
-// usable on this machine and, when it isn't, how to install it here.
-// RiftRoute never installs it itself: the user does, with their own package
-// manager, and the daemon picks it up without a restart.
+// usable on this machine and, when it isn't, how to install it here. On
+// macOS it ships with RiftRoute and is installed with the daemon; on Linux
+// the user installs the distribution's package, and the daemon picks it up
+// without a restart.
 type TunnelEngine struct {
 	Available bool   `json:"available"`
 	Path      string `json:"path,omitempty"`
@@ -107,7 +108,9 @@ type TunnelEngine struct {
 	Install *TunnelInstall `json:"install,omitempty"`
 }
 
-// TunnelInstall is how to install (or fix) openvpn on this system.
+// TunnelInstall is how to install (or fix) openvpn on this system: on macOS,
+// reinstalling the daemon from a release that ships it; on Linux, the
+// distribution's package manager.
 type TunnelInstall struct {
 	// System names the OS the steps are for ("macOS", "Ubuntu 24.04.1 LTS").
 	System string `json:"system"`
@@ -119,7 +122,7 @@ type TunnelInstall struct {
 }
 
 // Summary renders the steps on one line, for errors, logs, and doctor:
-// "run `brew install openvpn`. The OpenVPN Connect app … https://…".
+// "run `sudo dnf install openvpn`. OpenVPN comes from EPEL on RHEL … https://…".
 func (in *TunnelInstall) Summary() string {
 	if in == nil {
 		return ""

@@ -64,11 +64,20 @@ func packageManaged(string) bool {
 	return err == nil && strings.Contains(string(out), "install ok installed")
 }
 
+// installedOpenVPN is the openvpn the updater keeps in step with the daemon:
+// the one installed beside it, when this is the installed daemon (macOS).
+func installedOpenVPN(exe string) string {
+	if exe == "" || exe != platform.InstalledDaemonPath() {
+		return ""
+	}
+	return platform.InstalledOpenVPNPath()
+}
+
 // bootGuard runs before the database is opened: it confirms, counts or rolls
 // back a pending update (see updater.BootGuard).
 func bootGuard(current, exe, stateDir, dbPath string, logger *slog.Logger) (*updater.Guard, error) {
 	g, err := updater.BootGuard(updater.GuardEnv{
-		Current: current, Binary: exe, StateDir: stateDir, DBPath: dbPath,
+		Current: current, Binary: exe, OpenVPN: installedOpenVPN(exe), StateDir: stateDir, DBPath: dbPath,
 		DBVersion: store.FileUserVersion, DBMinReader: store.FileMinReader, Log: logger,
 	})
 	if err != nil {
@@ -144,7 +153,7 @@ func newUpdater(ctx context.Context, st *store.Store, proto *safety.Protocol, cu
 		Ctx: ctx, Current: current, Channel: channel,
 		ServerURL: updater.DefaultServerURL, FallbackURL: updater.DefaultFallbackURL,
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
-		Binary: exe, StateDir: stateDir, DBPath: dbPath,
+		Binary: exe, OpenVPN: installedOpenVPN(exe), StateDir: stateDir, DBPath: dbPath,
 		SelfUpdatable: selfUpdatable(exe, providerName),
 		Loop:          providerName != "fake",
 		Mode: func() domain.UpdateMode {

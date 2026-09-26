@@ -20,12 +20,32 @@ import (
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
-// staged is a verified, self-tested daemon waiting to be installed.
+// staged is a verified, self-tested daemon waiting to be installed — with
+// the openvpn from the same release, where one ships (macOS).
 type staged struct {
 	version string
 	path    string
 	sum     string // sha256 of the binary at staging time, re-checked at swap
+	// openvpn is the release's openvpn ("" when this platform ships none or
+	// the release doesn't include it: the installed one is left alone).
+	openvpn    string
+	openvpnSum string
 }
+
+// files are the staged files and the hashes they must still have at the swap.
+func (s *staged) files() map[string]string {
+	f := map[string]string{s.path: s.sum}
+	if s.openvpn != "" {
+		f[s.openvpn] = s.openvpnSum
+	}
+	return f
+}
+
+// Largest files the updater takes from a release tarball.
+const (
+	maxDaemonSize  = 150 << 20
+	maxOpenVPNSize = 20 << 20 // a static openvpn is ~6 MB
+)
 
 // errBroken marks a problem with the release itself (as opposed to the
 // network, the disk or a cancelled request): that release is skipped.
@@ -37,12 +57,13 @@ func (e errBroken) Unwrap() error { return e.err }
 func broken(err error) error { return errBroken{err} }
 
 // stage downloads the release tarball, checks it against the signed hash
-// and size, unpacks the daemon into a directory of its own, and self-tests
-// it. A release that is itself broken is skipped until a newer one appears;
-// anything else is retried at the next check.
+// and size, unpacks the daemon (and, where one ships, openvpn) into a
+// directory of its own, and self-tests them. A release that is itself broken
+// is skipped until a newer one appears; anything else is retried at the next
+// check.
 func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 	u.mu.Lock()
-	if s := u.staged; s != nil && s.version == m.Version && fileExists(s.path) {
+	if s := u.staged; s != nil && s.version == m.Version && fileExists(s.path) && (s.openvpn == "" || fileExists(s.openvpn)) {
 		u.mu.Unlock()
 		return true
 	}
@@ -74,23 +95,40 @@ func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 	if err := u.download(ctx, a, tgz); err != nil {
 		return fail(err)
 	}
-	bin := filepath.Join(dir, "riftrouted")
-	if err := extractDaemon(tgz, bin); err != nil {
-		return fail(err)
+	s := &staged{version: m.Version, path: filepath.Join(dir, "riftrouted")}
+	if u.env.OpenVPN != "" {
+		s.openvpn = filepath.Join(dir, "openvpn")
 	}
-	_ = os.Remove(tgz)
-	sum, err := fileSHA256(bin)
+	withOpenVPN, err := extractRelease(tgz, s.path, s.openvpn)
 	if err != nil {
 		return fail(err)
 	}
-	if err := u.selfTest(ctx, bin, m.Version); err != nil {
+	_ = os.Remove(tgz)
+	if !withOpenVPN {
+		if s.openvpn != "" {
+			u.env.Log.Warn("update doesn't include openvpn; the installed one is kept", "version", m.Version)
+		}
+		s.openvpn = ""
+	}
+	if s.sum, err = fileSHA256(s.path); err != nil {
+		return fail(err)
+	}
+	if s.openvpn != "" {
+		if s.openvpnSum, err = fileSHA256(s.openvpn); err != nil {
+			return fail(err)
+		}
+		if err := selfTestOpenVPN(ctx, s.openvpn); err != nil {
+			return fail(err)
+		}
+	}
+	if err := u.selfTest(ctx, s.path, m.Version); err != nil {
 		return fail(err)
 	}
 	u.mu.Lock()
-	u.staged = &staged{version: m.Version, path: bin, sum: sum}
+	u.staged = s
 	u.mu.Unlock()
 	u.set(func(s *domain.UpdateStatus) { s.State, s.Staged, s.Error = "waiting", m.Version, "" })
-	u.env.Log.Info("update staged", "version", m.Version)
+	u.env.Log.Info("update staged", "version", m.Version, "openvpn", s.openvpn != "")
 	return true
 }
 
@@ -134,45 +172,99 @@ func (u *Updater) download(ctx context.Context, a update.ManifestAsset, dst stri
 	return nil
 }
 
-// extractDaemon pulls the one file it needs — riftrouted — out of the
-// release tarball, refusing anything that isn't a plain file of sane size.
-// The tarball matched the signed hash, so a malformed one is the release's
-// fault; a failed write is not.
-func extractDaemon(tgz, dst string) error {
+// extractRelease pulls the files the updater installs out of the release
+// tarball: riftrouted into daemonDst (required) and, when openvpnDst isn't
+// "", openvpn into it (reporting whether the release has one). Anything that
+// isn't a plain file of sane size, or appears twice, is refused. The tarball
+// matched the signed hash, so a malformed one is the release's fault; a
+// failed write is not.
+func extractRelease(tgz, daemonDst, openvpnDst string) (bool, error) {
 	f, err := os.Open(tgz)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return broken(err)
+		return false, broken(err)
 	}
+	type file struct {
+		dst string
+		max int64
+	}
+	want := map[string]file{"riftrouted": {daemonDst, maxDaemonSize}}
+	if openvpnDst != "" {
+		want["openvpn"] = file{openvpnDst, maxOpenVPNSize}
+	}
+	got := map[string]bool{}
 	tr := tar.NewReader(gz)
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
-			return broken(errors.New("release has no riftrouted"))
+			break
 		}
 		if err != nil {
-			return broken(err)
+			return false, broken(err)
 		}
-		if strings.TrimPrefix(h.Name, "./") != "riftrouted" {
+		name := strings.TrimPrefix(h.Name, "./")
+		w, ok := want[name]
+		if !ok {
 			continue
 		}
-		if h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > 150<<20 {
-			return broken(errors.New("riftrouted in the release is not a plain file"))
+		if got[name] {
+			return false, broken(fmt.Errorf("the release has %s twice", name))
 		}
-		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o700)
-		if err != nil {
-			return err
+		if h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > w.max {
+			return false, broken(fmt.Errorf("%s in the release is not a plain file", name))
 		}
-		if _, err := io.Copy(out, io.LimitReader(tr, h.Size)); err != nil {
-			out.Close()
-			return err
+		if err := writeLimited(w.dst, tr, h.Size); err != nil {
+			return false, err
 		}
-		return out.Close()
+		got[name] = true
 	}
+	if !got["riftrouted"] {
+		return false, broken(errors.New("release has no riftrouted"))
+	}
+	return got["openvpn"], nil
+}
+
+func writeLimited(dst string, r io.Reader, n int64) error {
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o700)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, io.LimitReader(r, n)); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// selfTestOpenVPN runs the staged openvpn's --version, in the environment the
+// daemon runs it with: a release whose openvpn doesn't run here (the wrong
+// architecture, a missing library) is broken. It runs as root from the
+// root-only staging dir; it matched the signed hash, like the daemon that
+// selfTest runs.
+func selfTestOpenVPN(ctx context.Context, bin string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "--version")
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "OPENSSL_CONF=/dev/null"}
+	cmd.Dir = "/"
+	cmd.WaitDelay = 2 * time.Second
+	out, err := cmd.CombinedOutput() // some versions exit 1 after printing it
+	if strings.HasPrefix(strings.TrimSpace(string(out)), "OpenVPN ") {
+		return nil
+	}
+	if err == nil {
+		return broken(fmt.Errorf("openvpn in the release doesn't say its version: %q", firstLine(out)))
+	}
+	return classifyRun(ctx, fmt.Errorf("openvpn --version: %w: %s", err, firstLine(out)))
+}
+
+func firstLine(b []byte) string {
+	l, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
+	return l
 }
 
 // selfTest runs the staged binary: its version must be the manifest's, and
