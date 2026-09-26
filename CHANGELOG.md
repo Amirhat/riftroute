@@ -29,14 +29,59 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Profiles made for OpenVPN Connect work against older servers too: the
   profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
   openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
-  Works on macOS and Linux. On macOS RiftRoute ships its own `openvpn` (a
-  static OpenVPN 2.6 build, installed root-owned beside the daemon and updated
-  with it — never Homebrew's, which the user who installed Homebrew could
-  swap for something the daemon would run as root). On Linux it uses the
-  distribution's (2.5 or newer): until you've installed it, the Tunnels page
-  and `riftroute tunnel list` say so up front, with the install command for
-  your system (apt, dnf, pacman, zypper, apk, …), and pick it up without a
-  restart. Only a root-owned openvpn in a root-owned folder is ever run.
+  Files a profile names are read only from its own folder (a login file only
+  from right beside it). Works on macOS and Linux.
+- **openvpn comes with RiftRoute on macOS.** A static OpenVPN 2.6 build ships
+  in the app, the release tarballs and the Homebrew formula, and installing
+  the daemon puts it root-owned beside it — never Homebrew's openvpn, which
+  the user who installed Homebrew could swap for something the daemon would
+  run as root. On Linux tunnels use the distribution's (2.5 or newer; the
+  `.deb` recommends it): until it's there, the Tunnels page and `riftroute
+  tunnel list` say so up front, with the install command for your system
+  (apt, dnf, pacman, zypper, apk, …), and pick it up without a restart. Only
+  a root-owned openvpn in a root-owned folder is ever run.
+- **Updates keep openvpn in step (macOS).** An update installs its release's
+  openvpn together with the daemon and checks it the same way (signed hash, a
+  self-test); rolling the update back puts the previous openvpn back — or
+  keeps the one the update added, which every daemon can use.
+- **A missing openvpn is put back (macOS).** A daemon updated by 0.2.6's
+  updater, which knew only the daemon, has no openvpn: the daemon's update
+  check now installs the one the newest signed release ships — even with
+  updates off, or while the daemon itself is held back from that release.
+  The Tunnels page offers **Check for updates** for it.
+
+### Changed
+- **The daemon gets 40 s to stop on macOS** (launchd's ExitTimeOut, up from
+  its default 20 s): on shutdown it takes every tunnel down and settles
+  pending route changes first, instead of being killed halfway.
+
+### Fixed
+- **Only one daemon runs per install.** The daemon locks its state before
+  doing anything; a second copy (say, a manual run beside the service) stops
+  with a clear message instead of touching the running daemon's routes and
+  tunnels.
+- **Routes survive a gateway change.** When a managed route's next hop
+  changed but its destination didn't — an exclude route after Wi-Fi →
+  Ethernet, or the VPN's gateway moving — the new route was added before the
+  old one was deleted; the kernel keeps one route per destination, so the
+  destination could end up with no route while RiftRoute showed it in sync.
+  The old route is now deleted first, and a rollback undoes it in the right
+  order. (#19)
+- **View → Explain (⌘3) opens the route lookup** — "Where does traffic go?"
+  on the Routing Table, with the cursor in it — instead of a blank page.
+  (#18)
+- **Tinted colors in the app.** Faded backgrounds and borders — error and
+  warning boxes, the sidebar's selected item, owner and state badges, hover
+  highlights — rendered with no color at all: the theme colors were plain CSS
+  variables, which Tailwind can't make translucent, so those classes produced
+  no CSS. Theme colors are now RGB channels, and every tint shows in both the
+  light and dark themes. (#18)
+- **Updates: a release built for another architecture is skipped** on macOS
+  instead of being downloaded again at every check.
+- **Dialogs work with the keyboard and screen readers:** Escape closes them,
+  Tab stays inside, focus returns to where it was, and each is announced by
+  its title.
+
 ## [0.2.6] — 2026-09-26
 
 Automatic, signed updates. From this version on, the daemon keeps itself up to
@@ -66,14 +111,6 @@ date — and can't be handed anything the maintainer didn't sign.
 
 **This version itself is installed the usual way** (it's the first with the
 updater); later versions arrive on their own.
-
-### Fixed
-- **Tinted colors in the app.** Faded backgrounds and borders — error and
-  warning boxes, the sidebar's selected item, owner and state badges, hover
-  highlights — rendered with no color at all: the theme colors were plain CSS
-  variables, which Tailwind can't make translucent, so those classes produced
-  no CSS. Theme colors are now RGB channels, and every tint shows in both the
-  light and dark themes.
 
 ## [0.2.5] — 2026-09-24
 

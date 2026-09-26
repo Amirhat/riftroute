@@ -153,17 +153,48 @@ func TestUserRollbackRestoresOpenVPN(t *testing.T) {
 }
 
 // The first release that ships openvpn adds it; rolling that release back
-// removes it again — exactly what was there before.
-func TestRollingBackTheFirstShippedOpenVPNRemovesIt(t *testing.T) {
-	h, ovpn := installedWithOpenVPN(t, nil)
-	if !fileIs(t, ovpn, fakeOpenVPN("new")) || fileExists(prevBinary(ovpn)) {
-		t.Fatal("openvpn not added (or a .prev invented)")
-	}
-	for i := 0; i <= maxBoots; i++ {
-		_, _ = BootGuard(guardEnv(h, "0.2.7"))
-	}
-	if fileExists(ovpn) {
-		t.Fatal("the added openvpn survived the rollback")
+// keeps it. Removing it would leave the previous daemon — which may run
+// tunnels too — without one, and every openvpn RiftRoute ships works with
+// every daemon (one from before tunnels ignores it).
+func TestRollingBackTheFirstShippedOpenVPNKeepsIt(t *testing.T) {
+	for _, by := range []string{"health", "you", "a crash before the daemon's rename"} {
+		t.Run(by, func(t *testing.T) {
+			h, ovpn := installedWithOpenVPN(t, nil)
+			if !fileIs(t, ovpn, fakeOpenVPN("new")) || fileExists(prevBinary(ovpn)) {
+				t.Fatal("openvpn not added (or a .prev invented)")
+			}
+			switch by {
+			case "health":
+				for i := 0; i <= maxBoots; i++ {
+					_, _ = BootGuard(guardEnv(h, "0.2.7"))
+				}
+			case "you":
+				g, _ := BootGuard(guardEnv(h, "0.2.7"))
+				g.Confirm()
+				h.env.Current = "0.2.7"
+				u2, _ := New(h.env)
+				if err := u2.RequestRollback(); err != nil {
+					t.Fatal(err)
+				}
+				if g, err := BootGuard(guardEnv(h, "0.2.7")); err != nil || !g.RestartNow {
+					t.Fatalf("rollback start: %v %+v", err, g)
+				}
+			default:
+				if err := os.WriteFile(h.env.Binary, fakeDaemon("0.2.6"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				_, _ = BootGuard(guardEnv(h, "0.2.6"))
+			}
+			if !fileIs(t, h.env.Binary, fakeDaemon("0.2.6")) {
+				t.Fatal("daemon not rolled back")
+			}
+			if !fileIs(t, ovpn, fakeOpenVPN("new")) {
+				t.Fatal("the rollback removed the openvpn the update added")
+			}
+			if ps, _ := loadPersisted(h.env.StateDir); ps.OpenVPNSwap != "" {
+				t.Fatalf("swap still recorded as %q", ps.OpenVPNSwap)
+			}
+		})
 	}
 }
 

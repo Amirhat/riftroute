@@ -33,10 +33,13 @@ Priority: optional
 Architecture: ${ARCH}
 Maintainer: AmirHat <a.h.amani.t@gmail.com>
 Depends: iproute2, nftables
+Recommends: openvpn
 Description: Cross-platform split-tunneling / policy-based routing controller
  RiftRoute steers traffic by policy with a safety-first Apply Protocol
  (snapshot, watchdog, commit-confirm, atomic rollback). This package ships the
  privileged daemon (riftrouted) and the CLI (riftroute).
+ .
+ Tunnels (OpenVPN split tunnels) run on the distribution's openvpn package.
 EOF
 
 cat > "${PKG}/DEBIAN/postinst" <<'EOF'

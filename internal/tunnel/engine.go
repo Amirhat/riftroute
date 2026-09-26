@@ -206,11 +206,20 @@ func detectEngine(h hostInfo, find func() (string, os.FileInfo, error), versionO
 	return e
 }
 
-// macReinstall is the one fix on macOS, whatever is wrong with openvpn: the
-// daemon runs only the copy that ships with RiftRoute, which installing the
-// daemon puts in place.
-const macReinstall = "Tunnels need the openvpn that ships with RiftRoute — reinstall the daemon from a release " +
-	"that includes it (riftroute daemon install / the app's Install button)."
+// On macOS the daemon runs only the openvpn that ships with RiftRoute, so the
+// fixes are RiftRoute's own, never a package manager's.
+const (
+	// macUpdate is the fix for a missing one: the daemon's update check
+	// installs the one the newest release ships (internal/updater's repair).
+	// A daemon that isn't the installed service can't, hence the second way.
+	macUpdate = "Tunnels use the openvpn that ships with RiftRoute. Checking for updates installs it: " +
+		"`riftroute update check`, or Check for updates on the app's Tunnels page — it works with updates off too. " +
+		"Reinstalling the daemon from a current release (`sudo riftroute daemon install`) also puts it in place."
+	// macReinstall is the fix for one that's there but can't be used: an
+	// update check never replaces an openvpn that's present.
+	macReinstall = "Reinstall the daemon from a current release to put back the openvpn that ships with RiftRoute: " +
+		"`sudo riftroute daemon install`, or in the app, Settings → Daemon service: Uninstall, then Install & start."
+)
 
 // releasesURL is where a release that includes openvpn comes from.
 const releasesURL = "https://github.com/Amirhat/riftroute/releases/latest"
@@ -272,12 +281,27 @@ func systemName(h hostInfo) string {
 	return h.goos
 }
 
+// newHelp starts the steps for this system, with the kind of fix that
+// applies here when openvpn is missing (missing) or present but unusable.
+func newHelp(h hostInfo, missing bool) *domain.TunnelInstall {
+	in := &domain.TunnelInstall{System: systemName(h)}
+	switch {
+	case h.goos == "darwin" && missing:
+		in.Action = domain.TunnelInstallUpdate
+	case h.goos == "darwin":
+		in.Action = domain.TunnelInstallReinstall
+	case h.goos == "linux":
+		in.Action = domain.TunnelInstallPackage
+	}
+	return in
+}
+
 // installHelp is how to install openvpn on this system.
 func installHelp(h hostInfo) *domain.TunnelInstall {
-	in := &domain.TunnelInstall{System: systemName(h)}
+	in := newHelp(h, true)
 	switch h.goos {
 	case "darwin":
-		in.Note, in.URL = macReinstall, releasesURL
+		in.Note, in.URL = macUpdate, releasesURL
 	case "linux":
 		if i, ok := linuxEntry(h); ok && len(linuxInstall[i].cmds) > 0 {
 			d := linuxInstall[i]
@@ -292,7 +316,7 @@ func installHelp(h hostInfo) *domain.TunnelInstall {
 // upgradeHelp is how to get a new enough openvpn when the one at bin is too
 // old.
 func upgradeHelp(h hostInfo, bin string) *domain.TunnelInstall {
-	in := &domain.TunnelInstall{System: systemName(h)}
+	in := newHelp(h, false)
 	if h.goos == "darwin" {
 		in.Note, in.URL = macReinstall, releasesURL
 		return in
@@ -323,7 +347,8 @@ func unsafeHelp(h hostInfo, u *unsafeError) *domain.TunnelInstall {
 
 // repairHelp is how to replace a broken or tampered openvpn at bin.
 func repairHelp(h hostInfo, bin, why string) *domain.TunnelInstall {
-	in := &domain.TunnelInstall{System: systemName(h), Note: why}
+	in := newHelp(h, false)
+	in.Note = why
 	switch h.goos {
 	case "darwin":
 		in.Note, in.URL = strings.TrimSpace(why+" "+macReinstall), releasesURL

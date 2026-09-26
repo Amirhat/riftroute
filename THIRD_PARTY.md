@@ -34,13 +34,18 @@ Where it ships, with its licenses beside it:
   `openvpn` and `licenses/`;
 - the app: `RiftRoute.app/Contents/Resources/bin/openvpn`, licenses in
   `Contents/Resources/licenses/`;
-- once the daemon is installed: `/Library/PrivilegedHelperTools/riftroute-openvpn`.
+- the Homebrew formula: `libexec/openvpn`, licenses in `share/riftroute/licenses/`
+  (its `license` lists OpenVPN's, LZO's, OpenSSL's and LZ4's beside MIT);
+- once the daemon is installed: `/Library/PrivilegedHelperTools/riftroute-openvpn`
+  — and when it's missing there, the daemon's update check installs the one
+  the newest signed release ships.
 
-**Source code.** The complete corresponding source of the GPL-licensed parts is
-the OpenVPN and LZO tarballs above plus the build script: every RiftRoute
-release that ships `openvpn` has those two tarballs attached next to the
-binaries, and `scripts/build-openvpn.sh` at the release's tag is the script
-that builds it. `licenses/SOURCES.txt` inside each artifact lists them too.
+**Source code.** The complete corresponding source is all four tarballs above
+— OpenVPN, LZO, LZ4 and OpenSSL, everything the program is built from — plus
+the build script: every RiftRoute release that ships `openvpn` has all four
+attached next to the binaries, and `scripts/build-openvpn.sh` at the
+release's tag is the script that builds it. `licenses/SOURCES.txt` inside each
+artifact lists them too. `openvpn` is never packaged without `licenses/`.
 
 "OpenVPN" is a trademark of OpenVPN Inc. RiftRoute is not affiliated with or
 endorsed by OpenVPN Inc.
@@ -48,4 +53,4 @@ endorsed by OpenVPN Inc.
 ## Linux
 
 RiftRoute ships no openvpn for Linux: tunnels use the distribution's own
-`openvpn` package.
+`openvpn` package, which the `.deb` recommends.

@@ -426,7 +426,7 @@ function UpdateCard({ prefs, live }: { prefs?: Preferences; live?: UpdateStatus 
 
   const available = st?.action === 'notify' && st.latest && st.latest !== st.current
   return (
-    <Card>
+    <Card id="updates">
       <CardHeader
         title="Updates"
         hint={

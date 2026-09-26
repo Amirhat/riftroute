@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { Modal } from './Modal'
 
 // ConfirmModal is an in-app confirmation dialog. We use it instead of the
@@ -24,12 +24,17 @@ export function ConfirmModal({
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const id = useId()
   if (!open) return null
   return (
-    <Modal onBackdrop={onCancel}>
+    <Modal onBackdrop={onCancel} labelledBy={`${id}-title`} describedBy={`${id}-message`}>
       <div className="space-y-4 p-5">
-        <h2 className="text-base font-semibold text-default">{title}</h2>
-        <p className="text-sm text-muted">{message}</p>
+        <h2 id={`${id}-title`} className="text-base font-semibold text-default">
+          {title}
+        </h2>
+        <p id={`${id}-message`} className="text-sm text-muted">
+          {message}
+        </p>
         <div className="flex justify-end gap-2">
           <button
             onClick={onCancel}

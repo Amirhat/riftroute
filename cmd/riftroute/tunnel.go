@@ -27,8 +27,9 @@ func tunnelCmd() *cobra.Command {
 		Long: "RiftRoute can run an OpenVPN profile itself as a split tunnel: only the routes you\n" +
 			"list go into it. The server's redirect-gateway, pushed routes and pushed DNS are\n" +
 			"ignored, so a VPN that already carries everything else (Windscribe, …) stays up.\n" +
-			"Needs the openvpn program, which you install yourself (the OpenVPN Connect app\n" +
-			"doesn't include it): `riftroute tunnel list` shows how on this system.",
+			"Runs on the openvpn program (not the OpenVPN Connect app): on macOS RiftRoute\n" +
+			"ships its own, installed with the daemon; on Linux, install your distribution's\n" +
+			"openvpn package. `riftroute tunnel list` says what's missing on this system.",
 	}
 	cmd.AddCommand(tunnelListCmd(), tunnelAddCmd(), tunnelEditCmd(), tunnelUpCmd(), tunnelDownCmd(), tunnelRmCmd(), tunnelLogCmd())
 	return cmd

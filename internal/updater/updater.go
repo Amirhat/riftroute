@@ -7,8 +7,8 @@
 // network, if the new version doesn't come up healthy.
 //
 // Only the installed daemon binary — and on macOS the openvpn that ships
-// beside it, from the same release — is ever replaced. The desktop app and
-// package-managed installs are notified, never modified.
+// beside it — is ever replaced. The desktop app and package-managed installs
+// are notified, never modified.
 package updater
 
 import (
@@ -63,8 +63,10 @@ type Env struct {
 	Binary string // the installed daemon binary this process runs
 	// OpenVPN is the installed openvpn that ships with RiftRoute, beside the
 	// daemon (platform.InstalledOpenVPNPath: macOS). A release's openvpn is
-	// installed there together with its daemon, and rolled back with it. ""
-	// where none ships (Linux uses the distribution's).
+	// installed there together with its daemon, and rolled back with it (one
+	// the update added stays); a missing one is taken from the newest
+	// release (repairOpenVPN). "" where none ships (Linux uses the
+	// distribution's).
 	OpenVPN  string
 	StateDir string // marker, status, staging, database backup
 	DBPath   string
@@ -309,10 +311,14 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 		s.Action, s.Reason, s.NotesURL = string(d.Action), d.Reason, f.m.NotesURL
 	})
 	u.env.Log.Info("update check", "latest", f.m.Version, "source", f.source, "action", d.Action, "reason", d.Reason)
-	signal()
-	if f.m.Version == u.env.Current {
+	if d.Action != update.ActionInstall {
+		// An update being installed brings its openvpn with it. Otherwise a
+		// missing one comes from this release, before the verdict is
+		// reported: a "check now" meant to bring it back answers once it's in
+		// place (or decideWait has passed).
 		u.repairOpenVPN(ctx, f.m)
 	}
+	signal()
 	if d.Action != update.ActionInstall {
 		// Whatever was staged is no longer wanted (a halt, a rollout cut
 		// back, the mode changed): never install it.
@@ -505,7 +511,8 @@ func (u *Updater) swap(s *staged) error {
 //   - the release ships openvpn and one is installed: it is kept as .prev
 //     (openvpnReplaced);
 //   - it ships one and none is installed: nothing to keep (openvpnAdded — a
-//     rollback removes it);
+//     rollback keeps it: every openvpn RiftRoute ships runs every daemon's
+//     tunnels, and a daemon from before tunnels ignores it);
 //   - it ships none: openvpn isn't touched, and a .prev left by an earlier
 //     update goes, since it doesn't belong to this one.
 func (u *Updater) keepOpenVPN(s *staged) (string, error) {

@@ -64,8 +64,11 @@ func ReadProfileFile(path string) (string, error) {
 // ~/.aws/credentials as its auth-user-pass file would send the first two
 // lines to its server. So only regular files in dir's tree are read —
 // symlinks are resolved first, and anything that ends up outside is refused
-// — each at most maxRefFileBytes, and the credentials file may not be hidden
-// (a dotfile, or in a dot-folder). The files read are listed in the result.
+// — each at most maxRefFileBytes. The credentials file, the one whose
+// content goes to the server, must be right in dir — not in a folder under
+// it (a profile in ~/Downloads, or in ~, would otherwise reach everything
+// below) — and not hidden (a dotfile). The files read are listed in the
+// result.
 func InlineFiles(text, dir string) (*Inlined, error) {
 	res := &Inlined{}
 	var (
@@ -223,6 +226,9 @@ func (d *profileDir) read(ref string, creds bool) ([]byte, string, error) {
 	if creds && (hidden(lexical) || hidden(rel)) {
 		return nil, "", fmt.Errorf("%s is hidden (a dotfile, or in a dot-folder); RiftRoute won't read a login from it — put it in a plain file next to the profile, or type it in", ref)
 	}
+	if creds && (!beside(lexical) || !beside(rel)) {
+		return nil, "", fmt.Errorf("%s is in a folder under the profile's; RiftRoute reads a login only from a file right next to the profile — move it there, or type it in", ref)
+	}
 	fi, err := d.root.Stat(rel)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %w", ref, err)
@@ -247,6 +253,12 @@ func (d *profileDir) local(ref string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// beside reports whether a relative path names a file in the folder itself,
+// not in a folder under it.
+func beside(rel string) bool {
+	return filepath.IsLocal(rel) && filepath.Dir(rel) == "."
 }
 
 // hidden reports whether a relative path is a dotfile or inside a dot-folder.

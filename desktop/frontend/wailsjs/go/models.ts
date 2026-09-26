@@ -1288,6 +1288,7 @@ export namespace domain {
 	
 	export class TunnelInstall {
 	    system: string;
+	    action?: string;
 	    commands?: string[];
 	    note?: string;
 	    url?: string;
@@ -1299,6 +1300,7 @@ export namespace domain {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.system = source["system"];
+	        this.action = source["action"];
 	        this.commands = source["commands"];
 	        this.note = source["note"];
 	        this.url = source["url"];

@@ -51,12 +51,14 @@ export function TunnelEditor({
   const [username, setUsername] = useState(existing?.username ?? '')
   const [password, setPassword] = useState('')
   const [routesText, setRoutesText] = useState((existing?.routes ?? []).join('\n'))
-  const [via, setVia] = useState<TunnelVia>(existing?.via ?? 'direct')
+  // || not ??: a via of "" (a definition saved before it existed) is direct.
+  const [via, setVia] = useState<TunnelVia>(existing?.via || 'direct')
   const [autoConnect, setAutoConnect] = useState(existing?.auto_connect ?? false)
   const [issues, setIssues] = useState<ConfigIssue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const engineHintId = useId()
+  const titleId = useId()
 
   const needsAuth = profile ? profile.needs_auth : !!existing?.needs_auth
   const servers = profile ? (profile.servers ?? []) : (existing?.servers ?? [])
@@ -132,10 +134,10 @@ export function TunnelEditor({
     !busy && name !== '' && !nameError && parsed.errors.length === 0 && (editing || (profile && !profile.error))
 
   return (
-    <Modal onBackdrop={busy ? undefined : onClose} className="max-w-xl">
+    <Modal onBackdrop={busy ? undefined : onClose} className="max-w-xl" labelledBy={titleId}>
       <div className="space-y-5 p-5">
         <div>
-          <h2 className="text-base font-semibold text-default">
+          <h2 id={titleId} className="text-base font-semibold text-default">
             {editing ? `Edit tunnel ${existing.name}` : 'Add an OpenVPN tunnel'}
           </h2>
           <p className="mt-1 text-sm text-muted">
@@ -241,8 +243,10 @@ export function TunnelEditor({
           <IssueList issues={issuesFor('routes')} />
         </div>
 
-        <div className="space-y-2">
-          <Label>Reach the OpenVPN server</Label>
+        <fieldset className="space-y-2">
+          <legend className="text-[11px] font-medium uppercase tracking-wider text-muted">
+            Reach the OpenVPN server
+          </legend>
           {(
             [
               ['direct', 'Directly', 'Around your main VPN, over your own network (like OpenVPN Connect does).'],
@@ -266,7 +270,7 @@ export function TunnelEditor({
               </span>
             </label>
           ))}
-        </div>
+        </fieldset>
 
         <div className="flex items-center justify-between">
           <div>
@@ -282,7 +286,7 @@ export function TunnelEditor({
         <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
           {!canConnect && (
             <p id={engineHintId} className="me-auto text-xs text-muted">
-              OpenVPN isn't installed yet — save now, connect once it is.
+              OpenVPN isn't usable yet — save now, connect once it is (see the Tunnels page).
             </p>
           )}
           <button
@@ -304,7 +308,7 @@ export function TunnelEditor({
             <button
               onClick={() => save(true)}
               disabled={!canSave || !canConnect}
-              title={canConnect ? undefined : 'Install OpenVPN first (see the Tunnels page)'}
+              title={canConnect ? undefined : "OpenVPN isn't usable yet (see the Tunnels page)"}
               aria-describedby={canConnect ? undefined : engineHintId}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >
