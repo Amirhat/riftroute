@@ -37,12 +37,14 @@ type fakeInstaller struct {
 	installed []string // "version:content"
 	err       error
 	relaunch  string
+	undone    int
 }
 
 func (f *fakeInstaller) Kind() string            { return "app-dmg" }
 func (f *fakeInstaller) Arch() string            { return "universal" }
 func (f *fakeInstaller) Check(string) string     { return f.why }
 func (f *fakeInstaller) Relaunch(t string) error { f.relaunch = t; return nil }
+func (f *fakeInstaller) Undo(string) error       { f.undone++; return nil }
 func (f *fakeInstaller) Install(_ context.Context, artifact, _, version string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -152,6 +154,7 @@ func TestTheAppFollowsTheDaemon(t *testing.T) {
 		daemon  domain.UpdateStatus
 	}{
 		{"the daemon hasn't moved yet", "0.2.7", daemonAt("0.2.7", domain.UpdateAuto)},
+		{"the daemon is still on probation", "0.2.7", domain.UpdateStatus{Current: "0.2.8", Mode: domain.UpdateAuto, Probation: true}},
 		{"updates are off", "0.2.7", daemonAt("0.2.8", domain.UpdateOff)},
 		{"the app is already there", "0.2.8", daemonAt("0.2.8", domain.UpdateAuto)},
 		{"never backwards", "0.2.9", daemonAt("0.2.8", domain.UpdateAuto)},
@@ -199,11 +202,75 @@ func TestOnlyVerifiedReleasesAreInstalled(t *testing.T) {
 	if st.State != StateError || len(inst.installed) != 0 {
 		t.Fatalf("a tampered download: %+v", st)
 	}
-	// Not retried at every state push: once an hour.
+	// Not retried at every state push: after an hour, then two, …
+	now := time.Now()
+	u.env.Now = func() time.Time { return now }
+	u.mu.Lock()
+	f := u.failed["0.2.8"]
+	f.at = now
+	u.failed["0.2.8"] = f
+	u.mu.Unlock()
 	n := r.count()
 	u.Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
 	if r.count() != n {
 		t.Fatal("retried at once")
+	}
+	now = now.Add(61 * time.Minute)
+	u.Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
+	if r.count() != n+1 {
+		t.Fatal("not retried after an hour")
+	}
+	now = now.Add(61 * time.Minute) // the second failure waits two hours
+	u.Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
+	if r.count() != n+1 {
+		t.Fatal("retried an hour after the second failure")
+	}
+}
+
+// The manifest the daemon serves is for the release it runs; one for any
+// other release (a newer one held back) moves nothing.
+func TestOnlyTheDaemonsOwnReleaseIsFollowed(t *testing.T) {
+	r := newRelease(t)
+	inst := &fakeInstaller{}
+	raw, sig := r.signed("0.2.9")
+	st := newUpdater(t, r, "0.2.7", inst).Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
+	if st.State != StateIdle || len(inst.installed) != 0 {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// Once installed, nothing more happens in this process until the restart:
+// a second swap would delete the bundle it runs from.
+func TestReadyWaitsForTheRestart(t *testing.T) {
+	r := newRelease(t)
+	inst := &fakeInstaller{}
+	u := newUpdater(t, r, "0.2.7", inst)
+	raw, sig := r.signed("0.2.8")
+	u.Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
+	raw9, sig9 := r.signed("0.2.9")
+	st := u.Consider(context.Background(), daemonAt("0.2.9", domain.UpdateAuto), raw9, sig9)
+	if st.State != StateReady || st.Target != "0.2.8" || len(inst.installed) != 1 {
+		t.Fatalf("a second release before the restart: %+v, installed %q", st, inst.installed)
+	}
+	if st, err := u.Install(context.Background()); err != nil || len(inst.installed) != 1 || st.State != StateReady {
+		t.Fatalf("a click while ready: %+v %v", st, err)
+	}
+}
+
+// The daemon rejected the release (rolled back): the old app goes back
+// before the user restarts into it.
+func TestADaemonRollbackUndoesTheApp(t *testing.T) {
+	r := newRelease(t)
+	inst := &fakeInstaller{}
+	u := newUpdater(t, r, "0.2.7", inst)
+	raw, sig := r.signed("0.2.8")
+	u.Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
+	st := u.Consider(context.Background(), domain.UpdateStatus{Current: "0.2.7", Mode: domain.UpdateAuto, RolledBackFrom: "0.2.8"}, nil, nil)
+	if st.State != StateIdle || inst.undone != 1 {
+		t.Fatalf("%+v, undone %d", st, inst.undone)
+	}
+	if err := u.Relaunch(); err == nil {
+		t.Fatal("offered a restart into a rejected release")
 	}
 }
 
@@ -221,6 +288,10 @@ func TestUnsupportedAppsNeverTry(t *testing.T) {
 		st := u.Consider(context.Background(), daemonAt("0.2.8", domain.UpdateAuto), raw, sig)
 		if st.State != StateUnsupported || st.Why == "" || len(c.inst.installed) != 0 {
 			t.Errorf("%s: %+v", c.name, st)
+		}
+		// It still says a release is out (for a release build).
+		if c.current == "0.2.7" && st.Target != "0.2.8" {
+			t.Errorf("%s: the new release isn't mentioned: %+v", c.name, st)
 		}
 	}
 }

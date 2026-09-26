@@ -31,8 +31,8 @@ type appUpdates struct {
 }
 
 // reconsiderEvery re-checks with nothing changed (a failed download is
-// retried then).
-const reconsiderEvery = time.Hour
+// retried then, once its backoff allows).
+const reconsiderEvery = 30 * time.Minute
 
 func (a *App) initAppUpdates() {
 	exe, _ := os.Executable()
@@ -40,10 +40,14 @@ func (a *App) initAppUpdates() {
 	if err != nil {
 		cache = os.TempDir()
 	}
+	// The daemon's client, minus its overall timeout: the app is ~30 MB and
+	// the install's own deadline bounds it.
+	hc := updater.NewHTTPClient()
+	hc.Timeout = 0
 	a.appUpd = &appUpdates{u: appupdate.New(appupdate.Env{
 		Current:   buildinfo.Label(buildinfo.Current(version)),
 		GOOS:      runtime.GOOS,
-		HTTP:      updater.NewHTTPClient(),
+		HTTP:      hc,
 		Target:    appupdate.Target(exe),
 		CacheDir:  filepath.Join(cache, "RiftRoute", "update"),
 		Installer: appupdate.NewInstaller(),
@@ -60,7 +64,10 @@ func (a *App) considerAppUpdate(d *domain.UpdateStatus) {
 	if d == nil || au == nil || a.ctx == nil {
 		return
 	}
-	key := d.Current + "|" + string(d.Mode)
+	key := d.Current + "|" + string(d.Mode) + "|" + d.Latest + "|" + d.RolledBackFrom
+	if d.Probation {
+		key += "|probation"
+	}
 	au.mu.Lock()
 	if au.running || (key == au.key && time.Since(au.at) < reconsiderEvery) {
 		au.mu.Unlock()
@@ -75,7 +82,7 @@ func (a *App) considerAppUpdate(d *domain.UpdateStatus) {
 			au.running = false
 			au.mu.Unlock()
 		}()
-		ctx, cancel := context.WithTimeout(a.ctx, 20*time.Minute)
+		ctx, cancel := context.WithTimeout(a.ctx, time.Hour)
 		defer cancel()
 		raw, sig, err := a.client.UpdateManifest(ctx)
 		if err != nil {
@@ -96,7 +103,7 @@ func (a *App) GetAppUpdate() appupdate.Status {
 // InstallAppUpdate installs the offered app update now (notify mode). It
 // downloads the release's app, so it can take a few minutes.
 func (a *App) InstallAppUpdate() (appupdate.Status, error) {
-	ctx, cancel := context.WithTimeout(a.ctx, 20*time.Minute)
+	ctx, cancel := context.WithTimeout(a.ctx, time.Hour)
 	defer cancel()
 	return a.appUpd.u.Install(ctx)
 }

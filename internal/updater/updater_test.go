@@ -477,25 +477,58 @@ func exitError(t *testing.T) error {
 	return fmt.Errorf("self-test failed: %w", err)
 }
 
-// A check keeps the manifest it verified, exactly as signed, for the desktop
-// app to install its own update from; it survives a restart.
-func TestCheckKeepsTheSignedManifest(t *testing.T) {
+// The desktop app installs its own update from the manifest of the release
+// the daemon runs: kept when a check sees it, kept (as the running one) at
+// the swap, still served while a newer release is held back, and after a
+// rollback the previous one.
+func TestTheRunningReleasesManifestIsKept(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.7")
 	if _, _, ok := h.u.Manifest(); ok {
 		t.Fatal("a manifest before any check")
 	}
 	h.check()
-	raw, sig, ok := h.u.Manifest()
-	wantRaw, wantSig := f.signed()
-	if !ok || string(raw) != string(wantRaw) || string(sig) != string(wantSig) {
-		t.Fatalf("kept %q %q", raw, sig)
+	raw027, sig027 := f.signed()
+	if raw, sig, ok := h.u.Manifest(); !ok || string(raw) != string(raw027) || string(sig) != string(sig027) {
+		t.Fatalf("kept %q", raw)
 	}
-	u2, err := New(h.env)
+
+	// 0.2.8 comes out; in notify mode it isn't installed: 0.2.7's is still served.
+	f.version, f.tgz = "0.2.8", tarball(t, "riftrouted", fakeDaemon("0.2.8"))
+	h.mode.Store(domain.UpdateNotify)
+	h.check()
+	if raw, _, ok := h.u.Manifest(); !ok || string(raw) != string(raw027) {
+		t.Fatalf("a held-back release replaced the running one's manifest: %q", raw)
+	}
+
+	// Installed: after the restart into 0.2.8 its manifest is the running one.
+	if _, err := h.u.InstallNow(); err != nil {
+		t.Fatal(err)
+	}
+	h.u.wait()
+	h.tick()
+	if h.restarts.Load() != 1 {
+		t.Fatalf("not installed: %+v", h.u.Status())
+	}
+	raw028, _ := f.signed()
+	env := h.env
+	env.Current = "0.2.8"
+	u2, err := New(env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw2, _, ok := u2.Manifest(); !ok || string(raw2) != string(wantRaw) {
-		t.Fatal("not kept across a restart")
+	if raw, _, ok := u2.Manifest(); !ok || string(raw) != string(raw028) {
+		t.Fatalf("after the update: %q", raw)
+	}
+	if !u2.Status().Probation {
+		t.Fatal("a fresh update isn't on probation")
+	}
+	u2.Reload() // the boot guard confirmed it
+	if u2.Status().Probation {
+		t.Fatal("still on probation after the confirm")
+	}
+	// Rolled back to 0.2.7: its manifest comes back.
+	if raw, _, ok := h.u.Manifest(); !ok || string(raw) != string(raw027) {
+		t.Fatalf("after a rollback: %q", raw)
 	}
 }

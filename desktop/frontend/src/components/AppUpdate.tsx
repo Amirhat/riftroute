@@ -36,7 +36,11 @@ function RestartButton({ className = '' }: { className?: string }) {
       >
         Restart RiftRoute
       </button>
-      {err && <span className="text-xs text-danger">{err}</span>}
+      {err && (
+        <span role="alert" className="text-xs text-danger">
+          {err}
+        </span>
+      )}
     </>
   )
 }
@@ -87,15 +91,21 @@ export function AppUpdateSection({ st }: { st?: AppUpdateStatus }) {
     case 'error':
       line = (
         <span className="text-danger">
-          The app couldn’t update to {st.target}: {st.error}. It tries again within the hour.
+          The app couldn’t update to {st.target}: {st.error}
         </span>
       )
       break
     case 'unsupported':
-      line = <span className="text-muted">The app doesn’t update itself here: {st.why}.</span>
+      line = st.target ? (
+        <span className="text-default">
+          RiftRoute {st.target} is out. This app doesn’t update itself here — {st.why}.
+        </span>
+      ) : (
+        <span className="text-muted">The app doesn’t update itself here: {st.why}.</span>
+      )
       break
     default:
-      line = <span className="text-muted">The app follows the daemon: it updates once the daemon has.</span>
+      line = <span className="text-muted">Up to date — the app follows the daemon to each new release.</span>
   }
   return (
     <div className="space-y-2 border-t border-line pt-2 text-sm" aria-live="polite">
@@ -103,14 +113,18 @@ export function AppUpdateSection({ st }: { st?: AppUpdateStatus }) {
         <span className="text-xs text-muted">App {st.current} · </span>
         {line}
       </p>
-      {err && <p className="text-xs text-danger">{err}</p>}
+      {err && st.state !== 'error' && (
+        <p role="alert" className="text-xs text-danger">
+          {err}
+        </p>
+      )}
       {(st.state === 'available' || st.state === 'error') && (
         <button
           onClick={() => void install()}
           disabled={busy}
           className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast disabled:opacity-50"
         >
-          {busy ? 'Updating the app…' : `Update the app to ${st.target}`}
+          {busy ? 'Updating the app…' : st.state === 'error' ? 'Try again' : `Update the app to ${st.target}`}
         </button>
       )}
       {st.state === 'ready' && <RestartButton />}

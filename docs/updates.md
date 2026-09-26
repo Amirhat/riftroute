@@ -162,8 +162,16 @@ never goes backwards.
   the way it was installed.
 - Mode: `auto` installs on its own, `notify` waits for *Update the app*, `off`
   does nothing. The running app keeps running from the moved files; a banner
-  asks for a restart, which starts the new app once the old one has exited. A
-  failed attempt is shown, and retried within the hour.
+  asks for a restart, which starts the new app once the old one has exited.
+  Nothing more happens in that process until the restart (a second swap would
+  delete the bundle it runs from). A failed attempt is shown and retried after
+  an hour, then two, … up to a day; *Try again* retries at once.
+- The app moves only once the daemon has confirmed the release (it is on
+  probation until it came up healthy), and only to the release the daemon
+  runs: the daemon serves that release's manifest (kept at the swap, and after
+  a rollback the previous one), not a newer one it holds back. If the daemon
+  rolls the release back before the app restarts, the app puts its previous
+  version back.
 
 ## Where auto-install is NOT used
 

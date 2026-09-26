@@ -67,6 +67,8 @@ type Installer interface {
 	Install(ctx context.Context, artifact, target, version string) error
 	// Relaunch starts target once this process has exited.
 	Relaunch(target string) error
+	// Undo puts the previous app (kept by Install) back in target's place.
+	Undo(target string) error
 }
 
 // Env is what the updater needs.
@@ -85,8 +87,14 @@ type Env struct {
 	OnChange func(Status)
 }
 
-// retryAfter paces attempts at a release that failed to download or install.
+// retryAfter paces attempts at a release that failed to download or install
+// (doubling with each failure, up to a day).
 var retryAfter = time.Hour
+
+type failure struct {
+	count int
+	at    time.Time
+}
 
 // Updater is the app's update state machine. It is driven by the daemon's
 // update status (Consider) and by the user (Install, Relaunch).
@@ -95,8 +103,8 @@ type Updater struct {
 
 	mu     sync.Mutex
 	st     Status
-	failed map[string]time.Time // release → when an attempt at it last failed
-	m      *update.Manifest     // the verified manifest the offer is from
+	failed map[string]failure // release → its failed attempts
+	m      *update.Manifest   // the verified manifest the offer is from
 	busy   sync.Mutex
 }
 
@@ -111,7 +119,7 @@ func New(env Env) *Updater {
 	if env.Keys == nil {
 		env.Keys = update.TrustedKeys
 	}
-	u := &Updater{env: env, failed: map[string]time.Time{}}
+	u := &Updater{env: env, failed: map[string]failure{}}
 	u.st = Status{State: StateIdle, Current: env.Current}
 	if why := u.unsupported(); why != "" {
 		u.st.State, u.st.Why = StateUnsupported, why
@@ -150,47 +158,63 @@ func (u *Updater) set(f func(*Status)) Status {
 	return st
 }
 
-// Consider looks at the daemon's update status and the manifest it verified
-// (raw and sig as signed) and decides: nothing to do, offer the release
-// (notify), or install it now (auto). An install runs synchronously; call it
-// off the UI's goroutine.
+// Consider looks at the daemon's update status and the manifest of the
+// release it runs (raw and sig as signed) and decides: nothing to do, offer
+// the release (notify), or install it now (auto). An install runs
+// synchronously; call it off the UI's goroutine.
 func (u *Updater) Consider(ctx context.Context, daemon domain.UpdateStatus, raw, sig []byte) Status {
 	st := u.Status()
-	if st.State == StateUnsupported || st.State == StateDownloading || st.State == StateInstalling {
+	switch st.State {
+	case StateDownloading, StateInstalling:
+		return st
+	case StateReady:
+		// Installed and waiting for a restart: nothing else happens in this
+		// process (a second swap would delete the bundle it runs from) —
+		// unless the daemon rejected that release, which puts the old app
+		// back.
+		if daemon.RolledBackFrom == st.Target {
+			return u.undo(st.Target)
+		}
 		return st
 	}
 	m, target, why := u.offer(daemon, raw, sig)
+	if st.State == StateUnsupported {
+		// It can't update itself, but it still says a release is out.
+		return u.set(func(s *Status) { s.Target = target })
+	}
 	if target == "" {
-		if st.State == StateReady {
-			return st // installed; waiting for a restart
-		}
 		if why != "" {
-			u.env.Log.Info("app update: nothing to do", "why", why)
+			u.env.Log.Debug("app update: nothing to do", "why", why)
 		}
 		return u.set(func(s *Status) { s.State, s.Target, s.Error = StateIdle, "", "" })
-	}
-	if st.State == StateReady && st.Target == target {
-		return st
 	}
 	u.mu.Lock()
 	u.m = &m
 	u.mu.Unlock()
 	if daemon.Mode != domain.UpdateAuto {
-		return u.set(func(s *Status) { s.State, s.Target, s.Error = StateAvailable, target, "" })
+		return u.set(func(s *Status) {
+			if s.State != StateError || s.Target != target { // a failed click keeps its error up
+				s.State, s.Target, s.Error = StateAvailable, target, ""
+			}
+		})
 	}
-	if at, ok := u.failedAt(target); ok && u.env.Now().Sub(at) < retryAfter {
+	if next, ok := u.retryAt(target); ok && u.env.Now().Before(next) {
 		return u.Status() // failed a while ago: the error stays up until the next try
 	}
 	return u.install(ctx)
 }
 
-// offer returns the release the app should move to, from the daemon's
-// verified manifest — or "" and why not.
+// offer returns the release the app should move to — the one the daemon runs,
+// once it has confirmed it — or "" and why not.
 func (u *Updater) offer(daemon domain.UpdateStatus, raw, sig []byte) (update.Manifest, string, string) {
-	if daemon.Mode == domain.UpdateOff {
+	switch {
+	case daemon.Mode == domain.UpdateOff:
 		return update.Manifest{}, "", "updates are off"
-	}
-	if len(raw) == 0 {
+	case daemon.Probation:
+		// The daemon checks a release on this machine first, and rolls it
+		// back on its own if it doesn't come up healthy.
+		return update.Manifest{}, "", "the daemon is still confirming " + daemon.Current
+	case len(raw) == 0:
 		return update.Manifest{}, "", "no release manifest yet"
 	}
 	m, err := update.Verify(raw, sig, u.env.Keys)
@@ -198,12 +222,12 @@ func (u *Updater) offer(daemon domain.UpdateStatus, raw, sig []byte) (update.Man
 		return update.Manifest{}, "", "the release manifest doesn't verify: " + err.Error()
 	}
 	switch {
+	case m.Version != daemon.Current:
+		return m, "", "the manifest isn't for the release the daemon runs"
 	case !update.Newer(u.env.Current, m.Version):
-		return m, "", "up to date"
-	case daemon.Current != m.Version:
-		// The daemon goes first (it checks the release on this machine and
-		// can roll it back); the app follows it there.
-		return m, "", "the daemon hasn't moved to " + m.Version + " yet"
+		return m, "", "up to date" // or ahead of the daemon: never backwards
+	case u.env.Installer == nil:
+		return m, m.Version, "" // only to say so (unsupported)
 	}
 	if _, ok := m.Asset(u.env.GOOS, u.env.Installer.Arch(), u.env.Installer.Kind()); !ok {
 		return m, "", "the release has no app for this system"
@@ -218,10 +242,12 @@ func (u *Updater) Install(ctx context.Context) (Status, error) {
 	m := u.m
 	st := u.st
 	u.mu.Unlock()
-	if st.State == StateUnsupported {
+	switch {
+	case st.State == StateUnsupported:
 		return st, errors.New(st.Why)
-	}
-	if m == nil || st.Target == "" {
+	case st.State == StateReady:
+		return st, nil // already installed: restart the app
+	case m == nil || st.Target == "":
 		return st, errors.New("no app update is available")
 	}
 	st = u.install(ctx)
@@ -243,7 +269,10 @@ func (u *Updater) install(ctx context.Context) Status {
 	fail := func(err error) Status {
 		u.env.Log.Warn("app update failed", "version", m.Version, "err", err)
 		u.mu.Lock()
-		u.failed[m.Version] = u.env.Now()
+		f := u.failed[m.Version]
+		f.count++
+		f.at = u.env.Now()
+		u.failed[m.Version] = f
 		u.mu.Unlock()
 		return u.set(func(s *Status) { s.State, s.Target, s.Error = StateError, m.Version, err.Error() })
 	}
@@ -264,11 +293,30 @@ func (u *Updater) install(ctx context.Context) Status {
 	return u.set(func(s *Status) { s.State, s.Target, s.Error = StateReady, m.Version, "" })
 }
 
-func (u *Updater) failedAt(version string) (time.Time, bool) {
+// undo puts the previous app back after the daemon rejected the release it
+// was updated to — before the user restarts into it.
+func (u *Updater) undo(version string) Status {
+	if err := u.env.Installer.Undo(u.env.Target); err != nil {
+		u.env.Log.Warn("app update: putting the previous app back failed", "err", err)
+		return u.set(func(s *Status) {
+			s.State, s.Error = StateError, "the daemon went back from "+version+", but putting the previous app back failed: "+err.Error()
+		})
+	}
+	u.env.Log.Info("app update undone: the daemon went back from it", "version", version)
+	return u.set(func(s *Status) { s.State, s.Target, s.Error = StateIdle, "", "" })
+}
+
+// retryAt is when a release that failed may be tried again: an hour after the
+// first failure, doubling to a day.
+func (u *Updater) retryAt(version string) (time.Time, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	t, ok := u.failed[version]
-	return t, ok
+	f, ok := u.failed[version]
+	if !ok {
+		return time.Time{}, false
+	}
+	wait := retryAfter << min(f.count-1, 4) // 1h, 2h, 4h, 8h, 16h
+	return f.at.Add(min(wait, 24*time.Hour)), true
 }
 
 // download fetches a release asset to dst and checks it against the signed

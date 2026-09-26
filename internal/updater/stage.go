@@ -22,9 +22,10 @@ import (
 
 // staged is a verified, self-tested daemon waiting to be installed.
 type staged struct {
-	version string
-	path    string
-	sum     string // sha256 of the binary at staging time, re-checked at swap
+	version  string
+	path     string
+	sum      string // sha256 of the binary at staging time, re-checked at swap
+	raw, sig []byte // its release manifest as signed (kept at the swap)
 }
 
 // errBroken marks a problem with the release itself (as opposed to the

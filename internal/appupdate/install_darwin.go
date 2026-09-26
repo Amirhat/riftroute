@@ -46,6 +46,9 @@ func (MacInstaller) Check(target string) string {
 	if strings.Contains(target, "/AppTranslocation/") {
 		return "macOS is running RiftRoute from a temporary copy; move it to Applications"
 	}
+	if strings.HasPrefix(target, "/Volumes/") {
+		return "RiftRoute is running from its disk image; drag it to Applications first"
+	}
 	fi, err := os.Lstat(target)
 	switch {
 	case err != nil:
@@ -73,7 +76,7 @@ func (MacInstaller) Install(ctx context.Context, dmg, target, version string) er
 	}
 	defer os.Remove(mnt)
 	if out, err := run(ctx, "/usr/bin/hdiutil", "attach", "-nobrowse", "-readonly", "-noautoopen", "-noverify", "-mountpoint", mnt, dmg); err != nil {
-		return fmt.Errorf("open the disk image: %w: %s", err, out)
+		return fmt.Errorf("open the disk image: %w: %s", err, strings.TrimSpace(out))
 	}
 	defer func() {
 		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
@@ -90,10 +93,15 @@ func (MacInstaller) Install(ctx context.Context, dmg, target, version string) er
 	_ = os.RemoveAll(next)
 	if out, err := run(ctx, "/usr/bin/ditto", src, next); err != nil {
 		_ = os.RemoveAll(next)
-		return fmt.Errorf("copy the new app: %w: %s", err, out)
+		return fmt.Errorf("copy the new app: %w: %s", err, strings.TrimSpace(out))
 	}
-	return swap(next, target, filepath.Join(filepath.Dir(target), ".RiftRoute.app.prev"))
+	return swap(next, target, macPrev(target))
 }
+
+func macPrev(target string) string { return filepath.Join(filepath.Dir(target), ".RiftRoute.app.prev") }
+
+// Undo puts the previous app back.
+func (MacInstaller) Undo(target string) error { return unswap(target, macPrev(target)) }
 
 // checkBundle makes sure src is this app, at the release's version, and
 // intact.
@@ -105,18 +113,22 @@ func checkBundle(ctx context.Context, src, target, version string) error {
 	if got, err := bundleID(ctx, src); err != nil || got != want {
 		return fmt.Errorf("the disk image's app isn't RiftRoute (%q, want %q)", got, want)
 	}
-	out, err := run(ctx, filepath.Join(src, "Contents/Resources/bin/riftrouted"), "-version")
-	if f := strings.Fields(out); err != nil || len(f) == 0 || strings.TrimPrefix(f[0], "v") != version {
-		return fmt.Errorf("the disk image's app isn't version %s (%q)", version, strings.TrimSpace(out))
+	// Read, not run: nothing from the image executes before it's installed.
+	if got, err := plistValue(ctx, src, "CFBundleShortVersionString"); err != nil || got != version {
+		return fmt.Errorf("the disk image's app isn't version %s (%q)", version, got)
 	}
 	if out, err := run(ctx, "/usr/bin/codesign", "--verify", "--deep", "--strict", src); err != nil {
-		return fmt.Errorf("the new app's signature doesn't verify: %w: %s", err, out)
+		return fmt.Errorf("the new app's signature doesn't verify: %w: %s", err, strings.TrimSpace(out))
 	}
 	return nil
 }
 
 func bundleID(ctx context.Context, bundle string) (string, error) {
-	out, err := run(ctx, "/usr/bin/plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", filepath.Join(bundle, "Contents/Info.plist"))
+	return plistValue(ctx, bundle, "CFBundleIdentifier")
+}
+
+func plistValue(ctx context.Context, bundle, key string) (string, error) {
+	out, err := run(ctx, "/usr/bin/plutil", "-extract", key, "raw", "-o", "-", filepath.Join(bundle, "Contents/Info.plist"))
 	return strings.TrimSpace(out), err
 }
 

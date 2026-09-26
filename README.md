@@ -298,8 +298,10 @@ asks you to restart it; nothing is closed for you. It checks the release's
 signature again itself, installs only the app whose hash the release signed,
 and keeps the previous one beside it (`.RiftRoute.app.prev`). It updates itself
 where you installed it (Applications, or an AppImage you can write to); an app
-somewhere you can't change, or from a package, is updated the way you
-installed it.
+somewhere you can't change, or from a package, tells you when a new version is
+out and is updated the way you installed it. It waits until the daemon has
+confirmed the new release, and if the daemon rolls a release back, the app
+goes back too.
 
 Maintainers: tag → CI builds the release → on your machine
 `riftroute-release sign <tag>` → `riftroute-release publish <tag>` (GitHub) and

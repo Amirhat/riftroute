@@ -97,6 +97,7 @@ type Updater struct {
 	wantNow    bool              // the user asked to install: the mode doesn't apply to it
 	wantMode   domain.UpdateMode // the mode when they asked (switching to Off later cancels)
 	installing bool              // swapped (or rolling back): nothing more until we exit
+	probation  bool              // this start is an update the boot guard hasn't confirmed
 	kick       chan struct{}
 	busy       sync.Mutex  // one check/stage/install at a time
 	queued     atomic.Bool // a job is waiting for busy (at most one)
@@ -134,6 +135,9 @@ func New(env Env) (*Updater, error) {
 		return nil, err
 	}
 	u := &Updater{env: env, ps: ps, kick: make(chan struct{}, 1)}
+	if m, ok := readMarker(env.StateDir); ok && !m.Rollback && m.To == env.Current {
+		u.probation = true // until the boot guard confirms it (Reload)
+	}
 	u.st = domain.UpdateStatus{Current: env.Current, State: "idle", LastCheck: ps.LastCheck, SelfUpdatable: env.SelfUpdatable}
 	return u, nil
 }
@@ -143,6 +147,7 @@ func (u *Updater) Reload() {
 	if ps, err := loadPersisted(u.env.StateDir); err == nil {
 		u.mu.Lock()
 		u.ps = ps
+		u.probation = false
 		u.mu.Unlock()
 	}
 }
@@ -169,6 +174,7 @@ func (u *Updater) Status() domain.UpdateStatus {
 		st.Error = "rolling back failed: " + u.ps.RollbackError
 	}
 	st.CanRollBack = u.env.SelfUpdatable && fileExists(prevBinary(u.env.Binary)) && !u.installing
+	st.Probation = u.probation
 	return st
 }
 
@@ -313,6 +319,11 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 		return
 	}
 	if u.stage(ctx, f.m) {
+		u.mu.Lock()
+		if u.staged != nil && u.staged.version == f.m.Version {
+			u.staged.raw, u.staged.sig = f.raw, f.sig
+		}
+		u.mu.Unlock()
 		u.installLocked(ctx)
 	}
 }
@@ -465,6 +476,7 @@ func (u *Updater) swap(s *staged) error {
 	if err := writeMarker(dir, marker{From: u.env.Current, To: s.version, At: u.env.Now()}); err != nil {
 		return err
 	}
+	u.keepRunningManifest(s)
 	if err := copyFileAtomic(s.path, u.env.Binary, 0o755); err != nil {
 		_ = os.Remove(pendingPath(dir))
 		return fmt.Errorf("install binary: %w", err)

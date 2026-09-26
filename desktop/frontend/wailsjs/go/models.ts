@@ -1069,6 +1069,7 @@ export namespace domain {
 	    installed_at: any;
 	    can_roll_back: boolean;
 	    self_updatable: boolean;
+	    probation?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new UpdateStatus(source);
@@ -1092,6 +1093,7 @@ export namespace domain {
 	        this.installed_at = this.convertValues(source["installed_at"], null);
 	        this.can_roll_back = source["can_roll_back"];
 	        this.self_updatable = source["self_updatable"];
+	        this.probation = source["probation"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
