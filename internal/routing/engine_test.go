@@ -336,6 +336,69 @@ func TestReconcileRulesAddAndInverse(t *testing.T) {
 	}
 }
 
+func TestReconcileReplacesANextHopDeleteFirst(t *testing.T) {
+	mr := func(dst, gw, iface, table string) domain.ManagedRoute {
+		return domain.ManagedRoute{Route: domain.Route{DstCIDR: dst, Gateway: gw, Iface: iface, Table: table, Family: domain.FamilyV4}, ProfileID: "p1"}
+	}
+	actual := []domain.ManagedRoute{
+		mr("9.9.9.0/24", "192.168.1.1", "en0", ""),  // next hop changes
+		mr("0.0.0.0/0", "10.8.0.1", "tun0", "5252"), // table default follows the VPN
+		mr("7.7.7.0/24", "192.168.1.1", "en0", ""),  // dropped
+		mr("6.6.6.0/24", "192.168.1.1", "en0", ""),  // unchanged
+	}
+	desired := []domain.ManagedRoute{
+		mr("5.5.5.0/24", "10.0.0.1", "en7", ""), // new
+		mr("9.9.9.0/24", "10.0.0.1", "en7", ""),
+		mr("0.0.0.0/0", "10.9.0.1", "tun0", "5252"),
+		mr("6.6.6.0/24", "192.168.1.1", "en0", ""),
+	}
+	plan := Reconcile(desired, actual, nil, nil, "linux")
+	got := make([]string, len(plan.Ops))
+	for i, op := range plan.Ops {
+		got[i] = string(op.Kind) + " " + op.Route.Table + ":" + op.Route.DstCIDR + " " + op.Route.Gateway
+	}
+	want := []string{
+		"add_route :5.5.5.0/24 10.0.0.1",
+		"del_route :9.9.9.0/24 192.168.1.1",
+		"add_route :9.9.9.0/24 10.0.0.1",
+		"del_route 5252:0.0.0.0/0 10.8.0.1",
+		"add_route 5252:0.0.0.0/0 10.9.0.1",
+		"del_route :7.7.7.0/24 192.168.1.1",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ops:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	// The inverse undoes it in reverse: the new route goes before the old one
+	// comes back.
+	inv := make([]string, len(plan.Inverse))
+	for i, op := range plan.Inverse {
+		inv[i] = string(op.Kind) + " " + op.Route.Table + ":" + op.Route.DstCIDR + " " + op.Route.Gateway
+	}
+	wantInv := []string{
+		"add_route :7.7.7.0/24 192.168.1.1",
+		"del_route 5252:0.0.0.0/0 10.9.0.1",
+		"add_route 5252:0.0.0.0/0 10.8.0.1",
+		"del_route :9.9.9.0/24 10.0.0.1",
+		"add_route :9.9.9.0/24 192.168.1.1",
+		"del_route :5.5.5.0/24 10.0.0.1",
+	}
+	if strings.Join(inv, "\n") != strings.Join(wantInv, "\n") {
+		t.Fatalf("inverse:\n%s\nwant:\n%s", strings.Join(inv, "\n"), strings.Join(wantInv, "\n"))
+	}
+}
+
+// Two owned routes for one destination (left by an earlier bug) are both
+// deleted, once each, before the new one is added.
+func TestReconcileReplacesEveryStaleRouteForADestination(t *testing.T) {
+	mr := func(gw, iface string) domain.ManagedRoute {
+		return domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: gw, Iface: iface, Family: domain.FamilyV4}, ProfileID: "p1"}
+	}
+	plan := Reconcile([]domain.ManagedRoute{mr("10.0.0.1", "en7")}, []domain.ManagedRoute{mr("192.168.1.1", "en0"), mr("172.16.0.1", "en5")}, nil, nil, "darwin")
+	if len(plan.Ops) != 3 || plan.Ops[0].Kind != domain.OpDelRoute || plan.Ops[1].Kind != domain.OpDelRoute || plan.Ops[2].Kind != domain.OpAddRoute {
+		t.Fatalf("want del, del, add; got %+v", plan.Ops)
+	}
+}
+
 func TestReconcileNoChange(t *testing.T) {
 	d, _, _ := BuildDesired(testInput(excludeProfile()))
 	plan := Reconcile(d, d, nil, nil, "linux")
