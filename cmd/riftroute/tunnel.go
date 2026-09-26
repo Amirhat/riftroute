@@ -99,13 +99,42 @@ type tunnelFlags struct {
 	connect       bool
 }
 
+// bind registers the flags. The password is never a flag value (it would
+// sit in shell history and the process list): it's prompted for without echo,
+// or piped in with --password-stdin.
 func (f *tunnelFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.username, "username", "", "login username (asked for if the profile needs one)")
-	cmd.Flags().BoolVar(&f.passwordStdin, "password-stdin", false, "read the password from stdin instead of prompting")
+	cmd.Flags().BoolVar(&f.passwordStdin, "password-stdin", false, "read the password from piped stdin instead of prompting")
 	cmd.Flags().StringArrayVar(&f.routes, "route", nil, "a CIDR or IP to send into the tunnel (repeatable)")
 	cmd.Flags().StringVar(&f.via, "via", "", `how to reach the server: "direct" (bypass other VPNs, default) or "default" (through them)`)
 	cmd.Flags().BoolVar(&f.autoConnect, "auto-connect", false, "connect whenever the daemon starts")
 	cmd.Flags().BoolVar(&f.connect, "connect", false, "connect right after saving")
+}
+
+// stdinTerminal reports whether a command's stdin is a terminal, with its
+// descriptor for reading a password without echo. Tests stand in for one.
+var stdinTerminal = func(r io.Reader) (int, bool) {
+	f, ok := r.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return 0, false
+	}
+	return int(f.Fd()), true
+}
+
+// checkPasswordStdin refuses --password-stdin on a terminal: that read shows
+// the password as it's typed, while the prompt without the flag hides it.
+func (f *tunnelFlags) checkPasswordStdin(cmd *cobra.Command) error {
+	if _, tty := stdinTerminal(cmd.InOrStdin()); f.passwordStdin && tty {
+		return fmt.Errorf("%w: --password-stdin is for a piped password; typed on a terminal it would show on screen. "+
+			"Leave the flag off and you'll be asked for it without echo", errUsage)
+	}
+	return nil
+}
+
+// warnNoLogin says a password flag was ignored because the profile doesn't
+// log in with a username and password.
+func warnNoLogin(cmd *cobra.Command, flag string) {
+	fmt.Fprintf(cmd.ErrOrStderr(), "warning: this profile doesn't log in with a username and password; %s is ignored\n", flag)
 }
 
 func tunnelAddCmd() *cobra.Command {
@@ -120,6 +149,9 @@ func tunnelAddCmd() *cobra.Command {
 			"    --route 192.168.70.0/24 --route 192.168.72.11 --connect",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := f.checkPasswordStdin(cmd); err != nil {
+				return err
+			}
 			if _, err := findTunnel(cmd.Context(), args[0]); err == nil && !replace {
 				return fmt.Errorf("a tunnel named %q already exists — change it with `riftroute tunnel edit %s`, or pass --replace", args[0], args[0])
 			}
@@ -142,6 +174,8 @@ func tunnelAddCmd() *cobra.Command {
 				if err := askCreds(cmd, &spec, f.passwordStdin, p.InlineUser != ""); err != nil {
 					return err
 				}
+			} else if f.passwordStdin {
+				warnNoLogin(cmd, "--password-stdin")
 			}
 			if len(f.routes) == 0 {
 				fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes")
@@ -168,6 +202,9 @@ func tunnelEditCmd() *cobra.Command {
 			"--password-stdin or --ask-password replaces the saved password.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := f.checkPasswordStdin(cmd); err != nil {
+				return err
+			}
 			cur, err := findTunnel(cmd.Context(), args[0])
 			if err != nil {
 				return err
@@ -199,8 +236,22 @@ func tunnelEditCmd() *cobra.Command {
 				spec.AutoConnect = f.autoConnect
 			}
 			if f.passwordStdin || askPass {
-				if err := askCreds(cmd, &spec, f.passwordStdin, true); err != nil {
-					return err
+				// A replaced profile decides; otherwise the saved one does.
+				needsAuth := cur.NeedsAuth
+				if spec.Config != "" {
+					if p, err := tunnel.Parse(spec.Config); err == nil {
+						needsAuth = p.NeedsAuth
+					}
+				}
+				switch {
+				case !needsAuth && f.passwordStdin:
+					warnNoLogin(cmd, "--password-stdin")
+				case !needsAuth:
+					warnNoLogin(cmd, "--ask-password")
+				default:
+					if err := askCreds(cmd, &spec, f.passwordStdin, true); err != nil {
+						return err
+					}
 				}
 			}
 			return saveTunnel(cmd, spec, f.connect)
@@ -280,6 +331,9 @@ func tunnelRmCmd() *cobra.Command {
 			if err := client().DeleteTunnel(cmd.Context(), args[0]); err != nil {
 				return err
 			}
+			if g.json {
+				return printJSON(cmd.OutOrStdout(), map[string]string{"status": "deleted", "name": args[0]})
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "deleted tunnel %s\n", args[0])
 			return nil
 		},
@@ -299,7 +353,7 @@ func readProfile(path string) (string, *tunnel.Creds, error) {
 // askCreds fills in the username/password, prompting on a terminal.
 func askCreds(cmd *cobra.Command, spec *domain.TunnelSpec, fromStdin, haveUser bool) error {
 	in := bufio.NewReader(cmd.InOrStdin())
-	tty := term.IsTerminal(int(os.Stdin.Fd()))
+	fd, tty := stdinTerminal(cmd.InOrStdin())
 	if spec.Username == "" && !haveUser {
 		if !tty {
 			return errors.New("this profile logs in with a username: pass --username")
@@ -323,7 +377,7 @@ func askCreds(cmd *cobra.Command, spec *domain.TunnelSpec, fromStdin, haveUser b
 		spec.Password = strings.TrimRight(pw, "\r\n")
 	case tty:
 		fmt.Fprint(cmd.ErrOrStderr(), "Password: ")
-		pw, err := term.ReadPassword(int(os.Stdin.Fd()))
+		pw, err := term.ReadPassword(fd)
 		fmt.Fprintln(cmd.ErrOrStderr())
 		if err != nil {
 			return err
@@ -350,22 +404,35 @@ func saveTunnel(cmd *cobra.Command, spec domain.TunnelSpec, connect bool) error 
 	for _, i := range res.Issues {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", i.Msg)
 	}
-	if g.json && !connect {
-		return printJSON(cmd.OutOrStdout(), res.Tunnel)
-	}
 	t := res.Tunnel
-	fmt.Fprintf(cmd.OutOrStdout(), "saved tunnel %s (%s, via %s)\n", t.Name, strings.Join(t.Servers, ", "), t.Via)
+	if t == nil {
+		return errors.New("the daemon saved the tunnel but didn't return it")
+	}
+	w := human(cmd)
+	fmt.Fprintf(w, "saved tunnel %s (%s, via %s)\n", t.Name, strings.Join(t.Servers, ", "), t.Via)
 	if len(t.Ignored) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "  ignored from the profile (RiftRoute handles these): %s\n", strings.Join(t.Ignored, ", "))
+		fmt.Fprintf(w, "  ignored from the profile (RiftRoute handles these): %s\n", strings.Join(t.Ignored, ", "))
 	}
 	if len(t.Routes) > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "  routes: %s\n", strings.Join(t.Routes, ", "))
+		fmt.Fprintf(w, "  routes: %s\n", strings.Join(t.Routes, ", "))
 	}
 	if connect {
-		return connectTunnel(cmd, t.Name, true)
+		return connectTunnel(cmd, t.Name, true) // its JSON is the one document
 	}
 	printEngineProblem(cmd)
+	if g.json {
+		return printJSON(cmd.OutOrStdout(), t)
+	}
 	return nil
+}
+
+// human is where a tunnel command's progress lines go: stdout, or stderr
+// under --json so stdout carries exactly one JSON document.
+func human(cmd *cobra.Command) io.Writer {
+	if g.json {
+		return cmd.ErrOrStderr()
+	}
+	return cmd.OutOrStdout()
 }
 
 // printEngineProblem tells the user, when openvpn isn't usable on the
@@ -409,6 +476,9 @@ func connectTunnel(cmd *cobra.Command, name string, wait bool) error {
 		return err
 	}
 	if !wait {
+		if g.json {
+			return printJSON(cmd.OutOrStdout(), st)
+		}
 		fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", name, st.State)
 		return nil
 	}

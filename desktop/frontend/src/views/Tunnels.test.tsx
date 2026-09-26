@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Tunnels } from './Tunnels'
 import { api } from '../lib/api'
-import type { State, TunnelStatus } from '../types'
+import type { State, TunnelProfileFile, TunnelStatus } from '../types'
 
 vi.mock('../lib/api', () => ({
   api: {
@@ -36,6 +36,18 @@ const connected: TunnelStatus = {
   since: new Date(Date.now() - 65_000).toISOString(),
   bytes_in: 2048,
   bytes_out: 512,
+}
+
+const officeProfile: TunnelProfileFile = {
+  path: '/Users/me/office.ovpn',
+  name: 'office.ovpn',
+  config: 'client\nremote 198.51.100.7\nauth-user-pass\n',
+  servers: ['198.51.100.7:1194/udp'],
+  needs_auth: true,
+  ignored: ['redirect-gateway'],
+  username: 'alice',
+  password: 'pw',
+  error: '',
 }
 
 function withTunnels(tunnels: TunnelStatus[]) {
@@ -113,12 +125,10 @@ describe('Tunnels view', () => {
     fireEvent.click(screen.getByText('Choose .ovpn…'))
     expect(await screen.findByText('office.ovpn')).toBeInTheDocument()
     expect(screen.getByDisplayValue('office')).toBeInTheDocument() // name from the file
-    const inputs = screen.getAllByRole('textbox')
-    fireEvent.change(inputs[1], { target: { value: 'alice' } }) // username
-    fireEvent.change(document.querySelector('input[type=password]')!, {
-      target: { value: 'pw' },
-    })
-    fireEvent.change(screen.getByPlaceholderText(/192\.168\.70\.0\/24/), {
+    expect(screen.queryByText(/Also read/)).not.toBeInTheDocument() // the picker reported no files
+    fireEvent.change(screen.getByRole('textbox', { name: 'Username' }), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
+    fireEvent.change(screen.getByRole('textbox', { name: 'Networks through this tunnel' }), {
       target: { value: '192.168.70.0/24\n192.168.72.11' },
     })
     fireEvent.click(screen.getByText('Save & connect'))
@@ -167,6 +177,122 @@ describe('Tunnels view', () => {
     expect(await screen.findByText(/would send ALL traffic/)).toBeInTheDocument()
     expect(mockApi.connectTunnel).not.toHaveBeenCalled()
   })
+
+  it('keeps the editor’s warnings when saving and connecting in one go', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue(officeProfile)
+    const warning = '192.168.0.0/16 contains your router (192.168.1.1), so it isn’t installed while you’re on this network'
+    mockApi.saveTunnel.mockResolvedValue({
+      tunnel: { ...connected, name: 'office', state: 'disconnected' },
+      issues: [{ severity: 'warning', field: 'routes', msg: warning }],
+    })
+    mockApi.connectTunnel.mockResolvedValue(connected)
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose .ovpn…'))
+    await screen.findByText('office.ovpn')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Networks through this tunnel' }), {
+      target: { value: '192.168.0.0/16' },
+    })
+    fireEvent.click(screen.getByText('Save & connect'))
+    await waitFor(() => expect(mockApi.connectTunnel).toHaveBeenCalledWith('office'))
+    // The connect finished and the notice is still up; ✕ dismisses it.
+    await waitFor(() => expect(screen.getByText(warning)).toBeInTheDocument())
+    expect(screen.getByText(warning)).toHaveClass('text-warning')
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByText(warning)).not.toBeInTheDocument()
+  })
+
+  it('checks each route line before Save, and styles the daemon’s warnings apart from its errors', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({ ...officeProfile, needs_auth: false })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose .ovpn…'))
+    await screen.findByText('office.ovpn')
+    const routes = screen.getByRole('textbox', { name: 'Networks through this tunnel' })
+    fireEvent.change(routes, { target: { value: '192.168.70.0/24\n999.1.1.1\n\n10.0.0.0/33' } })
+    const lineError = (text: string) => (_: string, el: Element | null) =>
+      el?.tagName === 'P' && el.textContent === text
+    expect(screen.getByText(lineError('Line 2: 999.1.1.1 — not a valid IP or CIDR'))).toHaveClass('text-danger')
+    expect(screen.getByText(lineError('Line 4: 10.0.0.0/33 — prefix must be 0–32'))).toBeInTheDocument()
+    expect(routes).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save & connect' })).toBeDisabled()
+
+    // Fixed: the daemon's own verdict shows, errors red and warnings amber;
+    // an issue for a field the form doesn't show still surfaces.
+    fireEvent.change(routes, { target: { value: '0.0.0.0/0\n192.168.0.0/16' } })
+    expect(screen.queryByText(/^Line \d/)).not.toBeInTheDocument()
+    mockApi.saveTunnel.mockResolvedValue({
+      issues: [
+        { severity: 'error', field: 'routes', msg: '0.0.0.0/0 would send ALL traffic into the tunnel' },
+        { severity: 'warning', field: 'routes', msg: '192.168.0.0/16 contains your router (192.168.1.1)' },
+        { severity: 'error', field: 'via', msg: 'via must be "direct" or "default"' },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/would send ALL traffic/)).toHaveClass('text-danger')
+    expect(screen.getByText(/contains your router/)).toHaveClass('text-warning')
+    expect(screen.getByText(/via must be/)).toHaveClass('text-danger')
+    expect(mockApi.saveTunnel).toHaveBeenCalledWith(
+      expect.objectContaining({ routes: ['0.0.0.0/0', '192.168.0.0/16'] }),
+    )
+  })
+
+  it('lists the local files a profile pulled in', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      ...officeProfile,
+      files: ['/Users/me/vpn/ca.crt', '/Users/me/vpn/auth.txt'],
+    })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose .ovpn…'))
+    const files = await screen.findByText('/Users/me/vpn/ca.crt, /Users/me/vpn/auth.txt')
+    expect(files).toHaveClass('ltr', 'font-mono')
+    expect(files.parentElement).toHaveTextContent(/^Also read:/)
+    expect(files.parentElement).toHaveClass('text-muted')
+  })
+
+  it('deletes a tunnel after confirming in the app’s own dialog', async () => {
+    withTunnels([connected])
+    mockApi.deleteTunnel.mockResolvedValue(undefined)
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete infra' }))
+    expect(screen.getByText('Delete tunnel infra')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(mockApi.deleteTunnel).toHaveBeenCalledWith('infra'))
+  })
+
+  it('runs no per-second timer while no tunnel is connected', async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval')
+    try {
+      withTunnels([{ ...connected, state: 'disconnected', since: undefined, iface: undefined }])
+      renderView()
+      expect(await screen.findByText('infra')).toBeInTheDocument()
+      expect(screen.getByText('Reaches server')).toBeInTheDocument()
+      expect(setIntervalSpy.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(0)
+    } finally {
+      setIntervalSpy.mockRestore()
+    }
+  })
+
+  it('ticks how long a connected tunnel has been up', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      withTunnels([{ ...connected, since: new Date(Date.now() - 65_500).toISOString() }])
+      renderView()
+      expect(await screen.findByText('1m 5s')).toBeInTheDocument()
+      expect(screen.getByText('Connected for')).toBeInTheDocument()
+      act(() => {
+        vi.advanceTimersByTime(2000)
+      })
+      expect(screen.getByText('1m 7s')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('Tunnels view — routes left out', () => {
@@ -207,9 +333,10 @@ describe('Tunnels view — routes left out', () => {
     expect(await screen.findByText("OpenVPN isn't installed")).toBeInTheDocument()
     expect(screen.getByText(/On Ubuntu 24\.04\.1 LTS, run this in a terminal/)).toBeInTheDocument()
     expect(screen.getByText('sudo apt install openvpn')).toBeInTheDocument()
-    const connect = screen.getByRole('button', { name: 'Connect' })
+    const connect = screen.getByRole('button', { name: 'Connect infra' })
     expect(connect).toBeDisabled()
     expect(connect).toHaveAttribute('title', 'Install OpenVPN first (see above)')
+    expect(screen.getByText('disconnected')).toBeInTheDocument() // state in words, not just a color
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('sudo apt install openvpn'))
@@ -218,6 +345,29 @@ describe('Tunnels view — routes left out', () => {
     mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/usr/sbin/openvpn', version: '2.6.14' })
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     await waitFor(() => expect(screen.queryByText("OpenVPN isn't installed")).not.toBeInTheDocument())
-    expect(screen.getByRole('button', { name: 'Connect' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Connect infra' })).toBeEnabled()
+  })
+
+  it('offers only Save in the editor while openvpn is missing', async () => {
+    withTunnels([])
+    mockApi.tunnelEngine.mockResolvedValue({ available: false, problem: "OpenVPN isn't installed" })
+    mockApi.openTunnelProfile.mockResolvedValue(officeProfile)
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...connected, name: 'office', state: 'disconnected' } })
+    renderView()
+    await screen.findByText("OpenVPN isn't installed")
+    fireEvent.click(screen.getByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose .ovpn…'))
+    await screen.findByText('office.ovpn')
+
+    const saveConnect = screen.getByRole('button', { name: 'Save & connect' })
+    expect(saveConnect).toBeDisabled()
+    expect(saveConnect).toHaveAttribute('title', 'Install OpenVPN first (see the Tunnels page)')
+    expect(saveConnect).toHaveAccessibleDescription(/OpenVPN isn't installed yet/)
+    fireEvent.click(saveConnect)
+    expect(mockApi.saveTunnel).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
+    expect(mockApi.connectTunnel).not.toHaveBeenCalled()
   })
 })

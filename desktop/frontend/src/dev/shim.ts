@@ -143,6 +143,7 @@ const App = {
       username: '',
       password: '',
       error: '',
+      files: [], // the sample carries its <ca> inline
     }),
   GetPreferences: () => req('GET', '/preferences'),
   SetPreferences: (patch: unknown) => req('PUT', '/preferences', patch),

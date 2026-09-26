@@ -440,6 +440,9 @@ export interface TunnelProfileFile {
   username: string
   password: string
   error: string
+  // Local files the profile referenced and the picker inlined (ca, cert,
+  // key, auth-user-pass, …). Absent from builds that don't report them.
+  files?: string[] | null
 }
 
 export interface TunnelResult {

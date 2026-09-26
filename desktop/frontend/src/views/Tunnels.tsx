@@ -29,7 +29,6 @@ export function Tunnels() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const now = useNow(1000)
   const engineQ = useTunnelEngineQuery()
   // An older daemon without the check (or a failed read) must not block
   // connecting: openvpn's own error still explains what's wrong.
@@ -43,9 +42,12 @@ export function Tunnels() {
     qc.invalidateQueries({ queryKey: tunnelEngineKey })
   }
 
-  async function run(name: string, fn: () => Promise<unknown>) {
+  // run performs one tunnel action. A new action clears the last one's
+  // messages; notice is what to show with this one (the editor's warnings
+  // when saving and connecting in one go).
+  async function run(name: string, fn: () => Promise<unknown>, notice: string | null = null) {
     setError(null)
-    setNotice(null)
+    setNotice(notice)
     setBusy(name)
     try {
       await fn()
@@ -77,9 +79,22 @@ export function Tunnels() {
       {engine && !engine.available && (
         <EngineBanner engine={engine} checking={engineQ.isFetching} onRecheck={() => engineQ.refetch()} />
       )}
-      {error && <div className="rounded-xl border border-danger/40 bg-danger/5 p-4 text-sm text-danger">{error}</div>}
+      {error && (
+        <Card tone="danger" className="p-3 text-sm text-danger">
+          {error}
+        </Card>
+      )}
       {notice && (
-        <div className="rounded-xl border border-warning/40 bg-warning/5 p-4 text-sm text-warning">{notice}</div>
+        <Card tone="warning" className="flex items-center justify-between gap-3 p-3 text-sm">
+          <span className="text-warning">{notice}</span>
+          <button
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+            className="shrink-0 text-muted hover:text-default"
+          >
+            ✕
+          </button>
+        </Card>
       )}
 
       {stateQ.isLoading ? (
@@ -107,7 +122,6 @@ export function Tunnels() {
           <TunnelCard
             key={t.name}
             t={t}
-            now={now}
             busy={busy === t.name}
             canConnect={canConnect}
             onConnect={() => run(t.name, () => api.connectTunnel(t.name))}
@@ -122,12 +136,18 @@ export function Tunnels() {
         <TunnelEditor
           existing={editor.mode === 'edit' ? editor.tunnel : undefined}
           takenNames={tunnels.map((t) => t.name)}
+          canConnect={canConnect}
           onClose={() => setEditor(null)}
           onSaved={(t, warnings, connect) => {
             setEditor(null)
-            setNotice(warnings.length ? warnings.join(' ') : null)
-            if (connect) run(t.name, () => api.connectTunnel(t.name))
-            else refresh()
+            const note = warnings.length ? warnings.join(' ') : null
+            if (connect) {
+              run(t.name, () => api.connectTunnel(t.name), note)
+            } else {
+              setError(null)
+              setNotice(note)
+              refresh()
+            }
           }}
         />
       )}
@@ -171,8 +191,8 @@ function EngineBanner({
     }
   }
   return (
-    <div role="status" className="rounded-xl border border-warning/40 bg-warning/5 p-4">
-      <div className="space-y-3 text-sm">
+    <Card tone="warning" className="p-4">
+      <div role="status" className="space-y-3 text-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
             <h2 className="font-semibold text-warning">{engine.problem || "OpenVPN isn't usable"}</h2>
@@ -216,13 +236,12 @@ function EngineBanner({
         )}
         <p className="text-xs text-muted">RiftRoute picks it up as soon as it's installed — no restart needed.</p>
       </div>
-    </div>
+    </Card>
   )
 }
 
 function TunnelCard({
   t,
-  now,
   busy,
   canConnect,
   onConnect,
@@ -231,7 +250,6 @@ function TunnelCard({
   onDelete,
 }: {
   t: TunnelStatus
-  now: number
   busy: boolean
   canConnect: boolean
   onConnect: () => void
@@ -240,13 +258,14 @@ function TunnelCard({
   onDelete: () => void
 }) {
   const live = t.state === 'connected' || t.state === 'connecting' || t.state === 'reconnecting'
-  const since = t.since ? (now - Date.parse(t.since)) / 1000 : NaN
+  const since = t.since ? Date.parse(t.since) : NaN
+  const uptime = t.state === 'connected' && Number.isFinite(since)
   const routes = t.routes ?? []
   const blocked = new Map((t.blocked ?? []).map((b) => [b.route, b.reason]))
   const detail = t.detail && t.detail !== t.state ? t.detail : ''
   return (
     <Card>
-      <div className="flex items-center justify-between border-b border-line px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div className="flex items-center gap-3">
           <h2 className="text-sm font-semibold text-default">{t.name}</h2>
           <Badge tone={stateTone[t.state]}>
@@ -257,17 +276,20 @@ function TunnelCard({
           {t.auto_connect && <Badge tone="muted">auto-connect</Badge>}
         </div>
         <div className="flex items-center gap-2">
+          {/* Every card has these buttons: the names say which tunnel. */}
           <button
             onClick={onEdit}
             disabled={busy}
-            className="rounded-lg px-2.5 py-1.5 text-sm text-muted hover:text-default disabled:opacity-50"
+            aria-label={`Edit ${t.name}`}
+            className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-default disabled:opacity-50"
           >
             Edit
           </button>
           <button
             onClick={onDelete}
             disabled={busy}
-            className="rounded-lg px-2.5 py-1.5 text-sm text-muted hover:text-danger disabled:opacity-50"
+            aria-label={`Delete ${t.name}`}
+            className="rounded-lg border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:opacity-50"
           >
             Delete
           </button>
@@ -275,6 +297,7 @@ function TunnelCard({
             <button
               onClick={onDisconnect}
               disabled={busy}
+              aria-label={`${busy ? 'Disconnecting' : 'Disconnect'} ${t.name}`}
               className="rounded-lg border border-line px-3 py-1.5 text-sm text-default hover:bg-elevated disabled:opacity-50"
             >
               {busy ? 'Disconnecting…' : 'Disconnect'}
@@ -283,6 +306,7 @@ function TunnelCard({
             <button
               onClick={onConnect}
               disabled={busy || !canConnect}
+              aria-label={`${busy ? 'Connecting' : 'Connect'} ${t.name}`}
               title={canConnect ? undefined : 'Install OpenVPN first (see above)'}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >
@@ -306,9 +330,9 @@ function TunnelCard({
               <span className="text-muted">—</span>
             )}
           </Field>
-          <Field label={t.state === 'connected' ? 'Connected for' : 'Reaches server'}>
-            {t.state === 'connected' && Number.isFinite(since) ? (
-              fmtUptime(since)
+          <Field label={uptime ? 'Connected for' : 'Reaches server'}>
+            {uptime ? (
+              <ConnectedFor since={since} />
             ) : (
               <span>{t.via === 'direct' ? 'directly' : 'through main VPN'}</span>
             )}
@@ -356,7 +380,7 @@ function TunnelCard({
         </div>
         {(t.ignored ?? []).length > 0 && (
           <p className="text-xs text-muted">
-            Ignored from the profile: <span className="font-mono">{(t.ignored ?? []).join(', ')}</span>
+            Ignored from the profile: <span className="ltr font-mono">{(t.ignored ?? []).join(', ')}</span>
           </p>
         )}
       </div>
@@ -373,8 +397,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   )
 }
 
-// useNow re-renders on an interval so "connected for" keeps ticking between
-// state pushes.
+// ConnectedFor ticks "connected for" between state pushes. The timer lives
+// here, so each second re-renders this one line (not the page, or an open
+// editor), and it's mounted only while its tunnel is connected.
+function ConnectedFor({ since }: { since: number }) {
+  const now = useNow(1000)
+  return <>{fmtUptime((now - since) / 1000)}</>
+}
+
 function useNow(ms: number): number {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
