@@ -82,3 +82,11 @@ export const ShieldIcon = (p: IconProps) => (
     <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" />
   </svg>
 )
+
+export const TunnelIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M3 20v-7a9 9 0 0 1 18 0v7" />
+    <path d="M7 20v-6a5 5 0 0 1 10 0v6" />
+    <path d="M3 20h18" />
+  </svg>
+)

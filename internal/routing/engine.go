@@ -46,9 +46,38 @@ type DesiredInput struct {
 	// §5.1 domain rules); the daemon re-resolves these in the background.
 	Domains map[string][]string
 
+	// Tunnels are the VPN connections RiftRoute runs itself (internal/tunnel).
+	Tunnels []TunnelInput
+	// Occupied are main-table destinations routed by someone else (another
+	// VPN, the system): masked CIDR → interface. A tunnel route for the exact
+	// same destination can't be added beside it (the kernel keeps one), and
+	// claiming it would mean deleting the other owner's route on teardown.
+	Occupied map[string]string
+
 	Platform      string // "darwin" | "linux" | "fake"
 	PolicyRouting bool   // whether Model B (include mode) is available
 	Now           time.Time
+}
+
+// TunnelProfilePrefix tags the managed routes a tunnel owns ("tunnel:<name>")
+// in the ProfileID slot, so ownership, explain, and the route table attribute
+// them to the tunnel rather than to a profile.
+const TunnelProfilePrefix = "tunnel:"
+
+// TunnelInput is one managed tunnel's contribution to desired state.
+type TunnelInput struct {
+	Name string
+	// Iface is the tunnel's interface while it is up; empty otherwise, in
+	// which case its Routes are not installed (they stay on whatever path
+	// they had — never blackholed into a dead interface).
+	Iface string
+	// V6 reports that the tunnel carries IPv6; v6 routes are skipped without it.
+	V6 bool
+	// Routes are the CIDR/IP destinations sent into the tunnel.
+	Routes []string
+	// Bypass are the tunnel's own server addresses, pinned to the physical
+	// gateway so its connection doesn't ride another VPN (via: direct).
+	Bypass []netip.Addr
 }
 
 // BuildDesired computes the managed routes + rules implied by the enabled
@@ -66,6 +95,7 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 	var rules []domain.ManagedRule
 	includeFamilies := map[domain.Family]bool{}
 
+	behindTunnel := tunnelNets(in)
 	for _, p := range profs {
 		if !p.Enabled {
 			continue
@@ -135,6 +165,9 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			skipped, families := 0, 0
 			var skipErr error
 			for fam, prefixes := range byFamily {
+				if prefixes = outsideTunnels(prefixes, behindTunnel); len(prefixes) == 0 {
+					continue
+				}
 				families++
 				gw, iface, err := resolveGateway(p.Gateway, fam, in)
 				if err != nil {
@@ -170,6 +203,8 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 		}
 	}
 
+	buildTunnels(in, seenRoute, &routes)
+
 	// For each family with include rules, the dedicated table needs a default via
 	// the tunnel (spec §5.4 Model B). Refuse if no tunnel is active (fail-safe).
 	for fam := range includeFamilies {
@@ -195,6 +230,113 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 	sort.SliceStable(routes, func(i, j int) bool { return RouteKey(routes[i].Route) < RouteKey(routes[j].Route) })
 	sort.SliceStable(rules, func(i, j int) bool { return RuleKey(rules[i].PolicyRule) < RuleKey(rules[j].PolicyRule) })
 	return routes, rules, nil
+}
+
+// buildTunnels emits the managed tunnels' routes: each destination into the
+// tunnel's interface (on-link — a tun device has no next hop), and each server
+// address via the physical gateway. A tunnel that is down contributes no
+// destination routes; a missing physical gateway drops only the bypass, and the
+// tunnel's connection then follows the default route. Neither is an error, so
+// one tunnel's state can never make the rest of the desired set unappliable.
+func buildTunnels(in DesiredInput, seen map[string]bool, routes *[]domain.ManagedRoute) {
+	for _, t := range in.Tunnels {
+		tag := TunnelProfilePrefix + t.Name
+		for _, a := range t.Bypass {
+			fam := famOf(a)
+			gw, iface, err := resolveGateway("auto", fam, in)
+			if err != nil {
+				continue
+			}
+			if _, taken := in.Occupied[netip.PrefixFrom(a, a.BitLen()).String()]; taken {
+				continue // someone else already pins the server; follow their route
+			}
+			rt := domain.Route{
+				DstCIDR: netip.PrefixFrom(a, a.BitLen()).String(), Gateway: gw.String(), Iface: iface, Family: fam,
+				Owner: domain.OwnerRiftRoute, Proto: protoFor(in.Platform), Profile: tag,
+			}
+			addRoute(seen, routes, rt, tag, in.Now)
+		}
+		if t.Iface == "" {
+			continue
+		}
+		byFamily := map[domain.Family][]netip.Prefix{}
+		for _, v := range t.Routes {
+			pfx, fam, ok := entryToPrefix(v)
+			if !ok || (fam == domain.FamilyV6 && !t.V6) || TunnelRouteBlock(pfx, in) != "" {
+				continue
+			}
+			byFamily[fam] = append(byFamily[fam], pfx)
+		}
+		for fam, prefixes := range byFamily {
+			for _, pfx := range Aggregate(prefixes) {
+				rt := domain.Route{
+					DstCIDR: pfx.String(), Iface: t.Iface, Family: fam,
+					Owner: domain.OwnerRiftRoute, Proto: protoFor(in.Platform), Profile: tag,
+				}
+				addRoute(seen, routes, rt, tag, in.Now)
+			}
+		}
+	}
+}
+
+// tunnelNets are the networks behind live tunnels (the destinations they
+// route, minus any blocked on this network).
+func tunnelNets(in DesiredInput) []netip.Prefix {
+	var out []netip.Prefix
+	for _, t := range in.Tunnels {
+		for _, v := range t.Routes {
+			if pfx, _, ok := entryToPrefix(v); ok && TunnelRouteBlock(pfx, in) == "" {
+				out = append(out, pfx.Masked())
+			}
+		}
+	}
+	return out
+}
+
+// outsideTunnels drops exclude destinations that lie inside a tunnel's
+// networks: a tunnel's destinations are explicitly behind it, and an exclude
+// profile must not pull hosts back out — e.g. a wildcard domain whose DNS
+// answers an internal host with its private address (gitlab.example.com →
+// 192.168.70.42) would otherwise install a more specific direct route.
+func outsideTunnels(prefixes, nets []netip.Prefix) []netip.Prefix {
+	if len(nets) == 0 {
+		return prefixes
+	}
+	out := prefixes[:0:0]
+	for _, p := range prefixes {
+		inside := false
+		for _, n := range nets {
+			if n.Bits() <= p.Bits() && n.Contains(p.Addr()) {
+				inside = true
+				break
+			}
+		}
+		if !inside {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// TunnelRouteBlock says why a tunnel destination can't be installed on the
+// current network, or "" if it can. Such a route is left out — reported by
+// core.Service.TunnelStatuses — rather than failing the whole apply:
+//   - it contains the physical gateway: it would cut the path to the router
+//     (and the guardrails refuse the WHOLE apply over one);
+//   - another owner routes that exact destination: the kernel keeps a single
+//     route per destination, so the add would silently not happen.
+func TunnelRouteBlock(pfx netip.Prefix, in DesiredInput) string {
+	gw := in.GatewayV4
+	if pfx.Addr().Is6() {
+		gw = in.GatewayV6
+	}
+	if gw.IsValid() && pfx.Contains(gw) {
+		return fmt.Sprintf("contains your router %s — it would cut your connection", gw)
+	}
+	if iface, ok := in.Occupied[pfx.Masked().String()]; ok {
+		return fmt.Sprintf("already routed via %s by something else (another VPN or the system)", iface)
+	}
+	return ""
 }
 
 // buildDarwinInclude emits macOS PF route-to rules for an include-mode profile:
@@ -369,8 +511,14 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 		}
 		switch kind {
 		case domain.OpAddRoute:
+			if r.Gateway == "" { // on-link, e.g. into a tunnel interface
+				return []string{"route", "-n", "add", scope, r.DstCIDR, "-interface", r.Iface}
+			}
 			return []string{"route", "-n", "add", scope, r.DstCIDR, r.Gateway}
 		case domain.OpDelRoute:
+			if r.Gateway == "" {
+				return []string{"route", "-n", "delete", scope, r.DstCIDR}
+			}
 			return []string{"route", "-n", "delete", scope, r.DstCIDR, r.Gateway}
 		}
 	}
@@ -426,6 +574,9 @@ func humanForRoute(kind domain.OpKind, r domain.Route) string {
 	t := ""
 	if r.Table != "" {
 		t = " table " + r.Table
+	}
+	if r.Gateway == "" {
+		return fmt.Sprintf("%s %s dev %s%s", verb, r.DstCIDR, r.Iface, t)
 	}
 	return fmt.Sprintf("%s %s via %s dev %s%s", verb, r.DstCIDR, r.Gateway, r.Iface, t)
 }

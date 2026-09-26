@@ -431,3 +431,145 @@ func TestBuildDesiredExcludeExplicitGatewayFamilies(t *testing.T) {
 		t.Fatal("malformed explicit gateway must remain a hard error")
 	}
 }
+
+func TestTunnelRoutesGoIntoTheTunnelOnly(t *testing.T) {
+	in := testInput()
+	in.Platform = "darwin"
+	in.Tunnels = []TunnelInput{{
+		Name: "infra", Iface: "utun6",
+		Routes: []string{"192.168.70.0/24", "192.168.72.11", "192.168.72.12", "192.168.72.13", "fd00::/8"},
+		Bypass: []netip.Addr{netip.MustParseAddr("198.51.100.7")},
+	}}
+	desired, rules, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("tunnel routes need no policy rules, got %+v", rules)
+	}
+	got := map[string]domain.Route{}
+	for _, d := range desired {
+		if d.ProfileID != "tunnel:infra" {
+			t.Errorf("route %s owned by %q, want tunnel:infra", d.DstCIDR, d.ProfileID)
+		}
+		got[d.DstCIDR] = d.Route
+	}
+	for _, dst := range []string{"192.168.70.0/24", "192.168.72.11/32", "192.168.72.12/31"} {
+		r, ok := got[dst]
+		if !ok || r.Iface != "utun6" || r.Gateway != "" {
+			t.Errorf("%s: got %+v, want on-link via utun6", dst, r)
+		}
+	}
+	if r := got["198.51.100.7/32"]; r.Gateway != "192.168.1.1" || r.Iface != "en0" {
+		t.Errorf("server bypass = %+v, want via the physical gateway", r)
+	}
+	if _, ok := got["fd00::/8"]; ok {
+		t.Error("a v6 route must not go into a tunnel without IPv6")
+	}
+	if len(desired) != 4 {
+		t.Errorf("want 4 routes, got %d: %+v", len(desired), desired)
+	}
+	// The plan preview shows the real macOS command.
+	plan := Reconcile(desired, nil, nil, nil, "darwin")
+	var cmds []string
+	for _, op := range plan.Ops {
+		cmds = append(cmds, strings.Join(op.Command, " "))
+	}
+	if !strings.Contains(strings.Join(cmds, "\n"), "route -n add -net 192.168.70.0/24 -interface utun6") {
+		t.Errorf("plan commands:\n%s", strings.Join(cmds, "\n"))
+	}
+}
+
+func TestTunnelDownRoutesNothingButKeepsPinWhileConnecting(t *testing.T) {
+	in := testInput(excludeProfile())
+	in.Tunnels = []TunnelInput{{Name: "infra", Routes: []string{"192.168.70.0/24"}, Bypass: []netip.Addr{netip.MustParseAddr("198.51.100.7")}}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatalf("a tunnel that isn't up must not make the desired set unappliable: %v", err)
+	}
+	for _, d := range desired {
+		if d.DstCIDR == "192.168.70.0/24" {
+			t.Fatal("routes into a tunnel with no interface would blackhole")
+		}
+	}
+	// No physical gateway: the pin is dropped, still no error.
+	in.GatewayV4 = netip.Addr{}
+	in.Profiles = nil
+	if desired, _, err = BuildDesired(in); err != nil || len(desired) != 0 {
+		t.Fatalf("got %+v, %v", desired, err)
+	}
+}
+
+// A tunnel route containing the router would cut the path to it; the
+// guardrails refuse the WHOLE apply over one, so the engine leaves just that
+// route out and the rest of the tunnel (and every profile) still applies.
+func TestTunnelRouteContainingTheRouterIsLeftOut(t *testing.T) {
+	in := testInput(excludeProfile())
+	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"192.168.0.0/16", "192.168.70.0/24"}}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tunnel []string
+	for _, d := range desired {
+		if d.ProfileID == "tunnel:infra" {
+			tunnel = append(tunnel, d.DstCIDR)
+		}
+	}
+	if strings.Join(tunnel, ",") != "192.168.70.0/24" {
+		t.Fatalf("tunnel routes = %v, want only 192.168.70.0/24 (the /16 holds the router 192.168.1.1)", tunnel)
+	}
+}
+
+// The kernel keeps one route per destination: a tunnel route (or server pin)
+// for a destination another owner already routes is left out, never claimed —
+// claiming it would delete the other owner's route on teardown.
+func TestTunnelSkipsDestinationsOthersRoute(t *testing.T) {
+	in := testInput()
+	in.Occupied = map[string]string{"192.168.72.11/32": "ipsec0", "198.51.100.7/32": "en0"}
+	in.Tunnels = []TunnelInput{{
+		Name: "infra", Iface: "utun6",
+		Routes: []string{"192.168.72.11", "192.168.70.0/24"},
+		Bypass: []netip.Addr{netip.MustParseAddr("198.51.100.7")},
+	}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, d := range desired {
+		got = append(got, d.DstCIDR)
+	}
+	if strings.Join(got, ",") != "192.168.70.0/24" {
+		t.Fatalf("desired = %v, want only 192.168.70.0/24", got)
+	}
+	if why := TunnelRouteBlock(netip.MustParsePrefix("192.168.72.11/32"), in); !strings.Contains(why, "ipsec0") {
+		t.Errorf("reason = %q", why)
+	}
+}
+
+// A wildcard domain can resolve an internal host to a private address behind
+// a tunnel; the exclude profile must not pull that host out of the tunnel.
+func TestExcludeProfileYieldsToTunnelNetworks(t *testing.T) {
+	work := domain.Profile{
+		ID: "work", Name: "WORK", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "*.example.com"}, {Type: domain.RuleIP, Value: "203.0.113.5"}},
+	}
+	in := testInput(work)
+	in.Domains = map[string][]string{"*.example.com": {"192.168.70.42", "203.0.113.9"}}
+	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"192.168.70.0/24"}}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, d := range desired {
+		got[d.DstCIDR] = d.Iface
+	}
+	if _, ok := got["192.168.70.42/32"]; ok {
+		t.Error("192.168.70.42 is behind the tunnel; the exclude profile must not route it direct")
+	}
+	if got["192.168.70.0/24"] != "utun6" || got["203.0.113.9/32"] != "en0" || got["203.0.113.5/32"] != "en0" {
+		t.Errorf("desired = %v", got)
+	}
+}

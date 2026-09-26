@@ -76,6 +76,7 @@ func buildMenu(app *App) *menu.Menu {
 	view.AddText("Dashboard", keys.CmdOrCtrl("1"), func(_ *menu.CallbackData) { app.emit("rr:menu", "nav:dashboard") })
 	view.AddText("Routing Table", keys.CmdOrCtrl("2"), func(_ *menu.CallbackData) { app.emit("rr:menu", "nav:routes") })
 	view.AddText("Explain", keys.CmdOrCtrl("3"), func(_ *menu.CallbackData) { app.emit("rr:menu", "nav:explain") })
+	view.AddText("Tunnels", keys.CmdOrCtrl("4"), func(_ *menu.CallbackData) { app.emit("rr:menu", "nav:tunnels") })
 	view.AddSeparator()
 	view.AddText("Refresh", keys.CmdOrCtrl("r"), func(_ *menu.CallbackData) { app.emit("rr:menu", "refresh") })
 	view.AddText("Toggle Theme", keys.Combo("t", keys.CmdOrCtrlKey, keys.ShiftKey), func(_ *menu.CallbackData) { app.emit("rr:menu", "toggle-theme") })

@@ -1,18 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import { friendly } from '../lib/format'
+import { copyText } from '../lib/system'
 import type { BugReport } from '../types'
 import { Modal } from './Modal'
-
-// copyText uses the Wails runtime clipboard inside the app (the webview's
-// navigator.clipboard isn't reliable on a wails:// origin), and the browser
-// API elsewhere (dev harness).
-async function copyText(text: string): Promise<boolean> {
-  const rt = (window as unknown as { runtime?: { ClipboardSetText?: (t: string) => Promise<boolean> } }).runtime
-  if (rt?.ClipboardSetText) return rt.ClipboardSetText(text)
-  await navigator.clipboard.writeText(text)
-  return true
-}
 
 // BugReportModal builds the redacted diagnostics report and shows it in full
 // BEFORE anything else can happen: the user reads it, then copies or saves it

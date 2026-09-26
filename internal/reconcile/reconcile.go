@@ -7,7 +7,9 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/netip"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/core"
@@ -50,13 +52,38 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 		r.log.Warn("auto-apply skipped: cannot derive desired state", "err", err)
 		return safety.Result{}, err
 	}
+	res, aerr := r.apply(ctx, desired, rules, physGW)
+	if r.onReconcile != nil {
+		r.onReconcile(res, aerr)
+	}
+	return res, aerr
+}
+
+// ApplyTunnels installs the managed tunnels' current routes and leaves every
+// other managed route as it is. It is NOT gated by auto-apply — connecting or
+// disconnecting a tunnel is the user's explicit action — but it runs the same
+// guarded, non-interactive path.
+func (r *Reconciler) ApplyTunnels(ctx context.Context) error {
+	desired, rules, physGW, err := r.svc.DesiredTunnelsOnly(ctx)
+	if err != nil {
+		return err
+	}
+	res, err := r.apply(ctx, desired, rules, physGW)
+	if err == nil && res.Status == domain.TxFailed {
+		err = errors.New(res.Error)
+	}
+	return err
+}
+
+// apply runs one guarded, non-interactive apply.
+func (r *Reconciler) apply(ctx context.Context, desired []domain.ManagedRoute, rules []domain.ManagedRule, physGW netip.Addr) (safety.Result, error) {
 	anchors := []string{}
 	if physGW.IsValid() {
 		anchors = append(anchors, physGW.String())
 	}
 	anchors = append(anchors, "1.1.1.1")
 
-	res, aerr := r.proto.Apply(ctx, desired, rules, safety.Options{
+	return r.proto.Apply(ctx, desired, rules, safety.Options{
 		Interactive:   false, // auto-apply: skip manual confirm, keep the guard
 		Anchors:       anchors,
 		K:             3,
@@ -65,10 +92,6 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 		Actor:         domain.ActorDaemon,
 		PhysGW:        physGW,
 	})
-	if r.onReconcile != nil {
-		r.onReconcile(res, aerr)
-	}
-	return res, aerr
 }
 
 // Run consumes network events, debounces them, and reconciles. It blocks until

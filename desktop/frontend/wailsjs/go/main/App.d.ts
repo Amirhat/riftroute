@@ -16,11 +16,17 @@ export function CheckUpdate():Promise<domain.UpdateStatus>;
 
 export function Confirm(arg1:string):Promise<domain.TxResult>;
 
+export function ConnectTunnel(arg1:string):Promise<domain.TunnelStatus>;
+
 export function CreateBugReport():Promise<domain.BugReport>;
 
 export function DeleteList(arg1:string):Promise<void>;
 
 export function DeleteProfile(arg1:string):Promise<apiclient.ConfigResult>;
+
+export function DeleteTunnel(arg1:string):Promise<void>;
+
+export function DisconnectTunnel(arg1:string):Promise<domain.TunnelStatus>;
 
 export function Explain(arg1:string):Promise<domain.RouteExplain>;
 
@@ -58,6 +64,10 @@ export function GetSystemApps():Promise<Array<sysinfo.App>>;
 
 export function GetSystemUsers():Promise<Array<sysinfo.User>>;
 
+export function GetTunnelEngine():Promise<domain.TunnelEngine>;
+
+export function GetTunnels():Promise<Array<domain.TunnelStatus>>;
+
 export function InstallDaemon():Promise<void>;
 
 export function InstallUpdate():Promise<domain.UpdateStatus>;
@@ -67,6 +77,8 @@ export function OpenConfigDialog():Promise<main.ConfigFile>;
 export function OpenIssuePage():Promise<void>;
 
 export function OpenReleaseNotes(arg1:string):Promise<void>;
+
+export function OpenTunnelProfileDialog():Promise<main.TunnelProfileFile>;
 
 export function PanicFlush():Promise<void>;
 
@@ -91,6 +103,8 @@ export function SaveBugReport(arg1:string):Promise<string>;
 export function SaveList(arg1:domain.List):Promise<domain.List>;
 
 export function SaveProfile(arg1:domain.Profile,arg2:boolean):Promise<apiclient.ConfigResult>;
+
+export function SaveTunnel(arg1:domain.TunnelSpec):Promise<apiclient.TunnelResult>;
 
 export function SetAutoApply(arg1:boolean):Promise<boolean>;
 
