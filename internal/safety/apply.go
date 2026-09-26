@@ -166,6 +166,8 @@ type Protocol struct {
 	lastTx   time.Time // start of the most recent transaction (txmu)
 
 	panicking atomic.Int32 // panics in progress: every apply is refused
+
+	onSettled atomic.Pointer[func()] // see SetOnSettled
 }
 
 // TryQuiesce takes the apply lock if the daemon is quiet — nothing being
@@ -628,6 +630,32 @@ func (p *Protocol) finishTx(pt *pendingTx) {
 	delete(p.pending, pt.id)
 	p.txmu.Unlock()
 	close(pt.done)
+	p.settled()
+}
+
+// SetOnSettled installs fn, called whenever a transaction on probation
+// resolves — its guard window commits it, a watchdog or a missed confirm
+// rolls it back, it is confirmed or rolled back by hand, a newer apply or a
+// panic settles it — and after a panic has flushed. Those are the moments an
+// apply refused meanwhile (ErrApplyInProgress, ErrPanicking) can go through,
+// and a rollback may have withdrawn routes the tunnels still want: the daemon
+// re-applies its tunnels' routes from it. A change that commits at once
+// (Options.Unguarded) or fails never had anyone waiting on it and doesn't
+// call it. fn runs on a goroutine of its own, never under the Protocol's
+// locks, so it may apply. nil removes it.
+func (p *Protocol) SetOnSettled(fn func()) {
+	if fn == nil {
+		p.onSettled.Store(nil)
+		return
+	}
+	p.onSettled.Store(&fn)
+}
+
+// settled calls the SetOnSettled hook, if any.
+func (p *Protocol) settled() {
+	if fn := p.onSettled.Load(); fn != nil {
+		p.goSafe("on-settled", *fn)
+	}
 }
 
 // Confirm keeps a pending interactive change (cancels the auto-revert).
@@ -679,6 +707,12 @@ func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
 // land around the flush. Guards still armed are settled before the flush, so
 // none can roll back afterwards and re-add what it removed.
 func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
+	err := p.panicWith(ctx, actor, before)
+	p.settled() // applies are accepted again
+	return err
+}
+
+func (p *Protocol) panicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
 	p.panicking.Add(1)
 	defer p.panicking.Add(-1)
 	if before != nil {
@@ -856,7 +890,7 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 // would go into whatever interface has the recorded name now
 // (DropTunnelRoutes then drops their records); in a guard's rollback the
 // tunnel may be gone too, and the tunnels re-apply what they still route
-// once it has settled.
+// once it has settled (SetOnSettled).
 func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
 	out := ops[:0:0]
 	for _, op := range ops {
