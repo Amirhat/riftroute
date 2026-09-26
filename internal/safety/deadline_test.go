@@ -135,3 +135,29 @@ func TestApplyGivesUpWaitingForTheLock(t *testing.T) {
 	}
 	h.mustApply(t, desired("9.9.9.0/24")) // the lock is free
 }
+
+// ctxRoutesOutliveFlush is ctxProvider with macOS's flush, which leaves
+// routes to the ownership records.
+type ctxRoutesOutliveFlush struct{ *ctxProvider }
+
+func (ctxRoutesOutliveFlush) FlushOwned(context.Context) error { return nil }
+
+// A panic's flush runs to the end when its caller stops waiting (the
+// uninstaller's timeout, a client going away): cut off, it would leave the
+// routes it hadn't reached yet.
+func TestPanicOutlivesItsCaller(t *testing.T) {
+	h := newHarness(t)
+	prov := ctxRoutesOutliveFlush{&ctxProvider{Provider: h.prov}}
+	p := safety.NewProtocol(prov, h.st, h.clock, func() safety.Prober { return h.prober }, "fake", nil)
+	if res, err := p.Apply(context.Background(), desired("9.9.9.0/24", "8.8.8.0/24"), nil, opts(false)); err != nil || res.Status != domain.TxPending {
+		t.Fatalf("apply: %s %v", res.Status, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the caller is gone
+	if err := p.Panic(ctx, domain.ActorUI); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.prov.CountManaged(); n != 0 {
+		t.Fatalf("%d managed route(s) left", n)
+	}
+}

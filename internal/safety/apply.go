@@ -722,7 +722,9 @@ func (p *Protocol) panicWith(ctx context.Context, actor domain.Actor, before fun
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
 	p.settleForPanic()
-	err := Panic(ctx, p.prov, p.store)
+	// The flush runs to the end whether or not its caller still waits (see
+	// Apply): cut off half-way, what it failed to remove stays recorded.
+	err := Panic(context.WithoutCancel(ctx), p.prov, p.store)
 	result := "panicked"
 	if err != nil {
 		result = "panic-error"
