@@ -4,6 +4,36 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] — 2026-09-26
+
+Automatic, signed updates. From this version on, the daemon keeps itself up to
+date — and can't be handed anything the maintainer didn't sign.
+
+### Added
+- **Signed automatic updates of the daemon.** Every release is described by a
+  manifest signed with a key that lives only on the maintainer's machine; the
+  daemon trusts nothing but that signature and checks every download against
+  the signed SHA-256 and size. Before switching it tests the new version on a
+  copy of its database (with the service's own arguments), installs only when
+  nothing is being applied or awaiting confirmation, and rolls back on its own
+  — no network needed — if the new version doesn't come up healthy; a version
+  that was rolled back is never offered again. Updates come from
+  riftroute.tellnew.tech, with GitHub Releases as the fallback; the maintainer
+  can roll a release out gradually or halt it. Update checks send nothing that
+  identifies your install.
+- **Choose how:** Settings → Updates (or `riftroute update mode`): install
+  automatically (default), notify me, or off. `riftroute update`, `update
+  check`, `update install`, `update rollback`; the app shows what the updater
+  is doing, with Check now, Install and Go back to the previous version.
+- Only the daemon installed as a service updates itself; `.deb` installs are
+  updated through the package manager, and the desktop app tells you when a
+  new version is out.
+- For maintainers: `riftroute-release` (keygen, sign, publish) and
+  `scripts/publish-manifest.sh`. See docs/updates.md.
+
+**This version itself is installed the usual way** (it's the first with the
+updater); later versions arrive on their own.
+
 ## [0.2.5] — 2026-09-24
 
 Fixes the app getting stuck "offline" after you stop and start the daemon, and
