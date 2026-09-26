@@ -65,6 +65,14 @@ type Options struct {
 	// including the very change a restore is meant to undo. nil = read the
 	// store at snapshot time (correct for applies that don't touch profiles).
 	SnapshotProfiles []domain.Profile
+	// VetChangesOnly has the guardrails vet only the routes the plan adds
+	// (or re-points), not owned routes carried over as they are. For an
+	// apply that changes one part of the owned set — a tunnel transition —
+	// and must not be refused over a route it doesn't touch: after a network
+	// move with auto-apply off, the exclude routes still point at the old
+	// gateway, and vetting them would leave the tunnel unable to install or
+	// withdraw anything.
+	VetChangesOnly bool
 }
 
 func (o Options) window() time.Duration {
@@ -241,7 +249,16 @@ func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRou
 	}
 
 	// Guardrails (§2.4) — refuse before touching anything.
-	if vs := CheckGuardrails(ctx, p.prov, desired, opts.PhysGW); len(vs) > 0 {
+	var changed map[string]bool
+	if opts.VetChangesOnly {
+		changed = map[string]bool{}
+		for _, op := range plan.Ops {
+			if op.Kind == domain.OpAddRoute {
+				changed[routing.RouteKey(op.Route.Route)] = true
+			}
+		}
+	}
+	if vs := checkGuardrails(ctx, p.prov, desired, changed, opts.PhysGW); len(vs) > 0 {
 		p.audit(opts.Actor, "apply", "refused", violationSummary(vs), &plan, false)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}

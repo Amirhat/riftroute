@@ -43,9 +43,20 @@ func (r *Reconciler) SetTestHook(fn func(safety.Result, error)) { r.onReconcile 
 // Reconcile derives desired state and runs the auto-apply path once. Desired
 // state is derived under the apply lock, so a tunnel transition landing
 // meanwhile is never undone by a set computed before it.
+//
+// With auto-apply off, only the tunnels RiftRoute runs follow the network:
+// they are the user's explicit choice, and their server pins must move with
+// the physical gateway or their connections ride the wrong path.
 func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 	if r.enabled != nil && !r.enabled() {
-		return safety.Result{}, nil
+		if !r.svc.TunnelsActive(ctx) {
+			return safety.Result{}, nil
+		}
+		res, err := r.applyTunnels(ctx)
+		if r.onReconcile != nil {
+			r.onReconcile(res, err)
+		}
+		return res, err
 	}
 	var buildErr error
 	res, err := r.proto.ApplyBuilt(ctx, func([]domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
@@ -70,13 +81,23 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 // guarded, non-interactive path, deriving the set under the apply lock from
 // what RiftRoute owns at that moment.
 func (r *Reconciler) ApplyTunnels(ctx context.Context) error {
-	res, err := r.proto.ApplyBuilt(ctx, func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		return r.svc.DesiredTunnelsOnly(ctx, owned)
-	}, r.options(ctx))
+	res, err := r.applyTunnels(ctx)
 	if err == nil && res.Status == domain.TxFailed {
 		err = errors.New(res.Error)
 	}
 	return err
+}
+
+// applyTunnels is ApplyTunnels' apply. The guardrails vet what it changes:
+// the other owned routes it carries over untouched may be stale (auto-apply
+// off after a network move) and must not stop a tunnel installing or
+// withdrawing its own.
+func (r *Reconciler) applyTunnels(ctx context.Context) (safety.Result, error) {
+	opts := r.options(ctx)
+	opts.VetChangesOnly = true
+	return r.proto.ApplyBuilt(ctx, func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		return r.svc.DesiredTunnelsOnly(ctx, owned)
+	}, opts)
 }
 
 // options are a guarded, non-interactive apply's.

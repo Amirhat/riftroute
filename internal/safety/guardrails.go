@@ -9,6 +9,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // Violation is a refused or dangerous condition detected before applying (§2.4).
@@ -21,7 +22,21 @@ type Violation struct {
 // returns the safety violations that must block an apply (spec §2.4). An empty
 // result means it is safe to proceed.
 func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired []domain.ManagedRoute, physGW netip.Addr) []Violation {
+	return checkGuardrails(ctx, prov, desired, nil, physGW)
+}
+
+// checkGuardrails is CheckGuardrails vetting only the desired routes in
+// changed (by routing.RouteKey) — the ones an apply adds — when changed is
+// non-nil. A conflict still counts when either of its routes is vetted.
+func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []domain.ManagedRoute, changed map[string]bool, physGW netip.Addr) []Violation {
 	var vs []Violation
+	vetted := func(d domain.ManagedRoute) bool { return changed == nil || changed[routing.RouteKey(d.Route)] }
+	var desired []domain.ManagedRoute
+	for _, d := range all {
+		if vetted(d) {
+			desired = append(desired, d)
+		}
+	}
 
 	// 0. Fail-safe: if the physical gateway couldn't be resolved (e.g. a transient
 	//    read error during DHCP renewal / Wi-Fi↔Ethernet switch) we CANNOT verify
@@ -92,18 +107,27 @@ func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired [
 	//     with two different next-hops — the kernel would pick one by longest-prefix
 	//     arbitrarily, so the user's intent is ambiguous. Refuse rather than install
 	//     a nondeterministic route.
-	nextHop := map[string]string{} // family|table|cidr → "gw|iface"
-	for _, d := range desired {
+	type hop struct {
+		nh     string // "gw|iface"
+		vetted bool   // a vetted route goes to this destination
+	}
+	nextHop := map[string]*hop{} // family|table|cidr → its first next hop
+	for _, d := range all {
 		k := string(d.Family) + "|" + d.Table + "|" + d.DstCIDR
 		nh := d.Gateway + "|" + d.Iface
-		if prev, ok := nextHop[k]; ok && prev != nh {
+		prev, ok := nextHop[k]
+		if !ok {
+			nextHop[k] = &hop{nh: nh, vetted: vetted(d)}
+			continue
+		}
+		if prev.nh != nh && (prev.vetted || vetted(d)) {
 			vs = append(vs, Violation{
 				Rule:   "conflicting-route",
-				Detail: fmt.Sprintf("destination %s has conflicting next-hops (%s vs %s)", d.DstCIDR, prev, nh),
+				Detail: fmt.Sprintf("destination %s has conflicting next-hops (%s vs %s)", d.DstCIDR, prev.nh, nh),
 			})
 			continue
 		}
-		nextHop[k] = nh
+		prev.vetted = prev.vetted || vetted(d)
 	}
 
 	// 3. SSH-session self-lockout protection: refuse changes that would alter the

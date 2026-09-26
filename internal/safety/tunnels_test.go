@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/safety"
 )
 
 // ApplyBuilt hands the build what RiftRoute owns under the apply lock, and a
@@ -75,6 +76,37 @@ func TestApplyReAddsTunnelRoutesTheKernelDropped(t *testing.T) {
 	}
 	if plan, _ := h.p.Plan(ctx, infra[:1], nil); len(plan.Ops) != 0 {
 		t.Fatalf("in sync, but the preview plans %+v", plan.Ops)
+	}
+}
+
+// VetChangesOnly: a route carried over untouched isn't re-vetted (its next
+// hop went stale — now reached through the VPN), but what the apply adds is,
+// including a conflict between an added route and a carried one.
+func TestVetChangesOnlySkipsRoutesCarriedOver(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	stale := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "10.8.0.77", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
+	if err := h.prov.AddRoute(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.AddOwned(stale); err != nil {
+		t.Fatal(err)
+	}
+	tunnel := []domain.ManagedRoute{stale, onLink("192.168.70.0/24", "utun9", "infra")}
+
+	o := opts(false)
+	if res, err := h.p.Apply(ctx, tunnel, nil, o); !errors.Is(err, safety.ErrGuardrail) {
+		t.Fatalf("a full vet refuses the stale route: %s %v", res.Status, err)
+	}
+	o.VetChangesOnly = true
+	if res, err := h.p.Apply(ctx, tunnel, nil, o); err != nil || res.Status != domain.TxPending {
+		t.Fatalf("vetting the changes only: %s %v %v", res.Status, err, res.Violations)
+	}
+
+	conflict := append(tunnel, domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p2"})
+	res, err := h.p.Apply(ctx, conflict, nil, o)
+	if !errors.Is(err, safety.ErrGuardrail) || len(res.Violations) != 1 || res.Violations[0].Rule != "conflicting-route" {
+		t.Fatalf("an added route conflicting with a carried one: %v %+v", err, res.Violations)
 	}
 }
 

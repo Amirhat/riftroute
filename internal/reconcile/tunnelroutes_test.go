@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -197,6 +199,73 @@ func TestTunnelRoutesComeBackAfterTheTunIsRecreated(t *testing.T) {
 	if got := h.kernel(t)["192.168.70.0/24"]; len(got) != 1 || got[0] != "utun9" {
 		t.Fatalf("reconcile: route = %v, want it back on utun9", got)
 	}
+}
+
+// A network move with auto-apply off: the exclude routes applied earlier stay
+// as they were (staged changes are the user's to apply), now with a stale
+// next hop the VPN routes. The tunnel must still follow the move — its pin is
+// part of it — and still be able to go down: the guardrails vet what the
+// tunnel apply changes, not the stale routes it carries over untouched.
+func TestNetworkMoveRePinsTunnelsWithAutoApplyOff(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.own(t, excludeRoute("9.9.9.0/24"))
+	infra := routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"192.168.70.0/24"}, Bypass: []netip.Addr{netip.MustParseAddr("198.51.100.7")}}
+	h.setTunnels(infra)
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wi-Fi → Ethernet: the old LAN (and every route through it) is gone,
+	// so 192.168.1.1 is now reached through the VPN.
+	h.prov.PurgeIface("en0")
+	if err := h.prov.AddRoute(ctx, domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.0.0.0/24", Iface: "en7", Family: domain.FamilyV4}}); err != nil {
+		t.Fatal(err)
+	}
+	h.prov.SetPhysGateway(domain.FamilyV4, netip.MustParseAddr("10.0.0.1"), "en7")
+
+	if _, err := h.rec.Reconcile(ctx); err != nil { // the network event
+		t.Fatalf("network-change reconcile: %v", err)
+	}
+	rs, _ := h.prov.ListRoutes(ctx, domain.FamilyV4)
+	pinned := false
+	for _, r := range rs {
+		if r.DstCIDR == "198.51.100.7/32" {
+			pinned = r.Gateway == "10.0.0.1" && r.Iface == "en7"
+		}
+	}
+	if !pinned {
+		t.Fatalf("the server pin didn't follow the move: %v", h.kernel(t))
+	}
+	owned, _ := h.st.ListOwned()
+	for _, o := range owned {
+		if o.DstCIDR == "9.9.9.0/24" && o.Gateway != "192.168.1.1" {
+			t.Errorf("a staged exclude route was re-applied with auto-apply off: %+v", o)
+		}
+	}
+
+	h.setTunnels() // disconnect
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatalf("withdrawal refused: %v", err)
+	}
+	for _, o := range h.ownedTunnelRoutes(t) {
+		t.Errorf("left behind: %+v", o)
+	}
+}
+
+func (h *tunnelHarness) ownedTunnelRoutes(t *testing.T) []domain.ManagedRoute {
+	t.Helper()
+	owned, err := h.st.ListOwned()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []domain.ManagedRoute
+	for _, o := range owned {
+		if strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func directProfile(t *testing.T, st *store.Store, cidr string) {

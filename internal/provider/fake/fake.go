@@ -379,6 +379,14 @@ func (p *Provider) PurgeIface(iface string) {
 	p.routesV4, p.routesV6 = keep(p.routesV4), keep(p.routesV6)
 }
 
+// SetPhysGateway moves the physical gateway — a network change (tests). The
+// caller adds whatever on-link route makes it reachable.
+func (p *Provider) SetPhysGateway(fam domain.Family, gw netip.Addr, iface string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.physGW[fam], p.physIface = gw, iface
+}
+
 // SetDNS replaces the resolvers DNSConfig reports (tests).
 func (p *Provider) SetDNS(servers ...string) {
 	p.mu.Lock()

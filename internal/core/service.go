@@ -310,6 +310,12 @@ func (s *Service) PhysicalGateway(ctx context.Context) netip.Addr {
 	return gw
 }
 
+// TunnelsActive reports whether a tunnel is running, or has routes recorded
+// — whether a tunnel apply has anything to keep current or withdraw.
+func (s *Service) TunnelsActive(ctx context.Context) bool {
+	return len(s.tunnels()) > 0 || s.OwnsTunnelRoutes(ctx)
+}
+
 // OwnsTunnelRoutes reports whether RiftRoute has routes recorded for a
 // tunnel — at startup, what a daemon that died with tunnels up left behind.
 func (s *Service) OwnsTunnelRoutes(ctx context.Context) bool {
