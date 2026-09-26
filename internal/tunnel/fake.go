@@ -32,6 +32,8 @@ type FakeLauncher struct {
 	// ExitAtStart makes openvpn exit before its management socket comes up
 	// (a config it refused).
 	ExitAtStart bool
+	// HoldSeconds is the backoff openvpn reports when a restart holds.
+	HoldSeconds int
 
 	mu       sync.Mutex
 	commands []string
@@ -107,7 +109,7 @@ func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
 			}
 		}
 	}
-	go p.serve(spec.Profile.NeedsAuth, f.HangUp, iface, ip, remote, f.OnUp, f.OnDown)
+	go p.serve(spec.Profile.NeedsAuth, f.HangUp, f.HoldSeconds, iface, ip, remote, f.OnUp, f.OnDown)
 	return p, nil
 }
 
@@ -162,7 +164,7 @@ func (p *fakeProcess) logf(format string, a ...any) {
 	p.mu.Unlock()
 }
 
-func (p *fakeProcess) serve(needsAuth, hangUp bool, iface, ip string, remote Remote, onUp, onDown func(string, string)) {
+func (p *fakeProcess) serve(needsAuth, hangUp bool, holdSeconds int, iface, ip string, remote Remote, onUp, onDown func(string, string)) {
 	defer p.exit()
 	c, err := p.ln.Accept()
 	if err != nil {
@@ -220,7 +222,7 @@ func (p *fakeProcess) serve(needsAuth, hangUp bool, iface, ip string, remote Rem
 		p.logf("Connection reset, restarting [0]")
 		state("RECONNECTING", "connection-reset", "")
 		if holding {
-			say(">HOLD:Waiting for hold release:5")
+			say(fmt.Sprintf(">HOLD:Waiting for hold release:%d", holdSeconds))
 			return
 		}
 		attempt()

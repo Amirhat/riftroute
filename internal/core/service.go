@@ -121,6 +121,28 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 	return in
 }
 
+// TunnelProtected are the addresses a tunnel's own addressing may never
+// cover: the physical gateways, the resolvers in use and the watchdog's
+// anchors. A server that gave its tunnel a network (or a point-to-point
+// peer) holding one of them would pull that traffic into the tunnel.
+func (s *Service) TunnelProtected(ctx context.Context) []netip.Addr {
+	var out []netip.Addr
+	gw4, _, err := s.prov.DefaultGateway(ctx, domain.FamilyV4)
+	if err == nil && gw4.IsValid() {
+		out = append(out, gw4)
+	}
+	if gw6, _, err := s.prov.DefaultGateway(ctx, domain.FamilyV6); err == nil && gw6.IsValid() {
+		out = append(out, gw6.WithZone(""))
+	}
+	out = append(out, s.systemResolvers(ctx)...)
+	for _, a := range safety.DefaultAnchors(gw4) {
+		if addr, err := netip.ParseAddr(a); err == nil {
+			out = append(out, addr)
+		}
+	}
+	return out
+}
+
 // systemResolvers are the DNS resolvers in use, less the ones the user
 // pointed a domain at (split DNS): those often sit behind a tunnel on purpose
 // — the tunnel's internal zone resolving through its own server.

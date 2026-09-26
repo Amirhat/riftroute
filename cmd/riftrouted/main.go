@@ -223,6 +223,7 @@ func run() error {
 		Dir:      filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher: launcher,
 		Ifaces:   prov.Interfaces,
+		Protected: svc.TunnelProtected,
 		Routes: func(ctx context.Context) ([]domain.Route, error) {
 			v4, err := prov.ListRoutes(ctx, domain.FamilyV4)
 			if err != nil {

@@ -45,29 +45,38 @@ func TestConnectDuringDeleteIsRefused(t *testing.T) {
 	}
 }
 
-// The first management hold is released once and the hold turned off, so a
-// restart gets openvpn's own backoff — not an immediate retry.
-func TestHoldIsReleasedOnceAndTurnedOff(t *testing.T) {
-	h := newHarness(t)
+// The first management hold is released at once; the hold stays on (so a
+// daemon that dies leaves openvpn parked in it), and a restart's hold is
+// released only after the backoff — never back to back.
+func TestLaterHoldsWaitForTheBackoff(t *testing.T) {
+	defer func(d time.Duration) { holdBackoffMin = d }(holdBackoffMin)
+	holdBackoffMin = 150 * time.Millisecond
+	h := newHarness(t, func(f *FakeLauncher) { f.HangUp = true })
 	if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
 		t.Fatal(err)
 	}
+	start := time.Now()
 	if err := h.m.Connect("infra"); err != nil {
 		t.Fatal(err)
 	}
-	waitState(t, h.m, "infra", domain.TunnelConnected)
-	cmds := h.fl.Commands()
-	if n := count(cmds, "hold release"); n != 1 {
-		t.Fatalf("hold released %d times: %q", n, cmds)
+	waitState(t, h.m, "infra", domain.TunnelFailed)
+	if d := time.Since(start); d < time.Duration(maxFailedAttempts-1)*holdBackoffMin {
+		t.Fatalf("%d attempts in %s: retried without the backoff", maxFailedAttempts, d)
 	}
-	if i, j := slices.Index(cmds, "hold off"), slices.Index(cmds, "hold release"); i < 0 || i > j {
-		t.Fatalf("the hold must be turned off before the release: %q", cmds)
+	cmds := h.fl.Commands()
+	if slices.Contains(cmds, "hold off") {
+		t.Fatalf("the hold must stay on: %q", cmds)
+	}
+	if n := count(cmds, "hold release"); n != maxFailedAttempts {
+		t.Fatalf("hold released %d times for %d attempts", n, maxFailedAttempts)
 	}
 }
 
 // A server that hangs up after every login (an old server's answer to a wrong
 // password) is given up on after a few attempts, with the likely cause.
 func TestGivesUpOnAServerThatKeepsHangingUp(t *testing.T) {
+	defer func(d time.Duration) { holdBackoffMin = d }(holdBackoffMin)
+	holdBackoffMin = 10 * time.Millisecond
 	h := newHarness(t, func(f *FakeLauncher) { f.HangUp = true })
 	if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
 		t.Fatal(err)
@@ -154,6 +163,23 @@ func TestSavedPasswordNeedsReentryForNewServers(t *testing.T) {
 	routesOnly.Routes = []string{"192.168.70.0/24"}
 	if st, err := h.m.Save(ctx, routesOnly); err != nil || !st.HasPassword {
 		t.Fatalf("routes-only edit: %+v %v", st, err)
+	}
+}
+
+// A tunnel whose address can't be found on any interface can't be checked
+// (a pushed IPv6-only configuration, say): it's refused, not left connected.
+func TestUnfindableTunnelInterfaceIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.m.o.Ifaces = func(context.Context) ([]domain.Iface, error) { return nil, nil }
+	if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, h.m, "infra", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "no interface holds") {
+		t.Fatalf("last error = %q", st.LastError)
 	}
 }
 
@@ -284,6 +310,7 @@ func TestRefusesAStrayRouteIntoTheTunnel(t *testing.T) {
 		{"192.168.1.1/32", true}, // the LAN router
 		{"8.8.8.8/32", true},     // someone's DNS
 		{"10.0.0.0/8", true},     // wider than its network
+		{"169.254.169.254/32", true},
 	} {
 		h := newHarness(t)
 		h.m.o.Routes = func(context.Context) ([]domain.Route, error) {
@@ -297,12 +324,32 @@ func TestRefusesAStrayRouteIntoTheTunnel(t *testing.T) {
 		}
 		if tc.refuse {
 			st := waitState(t, h.m, "infra", domain.TunnelFailed)
-			if !strings.Contains(st.LastError, tc.dst) {
+			if !strings.Contains(st.LastError, strings.TrimSuffix(tc.dst, "/32")) {
 				t.Errorf("%s: last error = %q", tc.dst, st.LastError)
 			}
 		} else {
 			waitState(t, h.m, "infra", domain.TunnelConnected)
 		}
 		h.m.Shutdown()
+	}
+}
+
+func TestOurCommandLine(t *testing.T) {
+	const run = "/var/db/riftroute/tunnels"
+	for _, tc := range []struct {
+		args, bin string
+		want      bool
+	}{
+		{"/Library/PrivilegedHelperTools/riftroute-openvpn --config /var/db/riftroute/tunnels/infra.ovpn", "/Library/PrivilegedHelperTools/riftroute-openvpn", true},
+		{"/usr/sbin/openvpn --config /var/db/riftroute/tunnels/infra.ovpn", "/usr/sbin/openvpn", true},
+		{"/Library/PrivilegedHelperTools/riftroute-openvpn --config /var/db/riftroute/tunnels/infra.ovpn", "", true}, // an older pid file
+		{"/tmp/openvpn --config /var/db/riftroute/tunnels/infra.ovpn", "/usr/sbin/openvpn", false},                   // not the recorded binary
+		{"/usr/sbin/openvpn --config /home/me/work.ovpn", "/usr/sbin/openvpn", false},                                // someone else's config
+		{"/usr/bin/sleep 30 --config /var/db/riftroute/tunnels/x", "", false},                                        // not openvpn
+		{"", "/usr/sbin/openvpn", false}, // gone
+	} {
+		if got := ourCommandLine(tc.args, tc.bin, run); got != tc.want {
+			t.Errorf("ourCommandLine(%q, %q) = %v", tc.args, tc.bin, got)
+		}
 	}
 }

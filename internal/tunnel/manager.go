@@ -35,6 +35,9 @@ type Options struct {
 	// Routes lists the kernel's routes (both families), to check what a
 	// connection added on its own; nil skips that check.
 	Routes func(ctx context.Context) ([]domain.Route, error)
+	// Protected are addresses no tunnel's own addressing may cover (the
+	// physical gateways, the resolvers in use, the watchdog's anchors).
+	Protected func(ctx context.Context) []netip.Addr
 	// Resolve looks up a server host name (via: direct pins its addresses).
 	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
 	// Apply installs the tunnels' current routes (Inputs) through the Apply
@@ -122,11 +125,6 @@ var (
 	// the first: openvpn's own connect-retry backoff when it reports one.
 	holdBackoffMin, holdBackoffMax = 2 * time.Second, 5 * time.Minute
 )
-
-// A server may push the tunnel a network (topology subnet + ifconfig); the
-// kernel then routes all of it into the tunnel, whatever routes the user
-// listed. Anything wider than these is refused.
-const minTunPrefixV4, minTunPrefixV6 = 16, 48
 
 // New opens the definition store and cleans up after a previous daemon that
 // died without stopping its tunnels.
@@ -369,16 +367,15 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	} else if p, err := Parse(d.Config); err != nil {
 		bad("config", err.Error())
 	} else {
-		// A saved password goes only to the servers it was entered for: a
-		// profile swapped for one with other servers (or another CA to trust
-		// them by) needs it typed again, or anyone who may edit tunnels could
-		// have it sent to a server of their choosing.
+		// A saved password goes only to the profile it was entered for:
+		// replacing the profile needs it typed again. Otherwise anyone who may
+		// edit tunnels could have it sent to a server of their choosing — or
+		// to the same server name, trusted through a different CA or without
+		// its name check.
 		if keptPassword && prev.Config != d.Config {
-			if pp, perr := Parse(prev.Config); perr != nil || !sameServers(pp, p) {
-				d.Password = ""
-				if p.NeedsAuth && p.InlinePass == "" {
-					bad("password", "the profile's servers or certificate authority changed; enter the password again")
-				}
+			d.Password = ""
+			if p.NeedsAuth && p.InlinePass == "" {
+				bad("password", "the profile changed; enter the password again")
 			}
 		}
 		if d.Username == "" {
@@ -465,22 +462,6 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 	m.mu.Unlock()
 	m.changed()
 	return nil
-}
-
-// sameServers reports whether two profiles connect to the same servers and
-// trust them through the same certificate authority.
-func sameServers(a, b *Profile) bool {
-	sa, sb := slices.Sorted(slices.Values(a.Servers())), slices.Sorted(slices.Values(b.Servers()))
-	return slices.Equal(sa, sb) && blockBody(a, "ca") == blockBody(b, "ca")
-}
-
-func blockBody(p *Profile, name string) string {
-	for _, l := range p.lines {
-		if l.block && l.name == name {
-			return strings.TrimSpace(l.body)
-		}
-	}
-	return ""
 }
 
 func normalizeRoutes(in []string) ([]string, []string) {
@@ -752,7 +733,9 @@ func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *s
 	}
 	s.proc.Store(proc)
 	if proc.Pid() != os.Getpid() {
-		_ = os.WriteFile(m.pidPath(name), []byte(strconv.Itoa(proc.Pid())), 0o600)
+		// The binary goes with the pid, so a later start reaps exactly it.
+		pidFile := strconv.Itoa(proc.Pid()) + "\n" + m.o.Launcher.Engine().Path + "\n"
+		_ = os.WriteFile(m.pidPath(name), []byte(pidFile), 0o600)
 	}
 	exited := make(chan struct{})
 	go func() { _ = proc.Wait(); close(exited) }()
@@ -812,13 +795,14 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 		st := parseState(ev.body)
 		switch st.name {
 		case "CONNECTED":
-			iface, nets := m.findIface(ctx, st.localIP)
-			if wide, ok := tooWide(nets); ok {
-				stop(fmt.Sprintf("the server gave the tunnel the network %s, which would send traffic beyond the routes you listed into it; refusing", wide))
+			iface, nets := m.findIface(ctx, st.localIP, st.localIPv6)
+			if iface == "" {
+				// What it routes can't be checked (or routed) without it.
+				stop("connected, but no interface holds the tunnel's address " + strings.Trim(st.localIP+" "+st.localIPv6, " ") + "; refusing")
 				return
 			}
-			if stray, ok := m.strayRoute(ctx, iface, nets); ok {
-				stop(fmt.Sprintf("the server's settings put a route to %s into the tunnel, outside its own network; refusing", stray))
+			if why := m.vetAddressing(ctx, name, iface, nets); why != "" {
+				stop(why)
 				return
 			}
 			now := time.Now()
@@ -833,9 +817,6 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 					r.server += ":" + st.remotePort
 				}
 				r.since = &now
-				if iface == "" {
-					r.lastErr = fmt.Sprintf("connected, but no interface holds %s — routes not installed", st.localIP)
-				}
 			})
 			m.requestApply()
 		case "RECONNECTING":
@@ -903,13 +884,15 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 			stop("openvpn asked for a secret RiftRoute doesn't support: " + ev.body)
 		}
 	case "HOLD":
-		// management-hold pauses openvpn at start so nothing happens before
-		// the daemon is listening. Release that one and turn the hold off:
-		// on a restart openvpn then applies its own connect-retry backoff. A
-		// later hold (it shouldn't come) waits out the backoff openvpn
-		// reports instead of retrying at once.
+		// management-hold pauses openvpn at start, so nothing happens before
+		// the daemon is listening: that one is released at once. The hold
+		// stays on, so every restart (a dropped attempt, ping-restart) waits
+		// in it too; releasing only after the backoff openvpn reports (at
+		// least holdBackoffMin) keeps a failing login from being retried back
+		// to back. And if the daemon goes away, management-signal restarts
+		// openvpn into that hold, where it waits for good — it never runs
+		// unsupervised.
 		if s.released.CompareAndSwap(false, true) {
-			_ = mc.send("hold off")
 			_ = mc.send("hold release")
 			return
 		}
@@ -1044,62 +1027,27 @@ func sameAddrs(a, b []netip.Addr) bool {
 	return slices.Equal(slices.SortedFunc(slices.Values(a), netip.Addr.Compare), slices.SortedFunc(slices.Values(b), netip.Addr.Compare))
 }
 
-// tooWide returns the first network wider than a tunnel may be given.
-func tooWide(nets []netip.Prefix) (netip.Prefix, bool) {
-	for _, n := range nets {
-		if (n.Addr().Is4() && n.Bits() < minTunPrefixV4) || (n.Addr().Is6() && !n.Addr().IsLinkLocalUnicast() && n.Bits() < minTunPrefixV6) {
-			return n.Masked(), true
-		}
+// vetAddressing checks the addressing the server gave the tunnel (see
+// addressing.go) against this machine: its interfaces, the kernel's routes
+// into the tunnel, the protected addresses and the tunnel's own servers.
+func (m *Manager) vetAddressing(ctx context.Context, name, iface string, nets []netip.Prefix) string {
+	env := addressingEnv{iface: iface}
+	if m.o.Ifaces != nil {
+		env.ifaces, _ = m.o.Ifaces(ctx)
 	}
-	return netip.Prefix{}, false
-}
-
-// strayRoute finds a route into the tunnel's interface that neither RiftRoute
-// installed nor the interface's own addressing explains. route-nopull keeps
-// pushed routes out, but a pushed ifconfig still makes the kernel route its
-// peer: net30/p2p gives a host route to the peer address, which a hostile
-// server could set to the router or a DNS server. The peer of a local
-// address belongs in the same /30 (openvpn's net30); anything else is stray.
-func (m *Manager) strayRoute(ctx context.Context, iface string, nets []netip.Prefix) (netip.Prefix, bool) {
-	if m.o.Routes == nil || iface == "" {
-		return netip.Prefix{}, false
+	if m.o.Protected != nil {
+		env.protected = m.o.Protected(ctx)
 	}
-	routes, err := m.o.Routes(ctx)
-	if err != nil {
-		return netip.Prefix{}, false
+	m.mu.Lock()
+	if r := m.rt[name]; r != nil {
+		env.servers = append(append(env.servers, r.servers...), r.bypass...)
 	}
-	for _, r := range routes {
-		if r.Iface != iface || r.Owner == domain.OwnerRiftRoute {
-			continue
-		}
-		dst, err := netip.ParsePrefix(r.DstCIDR)
-		if err != nil || explained(dst, nets) {
-			continue
-		}
-		return dst, true
+	m.mu.Unlock()
+	var routes []domain.Route
+	if m.o.Routes != nil {
+		routes, _ = m.o.Routes(ctx)
 	}
-	return netip.Prefix{}, false
-}
-
-// explained reports whether a route on the tunnel's interface follows from
-// its addressing: inside one of its networks, the net30 peer beside a local
-// address, or link-local/multicast plumbing the OS adds to any interface.
-func explained(dst netip.Prefix, nets []netip.Prefix) bool {
-	a := dst.Addr()
-	if a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsLinkLocalMulticast() || a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
-		return true
-	}
-	for _, n := range nets {
-		if n.Masked().Contains(a) && dst.Bits() >= n.Bits() {
-			return true
-		}
-		if a.Is4() && n.Addr().Is4() && dst.Bits() == 32 {
-			if slash30, _ := n.Addr().Prefix(30); slash30.Contains(a) {
-				return true
-			}
-		}
-	}
-	return false
+	return vetAddressing(nets, routes, env)
 }
 
 // finish records the end of a session and withdraws its routes.
@@ -1226,21 +1174,27 @@ const maxPins = 16
 // gateway.
 func pinnable(a netip.Addr) bool {
 	return a.IsValid() && !a.IsUnspecified() && !a.IsLoopback() && !a.IsMulticast() &&
-		!a.IsLinkLocalUnicast() && !a.IsLinkLocalMulticast() && !a.IsInterfaceLocalMulticast()
+		!a.IsLinkLocalUnicast() && !a.IsLinkLocalMulticast() && !a.IsInterfaceLocalMulticast() &&
+		a != netip.AddrFrom4([4]byte{255, 255, 255, 255})
 }
 
-// findIface finds the interface holding ip (openvpn doesn't report its
-// device name), waiting briefly for the address to appear, and returns the
-// networks assigned to it.
-func (m *Manager) findIface(ctx context.Context, ip string) (string, []netip.Prefix) {
-	want, err := netip.ParseAddr(ip)
-	if err != nil || m.o.Ifaces == nil {
+// findIface finds the interface holding the tunnel's IPv4 or IPv6 address
+// (openvpn doesn't report its device name), waiting briefly for it to
+// appear, and returns the networks assigned to it.
+func (m *Manager) findIface(ctx context.Context, ips ...string) (string, []netip.Prefix) {
+	var want []netip.Addr
+	for _, ip := range ips {
+		if a, err := netip.ParseAddr(ip); err == nil {
+			want = append(want, a)
+		}
+	}
+	if len(want) == 0 || m.o.Ifaces == nil {
 		return "", nil
 	}
 	for range 30 {
 		ifs, _ := m.o.Ifaces(ctx)
 		for _, ifc := range ifs {
-			if !holds(ifc.Addrs, want) {
+			if !slices.ContainsFunc(want, func(a netip.Addr) bool { return holds(ifc.Addrs, a) }) {
 				continue
 			}
 			var nets []netip.Prefix
@@ -1305,9 +1259,11 @@ func (m *Manager) reapStale() {
 		switch {
 		case strings.HasSuffix(n, ".pid"):
 			data, _ := os.ReadFile(filepath.Join(m.runDir, n))
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 1 && m.isOurOpenVPN(pid) {
+			first, bin, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+			ours := func(pid int) bool { return ourCommandLine(processArgs(pid), strings.TrimSpace(bin), m.runDir) }
+			if pid, err := strconv.Atoi(strings.TrimSpace(first)); err == nil && pid > 1 && ours(pid) {
 				m.o.Log.Info("stopping openvpn left by a previous daemon", "pid", pid)
-				if !stopProcess(pid, m.isOurOpenVPN) {
+				if !stopProcess(pid, ours) {
 					// Keep its pid file: the next start tries again rather
 					// than running a second session beside it.
 					m.o.Log.Error("openvpn left by a previous daemon won't stop", "pid", pid)
@@ -1341,12 +1297,20 @@ func stopProcess(pid int, ours func(int) bool) bool {
 // to install what's missing.
 func (m *Manager) Engine() domain.TunnelEngine { return m.o.Launcher.Engine() }
 
-// isOurOpenVPN reports whether pid is an openvpn running a config from our
-// run directory — so a recycled pid, or an openvpn the user started
-// themselves, is never killed.
-func (m *Manager) isOurOpenVPN(pid int) bool {
-	bin, rest, _ := strings.Cut(processArgs(pid), " ")
-	return filepath.Base(bin) == "openvpn" && strings.Contains(rest, "--config "+m.runDir+string(filepath.Separator))
+// ourCommandLine reports whether a process's command line is an openvpn we
+// started: the binary recorded with its pid (any openvpn by name for a pid
+// file without one), running a config from our run directory — so a
+// recycled pid, or an openvpn the user started themselves, is never killed.
+func ourCommandLine(args, bin, runDir string) bool {
+	argv0, rest, _ := strings.Cut(args, " ")
+	if bin != "" {
+		if argv0 != bin {
+			return false
+		}
+	} else if b := filepath.Base(argv0); b != "openvpn" && b != "riftroute-openvpn" {
+		return false
+	}
+	return strings.Contains(" "+rest, " --config "+runDir+string(filepath.Separator))
 }
 
 // processArgs returns a process's command line, or "" if it's gone. Linux
