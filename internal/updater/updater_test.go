@@ -422,3 +422,16 @@ func TestUserRollback(t *testing.T) {
 		t.Fatal("restored daemon asked to restart again")
 	}
 }
+
+// Before the first signed release exists anywhere, a check is calm, not an
+// error.
+func TestNoReleaseYetIsNotAnError(t *testing.T) {
+	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
+	h := newHarness(t, f, "0.2.6")
+	u, _ := url.Parse(httptest.NewServer(http.NotFoundHandler()).URL)
+	h.u.env.HTTP = &http.Client{Transport: rewrite{u}}
+	st := h.u.Check(context.Background(), true)
+	if st.Error != "" || st.State != "idle" || st.Action != "none" || !strings.Contains(st.Reason, "No signed release") {
+		t.Fatalf("no release yet: %+v", st)
+	}
+}

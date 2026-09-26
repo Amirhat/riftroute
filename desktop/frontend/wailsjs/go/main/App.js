@@ -110,12 +110,20 @@ export function InstallDaemon() {
   return window['go']['main']['App']['InstallDaemon']();
 }
 
+export function InstallUpdate() {
+  return window['go']['main']['App']['InstallUpdate']();
+}
+
 export function OpenConfigDialog() {
   return window['go']['main']['App']['OpenConfigDialog']();
 }
 
 export function OpenIssuePage() {
   return window['go']['main']['App']['OpenIssuePage']();
+}
+
+export function OpenReleaseNotes(arg1) {
+  return window['go']['main']['App']['OpenReleaseNotes'](arg1);
 }
 
 export function PanicFlush() {
@@ -144,6 +152,10 @@ export function RestoreSnapshot(arg1) {
 
 export function Rollback(arg1) {
   return window['go']['main']['App']['Rollback'](arg1);
+}
+
+export function RollbackUpdate() {
+  return window['go']['main']['App']['RollbackUpdate']();
 }
 
 export function RouteOp(arg1, arg2, arg3) {

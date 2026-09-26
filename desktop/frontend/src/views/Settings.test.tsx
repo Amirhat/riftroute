@@ -10,10 +10,16 @@ vi.mock('../lib/queries', () => ({
   useStateQuery: () => ({ data: current }),
   useBuildNotesQuery: () => ({ data: [] }),
 }))
-vi.mock('../lib/api', () => ({ api: { setPreferences: vi.fn(), checkUpdate: vi.fn() } }))
+vi.mock('../lib/api', () => ({
+  api: { setPreferences: vi.fn(), checkUpdate: vi.fn(), installUpdate: vi.fn(), rollbackUpdate: vi.fn(), openReleaseNotes: vi.fn() },
+}))
 vi.mock('../lib/useDaemon', () => ({ useDaemon: () => ({ info: null }) }))
 vi.mock('../components/SplitDNSEditor', () => ({ SplitDNSEditor: () => null }))
-const mockApi = api as unknown as { setPreferences: ReturnType<typeof vi.fn> }
+const mockApi = api as unknown as {
+  setPreferences: ReturnType<typeof vi.fn>
+  installUpdate: ReturnType<typeof vi.fn>
+  rollbackUpdate: ReturnType<typeof vi.fn>
+}
 
 const base = {
   health: { daemon: 'ok', version: '0.2.4', provider: 'fake', uptime_seconds: 1, pid: 1 },
@@ -69,7 +75,6 @@ describe('Settings — updates & telemetry preferences', () => {
     expect(screen.getByText(/Never sent, at any level:/)).toBeInTheDocument()
     expect(screen.getByText(/IP addresses, domains/)).toBeInTheDocument()
     expect(screen.getByText(/doesn’t send telemetry yet/)).toBeInTheDocument()
-    expect(screen.getByText(/doesn’t check or install updates on its own yet/)).toBeInTheDocument()
   })
 
   it('disables the choices against a daemon that predates preferences', async () => {
@@ -100,5 +105,57 @@ describe('Settings — updates & telemetry preferences', () => {
     }
     await renderSettings()
     expect(screen.getByText(/Turned the kill switch off/)).toBeInTheDocument()
+  })
+
+  // The updater's own status shows, with the right buttons for it.
+  it('offers an available update and a way back', async () => {
+    current = {
+      ...base,
+      preferences: { updates: 'notify', telemetry: 'full' },
+      update: {
+        mode: 'notify', current: '0.2.6', state: 'idle', latest: '0.2.7', action: 'notify', reason: '0.2.7 is available',
+        notes_url: 'https://github.com/Amirhat/riftroute/releases/tag/v0.2.7', can_roll_back: true, self_updatable: true,
+        last_check: new Date(1000).toISOString(),
+      },
+    }
+    mockApi.installUpdate.mockResolvedValue({ ...current.update, state: 'installing', staged: '0.2.7' })
+    mockApi.rollbackUpdate.mockResolvedValue(undefined)
+    await renderSettings()
+    expect(screen.getByText(/0.2.7 is available\./)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Install 0.2.7' }))
+    await waitFor(() => expect(mockApi.installUpdate).toHaveBeenCalled())
+    // Going back asks first (no window.confirm in the app's webview).
+    fireEvent.click(screen.getByRole('button', { name: 'Go back to the previous version' }))
+    expect(mockApi.rollbackUpdate).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Go back' }))
+    await waitFor(() => expect(mockApi.rollbackUpdate).toHaveBeenCalled())
+  })
+
+  it('says when an update was rolled back, and never offers to install on a managed install', async () => {
+    current = {
+      ...base,
+      preferences: { updates: 'auto', telemetry: 'full' },
+      update: {
+        mode: 'auto', current: '0.2.6', state: 'idle', latest: '0.2.8', action: 'notify', rolled_back_from: '0.2.7',
+        can_roll_back: false, self_updatable: false,
+      },
+    }
+    await renderSettings()
+    expect(screen.getByText(/0.2.7 didn’t start properly on this computer/)).toBeInTheDocument()
+    expect(screen.getByText(/update it the way you installed it/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^Install/ })).toBeNull()
+  })
+
+  it('shows an update that is ready and waiting for a quiet moment', async () => {
+    current = {
+      ...base,
+      preferences: { updates: 'auto', telemetry: 'full' },
+      update: {
+        mode: 'auto', current: '0.2.6', state: 'waiting', staged: '0.2.7', action: 'install',
+        reason: '0.2.7 is ready; installing at a quiet moment (a change awaits confirmation)', can_roll_back: false, self_updatable: true,
+      },
+    }
+    await renderSettings()
+    expect(screen.getByText(/0.2.7 is verified and ready/)).toBeInTheDocument()
   })
 })

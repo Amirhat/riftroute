@@ -53,8 +53,7 @@ var (
 	firstCheck  = 10 * time.Minute
 	checkEvery  = 6 * time.Hour
 	checkJitter = 30 * time.Minute
-	idleQuiet   = 10 * time.Minute // no transaction for this long
-	idlePoll    = time.Minute
+	idlePoll    = time.Minute // how often a staged update looks for a quiet moment
 )
 
 // Env is everything the updater needs from the daemon; the zero values of
@@ -97,14 +96,13 @@ type Env struct {
 type Updater struct {
 	env Env
 
-	mu       sync.Mutex
-	st       domain.UpdateStatus
-	ps       persisted
-	manifest *update.Manifest // last verified manifest
-	staged   *staged
-	wantNow  bool // the user asked to install; ignore the mode for the staged one
-	kick     chan struct{}
-	busy     sync.Mutex // one check/stage/install at a time
+	mu      sync.Mutex
+	st      domain.UpdateStatus
+	ps      persisted
+	staged  *staged
+	wantNow bool // the user asked to install; ignore the mode for the staged one
+	kick    chan struct{}
+	busy    sync.Mutex // one check/stage/install at a time
 }
 
 type staged struct {
@@ -250,6 +248,12 @@ func (u *Updater) Check(ctx context.Context, manual bool) domain.UpdateStatus {
 	u.ps.LastCheck = now
 	_ = savePersisted(u.env.StateDir, u.ps)
 	u.mu.Unlock()
+	if errors.Is(err, errNoRelease) {
+		u.set(func(s *domain.UpdateStatus) {
+			s.State, s.LastCheck, s.Action, s.Reason = "idle", now, string(update.ActionNone), "No signed release has been published yet."
+		})
+		return u.Status()
+	}
 	if err != nil {
 		u.env.Log.Warn("update check failed", "err", err)
 		u.set(func(s *domain.UpdateStatus) { s.State, s.Error, s.LastCheck = "error", err.Error(), now })
@@ -257,7 +261,6 @@ func (u *Updater) Check(ctx context.Context, manual bool) domain.UpdateStatus {
 	}
 	u.mu.Lock()
 	skip := u.ps.Skip
-	u.manifest = &m
 	u.mu.Unlock()
 	d := update.Decide(update.DecideInput{
 		Current: u.env.Current, Mode: decideMode, Manifest: m, Advice: adv, Bucket: u.bucket(),
@@ -336,6 +339,12 @@ func (u *Updater) InstallNow(ctx context.Context) (domain.UpdateStatus, error) {
 
 // ---------------------------------------------------------------- fetching
 
+// errNotFound: a source answered, but has no release (404).
+var errNotFound = errors.New("not found")
+
+// errNoRelease: neither source has a signed release yet — not a failure.
+var errNoRelease = errors.New("no signed release has been published yet")
+
 type serverResponse struct {
 	Manifest  string        `json:"manifest"`
 	Signature string        `json:"signature"`
@@ -353,6 +362,9 @@ func (u *Updater) fetch(ctx context.Context) (update.Manifest, *update.Advice, s
 	u.env.Log.Info("update server unavailable; trying GitHub", "err", err)
 	m2, err2 := u.fromGitHub(ctx)
 	if err2 != nil {
+		if errors.Is(err, errNotFound) && errors.Is(err2, errNotFound) {
+			return update.Manifest{}, nil, "", errNoRelease
+		}
 		return update.Manifest{}, nil, "", fmt.Errorf("update server: %v; GitHub: %v", err, err2)
 	}
 	return m2, nil, "github", nil
@@ -448,6 +460,10 @@ func (u *Updater) open(ctx context.Context, url string) (*http.Response, error) 
 	resp, err := u.env.HTTP.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return nil, fmt.Errorf("%s: %w", url, errNotFound)
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()

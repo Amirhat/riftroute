@@ -1,6 +1,7 @@
 # Signed automatic updates (phase 2)
 
-Status: design, for review. Decisions already made by the owner (2026-09-23):
+Status: built (steps 1–4); the server side and the first signed release are
+not yet live. Decisions already made by the owner (2026-09-23):
 auto-install is the default (notify-only and off stay available); our server
 is the primary source and GitHub Releases the fallback, both carrying the same
 ed25519-signed manifest; the signing key lives only on the owner's Mac — never
