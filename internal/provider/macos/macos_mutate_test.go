@@ -5,10 +5,12 @@ package macos
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/provider"
 )
 
 // fakeRoutes is a provider over a fixed kernel table that records the
@@ -84,5 +86,57 @@ func TestDeleteWithoutOwnershipCheck(t *testing.T) {
 	mr.ProfileID = ""
 	if err := p.DelRoute(context.Background(), mr); err != nil || len(*ran) != 1 {
 		t.Fatalf("external delete: err = %v, ran %v", err, *ran)
+	}
+}
+
+// Managed deletes in one batch of changes (provider.WithTableCache) read the
+// table once, not once each — a panic or disabling a big list profile was
+// O(N²) — and see the batch's own changes: a route it added is deleted (a
+// rollback), and one it deleted is gone.
+func TestManagedDeletesShareOneTableRead(t *testing.T) {
+	var kernel []domain.Route
+	var owned []domain.ManagedRoute
+	for i := range 50 {
+		r := domain.Route{DstCIDR: fmt.Sprintf("10.%d.0.0/16", i), Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}
+		kernel = append(kernel, r)
+		owned = append(owned, domain.ManagedRoute{Route: r, ProfileID: "p1"})
+	}
+	p, ran := fakeRoutes(kernel, nil)
+	reads := 0
+	list := p.listRoutes
+	p.listRoutes = func(ctx context.Context, fam domain.Family) ([]domain.Route, error) {
+		reads++
+		return list(ctx, fam)
+	}
+	ctx := provider.WithTableCache(context.Background())
+	for _, mr := range owned {
+		if err := p.DelRoute(ctx, mr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reads != 1 || len(*ran) != 50 {
+		t.Fatalf("50 deletes: %d table read(s), %d route(8) run(s)", reads, len(*ran))
+	}
+
+	if err := p.DelRoute(ctx, owned[0]); err != nil || len(*ran) != 50 {
+		t.Fatalf("deleting a route the batch already deleted: err %v, ran %q", err, (*ran)[50:])
+	}
+	pin := domain.ManagedRoute{Route: domain.Route{DstCIDR: "198.51.100.7/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "tunnel:infra"}
+	if err := p.AddRoute(ctx, pin); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.DelRoute(ctx, pin); err != nil {
+		t.Fatal(err)
+	}
+	if got := (*ran)[len(*ran)-1]; got != "-n delete -host 198.51.100.7 192.168.1.1" || reads != 1 {
+		t.Fatalf("deleting a route the batch added: last ran %q, %d read(s)", got, reads)
+	}
+
+	reads = 0
+	for _, mr := range owned[:3] { // no batch: a read each
+		_ = p.DelRoute(context.Background(), mr)
+	}
+	if reads != 3 {
+		t.Fatalf("outside a batch: %d read(s), want 3", reads)
 	}
 }

@@ -594,8 +594,9 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 // forward effect is still in place, and left.Inverse still undoes it.
 func (p *Protocol) rollBack(pt *pendingTx) (left domain.Plan, err error) {
 	exec := NewExecutor(p.prov)
+	ctx := provider.WithTableCache(context.Background())
 	for _, op := range withoutTunnelLinks(pt.plan.Inverse) {
-		if e := exec.do(context.Background(), op); e != nil {
+		if e := exec.do(ctx, op); e != nil {
 			if err == nil {
 				err = e
 			}
@@ -863,6 +864,7 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	ctx = provider.WithTableCache(ctx)
 	n := 0
 	for _, o := range owned {
 		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {

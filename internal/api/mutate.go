@@ -153,17 +153,19 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
 	// The daemon's tunnels go down before the flush (beforePanic): each one
 	// going down re-applies the survivors' routes, refused while this runs.
-	if err := s.proto.PanicWith(r.Context(), domain.ActorUI, s.beforePanic); err != nil {
-		writeErr(w, http.StatusInternalServerError, errors.Join(err, ksErr))
-		return
-	}
+	perr := s.proto.PanicWith(r.Context(), domain.ActorUI, s.beforePanic)
 	// Restore the DNS baseline too: stop the wildcard learner and drop its
 	// resolver files (the protocol only owns routes/PF). A dangling resolver
 	// file pointing at a stopped proxy would otherwise break DNS for the domain.
+	// It goes even when some routes wouldn't: panic does all it can.
 	if s.onPanic != nil {
 		s.onPanic(r.Context())
 	}
 	s.BroadcastState(r.Context())
+	if perr != nil {
+		writeErr(w, http.StatusInternalServerError, errors.Join(perr, ksErr))
+		return
+	}
 	if ksErr != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("routes flushed, but the kill switch could not be removed: %w", ksErr))
 		return

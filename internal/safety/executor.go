@@ -24,9 +24,10 @@ func NewExecutor(p provider.RouteProvider) *Executor { return &Executor{prov: p}
 // The ops and the rollback run on ctx's values without its deadline or
 // cancelation: an atomic unit can't be abandoned half-way, and a rollback
 // on the context that just expired would fail too, leaving it half-applied.
-// Each provider command is bounded by a timeout of its own.
+// Each provider command is bounded by a timeout of its own. The plan and its
+// rollback share one read of the route table (provider.WithTableCache).
 func (e *Executor) Apply(ctx context.Context, plan domain.Plan) error {
-	ctx = context.WithoutCancel(ctx)
+	ctx = provider.WithTableCache(context.WithoutCancel(ctx))
 	applied := make([]domain.PlanOp, 0, len(plan.Ops))
 	for _, op := range plan.Ops {
 		if err := e.do(ctx, op); err != nil {
@@ -41,9 +42,10 @@ func (e *Executor) Apply(ctx context.Context, plan domain.Plan) error {
 // RunOps applies a list of ops best-effort (used to replay a precomputed
 // inverse during watchdog/commit-confirm rollback). Errors are returned but do
 // not stop the remaining ops — recovery must be maximally complete, so they
-// run without ctx's deadline or cancelation too (see Apply).
+// run without ctx's deadline or cancelation too, on one read of the route
+// table (see Apply).
 func (e *Executor) RunOps(ctx context.Context, ops []domain.PlanOp) error {
-	ctx = context.WithoutCancel(ctx)
+	ctx = provider.WithTableCache(context.WithoutCancel(ctx))
 	var firstErr error
 	for _, op := range ops {
 		if err := e.do(ctx, op); err != nil && firstErr == nil {
