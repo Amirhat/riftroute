@@ -369,6 +369,15 @@ func (in Installed) Has(r domain.Route) bool {
 // gatewayKey).
 func SameGateway(a, b string) bool { return gatewayKey(a) == gatewayKey(b) }
 
+// KernelKey identifies a route as a table read lists it — the destination
+// masked, the gateway in one spelling (gatewayKey) — so a route RiftRoute
+// recorded matches its own entry in the kernel's table. Its RouteKey may not:
+// on macOS a gateway is recorded as `route get` prints it (fe80::1%en0), and
+// the table lists it without the zone or in KAME form (fe80:4::1).
+func KernelKey(r domain.Route) string {
+	return maskedDstKey(r) + "|" + gatewayKey(r.Gateway) + "|" + r.Iface
+}
+
 // gatewayKey spells a gateway one way whichever source it came from: a
 // link-local one may carry a zone ("fe80::1%en0") or, read from the macOS
 // RIB, its scope embedded in the address (KAME's "fe80:4::1").

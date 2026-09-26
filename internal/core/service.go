@@ -172,17 +172,20 @@ func (s *Service) systemResolvers(ctx context.Context) []netip.Addr {
 
 // occupied maps the main-table destinations someone other than RiftRoute
 // routes (masked CIDR → interface), for routing.TunnelRouteBlock. Kernel
-// clone entries don't count: a real route replaces them.
+// clone entries don't count: a real route replaces them. RiftRoute's own
+// routes are told by routing.KernelKey: a v6 pin recorded via fe80::1%en0 is
+// listed without the zone, and counted as someone else's it would be
+// withdrawn by one apply and re-added by the next.
 func (s *Service) occupied(ctx context.Context, owned []domain.ManagedRoute) map[string]string {
 	ours := map[string]bool{}
 	for _, o := range owned {
-		ours[routing.RouteKey(o.Route)] = true
+		ours[routing.KernelKey(o.Route)] = true
 	}
 	out := map[string]string{}
 	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
 		rs, _ := s.prov.ListRoutes(ctx, fam)
 		for _, r := range rs {
-			if r.Table != "" || r.Cloned || r.Owner == domain.OwnerRiftRoute || ours[routing.RouteKey(r)] {
+			if r.Table != "" || r.Cloned || r.Owner == domain.OwnerRiftRoute || ours[routing.KernelKey(r)] {
 				continue
 			}
 			if pfx, err := netip.ParsePrefix(r.DstCIDR); err == nil && pfx.Bits() > 0 {
@@ -769,7 +772,8 @@ func (s *Service) Routes(ctx context.Context, family domain.Family, owner domain
 }
 
 // tagOwnedRoutes stamps Owner/Profile onto listed routes that appear in the
-// ownership map (matched by full route identity).
+// ownership map (matched by full route identity, as the table lists it —
+// routing.KernelKey).
 func (s *Service) tagOwnedRoutes(rs []domain.Route) {
 	if s.store == nil {
 		return
@@ -780,10 +784,10 @@ func (s *Service) tagOwnedRoutes(rs []domain.Route) {
 	}
 	byKey := make(map[string]domain.ManagedRoute, len(owned))
 	for _, mr := range owned {
-		byKey[routing.RouteKey(mr.Route)] = mr
+		byKey[routing.KernelKey(mr.Route)] = mr
 	}
 	for i := range rs {
-		if mr, ok := byKey[routing.RouteKey(rs[i])]; ok {
+		if mr, ok := byKey[routing.KernelKey(rs[i])]; ok {
 			rs[i].Owner = domain.OwnerRiftRoute
 			if rs[i].Profile == "" {
 				rs[i].Profile = mr.ProfileID
