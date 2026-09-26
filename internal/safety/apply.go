@@ -140,7 +140,7 @@ type Protocol struct {
 	platform  string
 	log       *slog.Logger
 
-	applyMu  sync.Mutex
+	applyMu  applyLock // serializes applies; see lockApply
 	txmu     sync.Mutex
 	pending  map[string]*pendingTx
 	resolved map[string]domain.TxResult
@@ -202,7 +202,7 @@ func NewProtocol(prov provider.RouteProvider, st Store, clock Clock, newProber f
 	}
 	return &Protocol{
 		prov: prov, store: st, clock: clock, newProber: newProber, platform: platform, log: log,
-		pending: map[string]*pendingTx{}, resolved: map[string]domain.TxResult{},
+		applyMu: newApplyLock(), pending: map[string]*pendingTx{}, resolved: map[string]domain.TxResult{},
 	}
 }
 
@@ -217,28 +217,38 @@ func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute
 // Apply runs the full Apply Protocol. For DryRun it returns the preview. On
 // success it executes atomically, arms the watchdog + commit-confirm, and
 // returns a pending transaction (resolved later via Confirm/timeout/watchdog).
+//
+// ctx bounds the wait for the apply lock (see lockApply). Once an apply holds
+// the lock it runs to the end on ctx's values, not its deadline: every
+// provider command has a timeout of its own, and a change cut off half-way —
+// its rollback failing on the same expired context — would leave the table
+// half-changed.
 func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
-	if !p.lockApply() {
-		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	if err := p.lockApply(ctx); err != nil {
+		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
 	defer p.applyMu.Unlock()
+	ctx = context.WithoutCancel(ctx)
 	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts)
 }
 
 // lockApply takes the apply lock unless a panic is in progress — checked
 // before waiting (a panic's first step may itself be waiting on an apply)
 // and again after (an apply queued behind the panic's flush must not undo
-// it).
-func (p *Protocol) lockApply() bool {
+// it) — or ctx ends while it waits: the caller stopped waiting, so the change
+// is dropped rather than made later behind its back.
+func (p *Protocol) lockApply(ctx context.Context) error {
 	if p.panicking.Load() > 0 {
-		return false
+		return ErrPanicking
 	}
-	p.applyMu.Lock()
+	if err := p.applyMu.LockCtx(ctx); err != nil {
+		return fmt.Errorf("gave up waiting for the change in progress: %w", err)
+	}
 	if p.panicking.Load() > 0 {
 		p.applyMu.Unlock()
-		return false
+		return ErrPanicking
 	}
-	return true
+	return nil
 }
 
 // Build derives the desired routes and rules from owned — the routes
@@ -251,10 +261,11 @@ type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.Ma
 // (a tunnel transition and an auto-apply racing would otherwise each revert
 // the other). A build error aborts before anything is touched.
 func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
-	if !p.lockApply() {
-		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	if err := p.lockApply(ctx); err != nil {
+		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
 	defer p.applyMu.Unlock()
+	ctx = context.WithoutCancel(ctx) // see Apply
 	owned := p.actualManaged(ctx)
 	desired, desiredRules, err := build(owned)
 	if err != nil {
@@ -351,10 +362,11 @@ func (p *Protocol) takeSnapshot(ctx context.Context, opts Options) {
 // and crash-repair must leave the results alone; the journaled inverse is
 // what protects the change until it's confirmed.
 func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Plan, opts Options) (Result, error) {
-	if !p.lockApply() {
-		return Result{Plan: plan, Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	if err := p.lockApply(ctx); err != nil {
+		return Result{Plan: plan, Status: domain.TxFailed, Error: err.Error()}, err
 	}
 	defer p.applyMu.Unlock()
+	ctx = context.WithoutCancel(ctx) // see Apply
 
 	diff := diffFromPlan(plan)
 	if opts.DryRun {
