@@ -1,5 +1,7 @@
 package domain
 
+import "time"
+
 // UpdateMode is what RiftRoute may do about new releases on its own.
 type UpdateMode string
 
@@ -54,4 +56,31 @@ func DefaultPreferences() Preferences {
 type PreferencesPatch struct {
 	Updates   *UpdateMode     `json:"updates,omitempty"`
 	Telemetry *TelemetryLevel `json:"telemetry,omitempty"`
+}
+
+// UpdateStatus is what the daemon's updater knows (GET /update, and State).
+type UpdateStatus struct {
+	Mode    UpdateMode `json:"mode"`
+	Current string     `json:"current"`
+	// State: "idle", "checking", "downloading", "waiting" (staged, waiting for
+	// a quiet moment), "installing", "error".
+	State     string    `json:"state"`
+	LastCheck time.Time `json:"last_check,omitzero"`
+	Latest    string    `json:"latest,omitempty"`
+	Source    string    `json:"source,omitempty"` // "server" | "github"
+	// Action: "none", "hold", "notify", "install" — with Reason in words.
+	Action   string `json:"action,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	NotesURL string `json:"notes_url,omitempty"`
+	Error    string `json:"error,omitempty"`
+	// Staged is a verified, self-tested version waiting to be installed.
+	Staged string `json:"staged,omitempty"`
+	// RolledBackFrom is a version that failed its health check here and was
+	// rolled back automatically; it won't be offered again.
+	RolledBackFrom string    `json:"rolled_back_from,omitempty"`
+	InstalledAt    time.Time `json:"installed_at,omitzero"`
+	// CanRollBack: a previous binary is kept and can be restored.
+	CanRollBack bool `json:"can_roll_back"`
+	// SelfUpdatable is false for package-managed or non-service installs.
+	SelfUpdatable bool `json:"self_updatable"`
 }

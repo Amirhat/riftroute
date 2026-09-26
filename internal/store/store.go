@@ -223,6 +223,26 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+// BackupTo writes a consistent copy of the database to path (which must not
+// exist) — the updater's pre-update backup and self-test copy.
+func (s *Store) BackupTo(path string) error {
+	_, err := s.db.Exec(`VACUUM INTO ?`, path)
+	return err
+}
+
+// FileUserVersion reads the schema version of a database file without
+// migrating it (read-only).
+func FileUserVersion(path string) (int, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var v int
+	err = db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	return v, err
+}
+
 // UserVersion is the schema version recorded in the database file (it can
 // exceed SchemaVersion when a newer release migrated it).
 func (s *Store) UserVersion() (int, error) {
