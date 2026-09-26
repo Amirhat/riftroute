@@ -154,6 +154,34 @@ func TestExcludeProfileYieldsOnlyToLiveTunnelNetworks(t *testing.T) {
 	}
 }
 
+// The kernel check must recognize our routes however the table spells them —
+// else a route reads as always missing and every apply re-adds it: masked
+// destinations, a link-local gateway with a zone (our record) or with its
+// scope embedded in the address (the macOS RIB). Clone entries aren't routes.
+func TestInstalledRecognizesOurRoutes(t *testing.T) {
+	in := IndexInstalled([]domain.Route{
+		{DstCIDR: "192.168.70.0/24", Iface: "utun6", Family: domain.FamilyV4},
+		{DstCIDR: "2001:db8::/32", Gateway: "fe80:4::1", Iface: "en0", Family: domain.FamilyV6},
+		{DstCIDR: "198.51.100.7/32", Gateway: "10.8.0.1", Iface: "utun3", Family: domain.FamilyV4, Cloned: true},
+	})
+	for _, r := range []domain.Route{
+		{DstCIDR: "192.168.70.1/24", Iface: "utun6", Family: domain.FamilyV4},
+		{DstCIDR: "2001:db8::/32", Gateway: "fe80::1%en0", Iface: "en0", Family: domain.FamilyV6},
+	} {
+		if !in.Has(r) {
+			t.Errorf("%+v not recognized", r)
+		}
+	}
+	for _, r := range []domain.Route{
+		{DstCIDR: "192.168.70.0/24", Iface: "utun7", Family: domain.FamilyV4},
+		{DstCIDR: "198.51.100.7/32", Gateway: "10.8.0.1", Iface: "utun3", Family: domain.FamilyV4},
+	} {
+		if in.Has(r) {
+			t.Errorf("%+v isn't there", r)
+		}
+	}
+}
+
 // A route that contains the tunnel's own server with nothing holding the
 // server off the tunnel (via: default pins nothing; a pin can be lost) sends
 // openvpn's packets into its own tunnel: it can never reconnect, and the

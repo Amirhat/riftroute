@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // AddRoute installs a managed route via route(8). Idempotent: an already-present
@@ -95,7 +96,7 @@ func (p *Provider) stillOurs(ctx context.Context, r domain.Route) (bool, error) 
 			continue
 		}
 		if r.Gateway != "" {
-			if sameGateway(k.Gateway, r.Gateway) {
+			if k.Gateway != "" && routing.SameGateway(k.Gateway, r.Gateway) {
 				return true, nil
 			}
 		} else if k.Iface == r.Iface {
@@ -103,28 +104,6 @@ func (p *Provider) stillOurs(ctx context.Context, r domain.Route) (bool, error) 
 		}
 	}
 	return false, nil
-}
-
-// sameGateway compares gateway addresses as the RIB and route(8) spell them:
-// a link-local one may carry a zone ("fe80::1%en0") or, read from the RIB,
-// its scope embedded in the address (KAME's "fe80:4::1").
-func sameGateway(a, b string) bool {
-	norm := func(s string) (netip.Addr, bool) {
-		x, err := netip.ParseAddr(s)
-		if err != nil {
-			return netip.Addr{}, false
-		}
-		x = x.Unmap().WithZone("")
-		if x.Is6() && x.IsLinkLocalUnicast() {
-			raw := x.As16()
-			raw[2], raw[3] = 0, 0
-			x = netip.AddrFrom16(raw)
-		}
-		return x, true
-	}
-	x, ok1 := norm(a)
-	y, ok2 := norm(b)
-	return ok1 && ok2 && x == y
 }
 
 // route runs route(8) with args.

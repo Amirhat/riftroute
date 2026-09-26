@@ -350,7 +350,7 @@ func IndexInstalled(kernel []domain.Route) Installed {
 		}
 		in[maskedDstKey(k)+"|dev "+k.Iface] = true
 		if k.Gateway != "" {
-			in[maskedDstKey(k)+"|via "+k.Gateway] = true
+			in[maskedDstKey(k)+"|via "+gatewayKey(k.Gateway)] = true
 		}
 	}
 	return in
@@ -360,9 +360,30 @@ func IndexInstalled(kernel []domain.Route) Installed {
 // gateway — or, for an on-link route, on its interface.
 func (in Installed) Has(r domain.Route) bool {
 	if r.Gateway != "" {
-		return in[maskedDstKey(r)+"|via "+r.Gateway]
+		return in[maskedDstKey(r)+"|via "+gatewayKey(r.Gateway)]
 	}
 	return in[maskedDstKey(r)+"|dev "+r.Iface]
+}
+
+// SameGateway reports whether two spellings name the same gateway (see
+// gatewayKey).
+func SameGateway(a, b string) bool { return gatewayKey(a) == gatewayKey(b) }
+
+// gatewayKey spells a gateway one way whichever source it came from: a
+// link-local one may carry a zone ("fe80::1%en0") or, read from the macOS
+// RIB, its scope embedded in the address (KAME's "fe80:4::1").
+func gatewayKey(s string) string {
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return s
+	}
+	a = a.Unmap().WithZone("")
+	if a.Is6() && a.IsLinkLocalUnicast() {
+		raw := a.As16()
+		raw[2], raw[3] = 0, 0
+		a = netip.AddrFrom16(raw)
+	}
+	return a.String()
 }
 
 // maskedDstKey is dstKey with the destination masked, as kernels list it.
