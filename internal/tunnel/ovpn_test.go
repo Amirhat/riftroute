@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -285,5 +286,85 @@ func TestPeerFingerprintValueFormIsKept(t *testing.T) {
 	}
 	if _, err := Parse("client\nremote 192.0.2.1\npeer-fingerprint /etc/fp.txt\n"); err == nil {
 		t.Fatal("a path must still be refused")
+	}
+}
+
+// The rendered remote line must read back as exactly remote/host/port/proto,
+// whatever the host string holds.
+func TestRenderedRemoteCannotInjectWords(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := "192.0.2.1 53 tcp # rest"
+	out := p.Render(RenderOptions{Management: "/m", Remotes: []Remote{{Host: host, Port: 1194, Proto: "udp"}}})
+	var n int
+	for _, l := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(l, "remote ") {
+			continue
+		}
+		n++
+		toks, err := tokenize(l)
+		if err != nil || len(toks) != 4 || toks[1] != host || toks[2] != "1194" || toks[3] != "udp" {
+			t.Errorf("remote line %q reads back as %q (%v)", l, toks, err)
+		}
+	}
+	if n != 1 {
+		t.Errorf("want one remote line, got %d:\n%s", n, out)
+	}
+}
+
+// netip accepts any characters in an IPv6 zone, which Render used to write
+// unquoted: `remote "2001:db8::1%x 53 tcp"` became a remote on port 53/tcp.
+func TestParseRefusesZonedRemotes(t *testing.T) {
+	for _, in := range []string{
+		"remote \"2001:db8::1%x 53 tcp #\" 1194 udp\n",
+		"remote 2001:db8::1%en0\n",
+		"remote fe80::1%utun3\n",
+	} {
+		_, err := Parse("client\n" + in)
+		if err == nil || !strings.Contains(err.Error(), "zone") {
+			t.Errorf("%q: got %v, want a zone error", in, err)
+		}
+	}
+}
+
+// A server pinned to the physical gateway at one of these addresses would
+// pin a route to loopback, the link, or a multicast group.
+func TestParseRefusesUnroutableRemoteAddresses(t *testing.T) {
+	for _, host := range []string{
+		"127.0.0.1", "127.8.9.10", "::1", "169.254.10.1", "fe80::1", "224.0.0.251",
+		"239.1.2.3", "ff02::1", "ff05::2", "0.0.0.0", "::", "::ffff:127.0.0.1", "255.255.255.255",
+	} {
+		_, err := Parse("client\nremote " + host + " 1194\n")
+		if err == nil || !strings.Contains(err.Error(), "can't be a VPN server") {
+			t.Errorf("%s: got %v, want it refused", host, err)
+		}
+	}
+	// Host names are resolved (and the addresses filtered) by the daemon.
+	for _, host := range []string{"10.0.0.1", "192.168.1.10", "192.0.2.1", "2001:db8::1", "100.64.0.1", "vpn.example.net", "localhost"} {
+		if _, err := Parse("client\nremote " + host + " 1194\n"); err != nil {
+			t.Errorf("%s: %v", host, err)
+		}
+	}
+}
+
+func TestParseCapsRemotes(t *testing.T) {
+	remotes := func(n int) string {
+		var b strings.Builder
+		for i := range n {
+			fmt.Fprintf(&b, "remote 192.0.2.%d 1194\n", i+1)
+		}
+		return b.String()
+	}
+	p, err := Parse("client\n" + remotes(maxRemotes))
+	if err != nil || len(p.Remotes) != maxRemotes {
+		t.Fatalf("%d remotes: %v", maxRemotes, err)
+	}
+	if _, err := Parse("client\n" + remotes(maxRemotes+1)); err == nil || !strings.Contains(err.Error(), "remote") {
+		t.Fatalf("%d remotes: got %v, want refused", maxRemotes+1, err)
+	}
+	if _, err := Parse("client\nremote 192.0.2.1\n<connection>\nremote 192.0.2.2\n</connection>\n"); err == nil {
+		t.Fatal("<connection> blocks stay refused")
 	}
 }

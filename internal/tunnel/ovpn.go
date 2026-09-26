@@ -159,7 +159,12 @@ func allFingerprints(args []string) bool {
 	return true
 }
 
-const maxProfileBytes = 256 << 10
+const (
+	maxProfileBytes = 256 << 10
+	// maxRemotes bounds the servers a profile lists (each may be resolved and
+	// pinned to the physical gateway).
+	maxRemotes = 32
+)
 
 // Parse sanitizes an OpenVPN client profile. File references must already be
 // inlined (see InlineFiles); the result renders to a config safe to hand to a
@@ -280,6 +285,9 @@ func Parse(text string) (*Profile, error) {
 		case "lport", "bind":
 			continue // the client never needs a fixed local port
 		case "remote":
+			if len(remotes) == maxRemotes {
+				return nil, &ProfileError{Line: ln, Msg: fmt.Sprintf("more than %d remote lines", maxRemotes)}
+			}
 			remotes = append(remotes, struct {
 				ln   int
 				args []string
@@ -322,6 +330,9 @@ func Parse(text string) (*Profile, error) {
 	for _, r := range remotes {
 		if len(r.args) == 0 || len(r.args) > 3 || !(IsAddr(r.args[0]) || reHost.MatchString(r.args[0])) {
 			return nil, &ProfileError{Line: r.ln, Msg: "remote needs a host name or IP"}
+		}
+		if err := checkRemoteAddr(r.args[0]); err != "" {
+			return nil, &ProfileError{Line: r.ln, Msg: err}
 		}
 		rem := Remote{Host: r.args[0], Port: defPort, Proto: defProto}
 		if len(r.args) > 1 {
@@ -381,7 +392,9 @@ func (p *Profile) Render(o RenderOptions) string {
 			}
 			wroteRemotes = true
 			for _, r := range remotes {
-				fmt.Fprintf(&b, "remote %s %d %s\n", r.Host, r.Port, r.Proto)
+				// Quoted like every other argument: Parse refuses odd hosts,
+				// but o.Remotes come from the daemon's resolver.
+				fmt.Fprintf(&b, "remote %s %d %s\n", quote(r.Host), r.Port, quote(r.Proto))
 			}
 		case l.block:
 			fmt.Fprintf(&b, "<%s>\n%s\n</%s>\n", l.name, strings.Trim(l.body, "\n"), l.name)
@@ -570,4 +583,26 @@ func normProto(args []string) (string, bool) {
 func IsAddr(host string) bool {
 	_, err := netip.ParseAddr(host)
 	return err == nil
+}
+
+// checkRemoteAddr refuses an IP-literal remote no VPN server can be at: the
+// daemon pins each server address to the physical gateway, and a pinned route
+// to loopback, the link, a multicast group or "any" is harmful. It also
+// refuses IPv6 zones — netip accepts any characters after the %, and a zone
+// only means something on a link-local address anyway. Host names pass; the
+// daemon resolves them and filters the addresses itself.
+func checkRemoteAddr(host string) string {
+	a, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	if a.Zone() != "" {
+		return fmt.Sprintf("remote %q has an IPv6 zone (%%…); use the plain address", host)
+	}
+	a = a.Unmap()
+	if a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() ||
+		a == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+		return fmt.Sprintf("remote %s is a loopback, link-local, multicast or unspecified address; it can't be a VPN server", host)
+	}
+	return ""
 }
