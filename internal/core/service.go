@@ -66,50 +66,65 @@ func (s *Service) SetTunnels(inputs func() []routing.TunnelInput, status func() 
 }
 
 // TunnelStatuses returns the tunnels' status, marking the routes left out on
-// the current network and why (see routing.TunnelRouteBlock).
+// the current network and why (see routing.PlanTunnels). Tunnels that aren't
+// running are checked too, so their status says what would be left out.
 func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 	if s.tunnelStatus == nil {
 		return nil
 	}
 	ts := s.tunnelStatus()
-	in := routing.DesiredInput{Occupied: s.occupied(ctx)}
-	in.GatewayV4, _, _ = s.prov.DefaultGateway(ctx, domain.FamilyV4)
-	in.GatewayV6, _, _ = s.prov.DefaultGateway(ctx, domain.FamilyV6)
-	for i := range ts {
-		for _, r := range ts[i].Routes {
-			pfx, err := netip.ParsePrefix(r)
-			if err != nil {
-				a, aerr := netip.ParseAddr(r)
-				if aerr != nil {
-					continue
-				}
-				pfx = netip.PrefixFrom(a, a.BitLen())
-			}
-			if why := routing.TunnelRouteBlock(pfx, in); why != "" {
-				ts[i].Blocked = append(ts[i].Blocked, domain.TunnelBlocked{Route: r, Reason: why})
-			}
+	if len(ts) == 0 {
+		return ts
+	}
+	tunnels := append([]routing.TunnelInput(nil), s.tunnels()...)
+	running := map[string]bool{}
+	for _, t := range tunnels {
+		running[t.Name] = true
+	}
+	for _, t := range ts {
+		if !running[t.Name] {
+			tunnels = append(tunnels, routing.TunnelInput{Name: t.Name, Routes: t.Routes})
 		}
+	}
+	plan := routing.PlanTunnels(s.networkInput(ctx, tunnels, nil))
+	for i := range ts {
+		ts[i].Blocked = append(ts[i].Blocked, plan.Blocked[ts[i].Name]...)
 	}
 	return ts
 }
 
+// networkInput is the network side of desired state: the physical gateways,
+// the tunnels, and — only when there are tunnels, since it costs a kernel
+// read — the destinations someone else routes. owned is what RiftRoute owns
+// (its own routes aren't someone else's); nil reads the ownership map.
+func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInput, owned []domain.ManagedRoute) routing.DesiredInput {
+	in := routing.DesiredInput{Platform: s.Platform(), Tunnels: tunnels, Now: s.now()}
+	if gw4, if4, err := s.prov.DefaultGateway(ctx, domain.FamilyV4); err == nil {
+		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
+	}
+	in.GatewayV6, in.PhysIfaceV6, _ = s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	if len(tunnels) > 0 {
+		if owned == nil {
+			owned = s.actualManagedRoutes(ctx)
+		}
+		in.Occupied = s.occupied(ctx, owned)
+	}
+	return in
+}
+
 // occupied maps the main-table destinations someone other than RiftRoute
 // routes (masked CIDR → interface), for routing.TunnelRouteBlock. Kernel
-// clone entries don't count: a real route replaces them. Only computed when
-// there are tunnels.
-func (s *Service) occupied(ctx context.Context) map[string]string {
-	if len(s.tunnels()) == 0 && s.tunnelStatus == nil {
-		return nil
-	}
-	owned := map[string]bool{}
-	for _, o := range s.actualManagedRoutes(ctx) {
-		owned[routing.RouteKey(o.Route)] = true
+// clone entries don't count: a real route replaces them.
+func (s *Service) occupied(ctx context.Context, owned []domain.ManagedRoute) map[string]string {
+	ours := map[string]bool{}
+	for _, o := range owned {
+		ours[routing.RouteKey(o.Route)] = true
 	}
 	out := map[string]string{}
 	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
 		rs, _ := s.prov.ListRoutes(ctx, fam)
 		for _, r := range rs {
-			if r.Table != "" || r.Cloned || r.Owner == domain.OwnerRiftRoute || owned[routing.RouteKey(r)] {
+			if r.Table != "" || r.Cloned || r.Owner == domain.OwnerRiftRoute || ours[routing.RouteKey(r)] {
 				continue
 			}
 			if pfx, err := netip.ParsePrefix(r.DstCIDR); err == nil && pfx.Bits() > 0 {
@@ -212,28 +227,17 @@ func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, []
 // DesiredFromProfiles builds desired managed routes + rules from an explicit
 // profile set (used by config dry-run before anything is persisted).
 func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
-	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
-	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	in := s.networkInput(ctx, s.tunnels(), nil)
 	vg4, vi4 := s.resolveVPN(ctx, domain.FamilyV4)
 	vg6, vi6 := s.resolveVPN(ctx, domain.FamilyV6)
-	in := routing.DesiredInput{
-		Profiles:      profiles,
-		Platform:      s.Platform(),
-		PolicyRouting: s.prov.Capabilities().PolicyRouting,
-		Lists:         s.listsMap(),
-		Domains:       s.resolveDomains(ctx, profiles),
-		VPNGatewayV4:  vg4, VPNIfaceV4: vi4,
-		VPNGatewayV6: vg6, VPNIfaceV6: vi6,
-		Tunnels:  s.tunnels(),
-		Occupied: s.occupied(ctx),
-		Now:      s.now(),
-	}
-	if err4 == nil {
-		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
-	}
-	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
+	in.Profiles = profiles
+	in.PolicyRouting = s.prov.Capabilities().PolicyRouting
+	in.Lists = s.listsMap()
+	in.Domains = s.resolveDomains(ctx, profiles)
+	in.VPNGatewayV4, in.VPNIfaceV4 = vg4, vi4
+	in.VPNGatewayV6, in.VPNIfaceV6 = vg6, vi6
 	routes, rules, err := routing.BuildDesired(in)
-	return routes, rules, gw4, err
+	return routes, rules, in.GatewayV4, err
 }
 
 // DesiredTunnelsOnly is the desired set for a tunnel transition: what
@@ -241,25 +245,19 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 // tunnel is an explicit action that must install its routes even with
 // auto-apply off — but it must not apply unrelated profile changes that are
 // staged and waiting for the user.
+//
+// The other owned routes are carried over as they are, placed beside the
+// tunnels as a full reconcile would: a route inside a live tunnel's networks
+// yields to it, so the set never routes one destination two ways.
 func (s *Service) DesiredTunnelsOnly(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
-	gw4, if4, err4 := s.prov.DefaultGateway(ctx, domain.FamilyV4)
-	gw6, if6, _ := s.prov.DefaultGateway(ctx, domain.FamilyV6)
-	in := routing.DesiredInput{Platform: s.Platform(), Tunnels: s.tunnels(), Occupied: s.occupied(ctx), Now: s.now()}
-	if err4 == nil {
-		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
-	}
-	in.GatewayV6, in.PhysIfaceV6 = gw6, if6
-	tunnelRoutes, _, err := routing.BuildDesired(in)
-	if err != nil {
-		return nil, nil, gw4, err
-	}
-	var out []domain.ManagedRoute
+	in := s.networkInput(ctx, s.tunnels(), nil)
+	var others []domain.ManagedRoute
 	for _, o := range s.actualManagedRoutes(ctx) {
 		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
-			out = append(out, o)
+			others = append(others, o)
 		}
 	}
-	return append(out, tunnelRoutes...), s.actualManagedRules(ctx), gw4, nil
+	return routing.PlanTunnels(in).Beside(others), s.actualManagedRules(ctx), in.GatewayV4, nil
 }
 
 // OwnsTunnelRoutes reports whether RiftRoute has routes recorded for a
