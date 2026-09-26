@@ -233,3 +233,23 @@ func TestTunnelRouteContainingItsOwnServerNeedsAPin(t *testing.T) {
 		t.Errorf("held by another route: tunnel routes = %s", got)
 	}
 }
+
+// A route matches its own table entry whichever way its gateway is spelled:
+// recorded as `route get` prints it, listed by the RIB without the zone or
+// with the scope embedded (KAME).
+func TestKernelKeyMatchesAGatewaysSpellings(t *testing.T) {
+	r := func(gw, iface string) domain.Route {
+		return domain.Route{DstCIDR: "2001:db8::7/128", Gateway: gw, Iface: iface, Family: domain.FamilyV6}
+	}
+	rec := KernelKey(r("fe80::1%en0", "en0"))
+	for _, listed := range []string{"fe80::1", "fe80:4::1", "fe80::1%en0"} {
+		if got := KernelKey(r(listed, "en0")); got != rec {
+			t.Errorf("%s: %q != %q", listed, got, rec)
+		}
+	}
+	for _, other := range []domain.Route{r("fe80::2", "en0"), r("fe80::1", "en7"), r("", "en0")} {
+		if KernelKey(other) == rec {
+			t.Errorf("%+v matches the recorded route", other)
+		}
+	}
+}

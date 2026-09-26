@@ -115,6 +115,12 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			if !in.PolicyRouting {
 				return nil, nil, fmt.Errorf("profile %q: include mode requires policy routing (Linux Model B / macOS PF route-to); unavailable on this platform", p.Name)
 			}
+			// A live tunnel's networks win here too, as with exclude — but a
+			// policy rule beats the tunnel's more specific route, so the
+			// destinations are cut around them (aroundTunnels).
+			for fam, prefixes := range byFamily {
+				byFamily[fam] = aroundTunnels(prefixes, tunnels.nets)
+			}
 			if in.Platform == "darwin" {
 				// macOS: PF route-to anchors — the Darwin analogue of Model B. No
 				// dedicated table/default; the tunnel target rides on each rule.

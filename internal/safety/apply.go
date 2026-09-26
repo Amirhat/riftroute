@@ -76,6 +76,24 @@ type Options struct {
 	// withdraw anything. The unresolved-gateway fail-safe still covers every
 	// main-table route the plan adds or removes.
 	VetChangesOnly bool
+	// Unguarded commits the change as soon as it is applied: no watchdog,
+	// guard window or commit-confirm, so nothing rolls it back later. Only
+	// for a change that can't cut what the watchdog guards by construction,
+	// and whose rollback would do harm — a tunnel transition: a tunnel route
+	// never contains the gateway, a resolver in use or an anchor
+	// (routing.TunnelRouteBlock), and the guardrails still vet what it adds;
+	// rolled back, a withdrawal would re-add an on-link route into an
+	// interface that's gone (or another VPN's now), and a connect would lose
+	// a live tunnel's routes with nothing to put them back. The journal
+	// still covers a crash mid-execution.
+	Unguarded bool
+}
+
+// UseGateway points the guardrails and the watchdog at physGW, the physical
+// gateway a desired set was built against: PhysGW, and the default anchors.
+func (o *Options) UseGateway(physGW netip.Addr) {
+	o.PhysGW = physGW
+	o.Anchors = DefaultAnchors(physGW)
 }
 
 func (o Options) window() time.Duration {
@@ -140,7 +158,7 @@ type Protocol struct {
 	platform  string
 	log       *slog.Logger
 
-	applyMu  sync.Mutex
+	applyMu  applyLock // serializes applies; see lockApply
 	txmu     sync.Mutex
 	pending  map[string]*pendingTx
 	resolved map[string]domain.TxResult
@@ -148,6 +166,8 @@ type Protocol struct {
 	lastTx   time.Time // start of the most recent transaction (txmu)
 
 	panicking atomic.Int32 // panics in progress: every apply is refused
+
+	onSettled atomic.Pointer[func()] // see SetOnSettled
 }
 
 // TryQuiesce takes the apply lock if the daemon is quiet — nothing being
@@ -202,7 +222,7 @@ func NewProtocol(prov provider.RouteProvider, st Store, clock Clock, newProber f
 	}
 	return &Protocol{
 		prov: prov, store: st, clock: clock, newProber: newProber, platform: platform, log: log,
-		pending: map[string]*pendingTx{}, resolved: map[string]domain.TxResult{},
+		applyMu: newApplyLock(), pending: map[string]*pendingTx{}, resolved: map[string]domain.TxResult{},
 	}
 }
 
@@ -217,33 +237,46 @@ func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute
 // Apply runs the full Apply Protocol. For DryRun it returns the preview. On
 // success it executes atomically, arms the watchdog + commit-confirm, and
 // returns a pending transaction (resolved later via Confirm/timeout/watchdog).
+//
+// ctx bounds the wait for the apply lock (see lockApply). Once an apply holds
+// the lock it runs to the end on ctx's values, not its deadline: every
+// provider command has a timeout of its own, and a change cut off half-way —
+// its rollback failing on the same expired context — would leave the table
+// half-changed.
 func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
-	if !p.lockApply() {
-		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	if err := p.lockApply(ctx); err != nil {
+		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
 	defer p.applyMu.Unlock()
+	ctx = context.WithoutCancel(ctx)
 	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts)
 }
 
 // lockApply takes the apply lock unless a panic is in progress — checked
 // before waiting (a panic's first step may itself be waiting on an apply)
 // and again after (an apply queued behind the panic's flush must not undo
-// it).
-func (p *Protocol) lockApply() bool {
+// it) — or ctx ends while it waits: the caller stopped waiting, so the change
+// is dropped rather than made later behind its back.
+func (p *Protocol) lockApply(ctx context.Context) error {
 	if p.panicking.Load() > 0 {
-		return false
+		return ErrPanicking
 	}
-	p.applyMu.Lock()
+	if err := p.applyMu.LockCtx(ctx); err != nil {
+		return fmt.Errorf("gave up waiting for the change in progress: %w", err)
+	}
 	if p.panicking.Load() > 0 {
 		p.applyMu.Unlock()
-		return false
+		return ErrPanicking
 	}
-	return true
+	return nil
 }
 
 // Build derives the desired routes and rules from owned — the routes
-// RiftRoute owns right now (the ownership map).
-type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error)
+// RiftRoute owns right now (the ownership map) — on the apply's ctx. It sets
+// what in opts depends on the network (see Options.UseGateway) from the same
+// reads the set is built from: after a network move, a set built for the new
+// gateway must not be vetted and guarded against the old one.
+type Build func(ctx context.Context, owned []domain.ManagedRoute, opts *Options) ([]domain.ManagedRoute, []domain.ManagedRule, error)
 
 // ApplyBuilt runs the Apply Protocol like Apply, but derives desired state
 // under the apply lock: no other apply can land between the reads it is
@@ -251,12 +284,13 @@ type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.Ma
 // (a tunnel transition and an auto-apply racing would otherwise each revert
 // the other). A build error aborts before anything is touched.
 func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
-	if !p.lockApply() {
-		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	if err := p.lockApply(ctx); err != nil {
+		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
 	defer p.applyMu.Unlock()
+	ctx = context.WithoutCancel(ctx) // see Apply
 	owned := p.actualManaged(ctx)
-	desired, desiredRules, err := build(owned)
+	desired, desiredRules, err := build(ctx, owned, &opts)
 	if err != nil {
 		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
@@ -351,10 +385,11 @@ func (p *Protocol) takeSnapshot(ctx context.Context, opts Options) {
 // and crash-repair must leave the results alone; the journaled inverse is
 // what protects the change until it's confirmed.
 func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Plan, opts Options) (Result, error) {
-	if !p.lockApply() {
-		return Result{Plan: plan, Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	if err := p.lockApply(ctx); err != nil {
+		return Result{Plan: plan, Status: domain.TxFailed, Error: err.Error()}, err
 	}
 	defer p.applyMu.Unlock()
+	ctx = context.WithoutCancel(ctx) // see Apply
 
 	diff := diffFromPlan(plan)
 	if opts.DryRun {
@@ -451,6 +486,15 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 	}
 	p.audit(opts.Actor, action, "applied", "", &plan, false)
 
+	if opts.Unguarded {
+		p.clearPending(txID)
+		p.txmu.Lock()
+		p.resolved[txID] = domain.TxCommitted
+		p.txmu.Unlock()
+		p.audit(opts.Actor, "confirm", "committed", "unguarded", nil, false)
+		return Result{TxID: txID, Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
+	}
+
 	// ARM watchdog + commit-confirm and resolve in the background.
 	ctxTx, cancel := context.WithCancel(context.Background())
 	pt := &pendingTx{id: txID, plan: plan, interactive: opts.Interactive, ownership: ownership, decided: make(chan decision, 4), cancel: cancel, done: make(chan struct{})}
@@ -499,9 +543,12 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.log.Error("recovered panic resolving tx; forcing rollback", "tx", pt.id, "panic", r)
-			_ = NewExecutor(p.prov).RunOps(context.Background(), pt.plan.Inverse)
+			inverse := withoutTunnelLinks(pt.plan.Inverse)
+			_ = NewExecutor(p.prov).RunOps(context.Background(), inverse)
 			if pt.ownership {
-				p.applyOwnership(pt.plan, true)
+				for _, op := range inverse {
+					p.recordOwnership(op)
+				}
 			}
 			pt.result = domain.TxRolledBack
 			p.finishTx(pt)
@@ -515,24 +562,55 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		p.clearPending(pt.id) // resolved cleanly → no crash-recovery needed
 		p.audit(actor, "confirm", "committed", "", nil, false)
 	} else {
-		exec := NewExecutor(p.prov)
-		if rbErr := exec.RunOps(context.Background(), pt.plan.Inverse); rbErr != nil {
-			// The kernel wasn't fully reverted. KEEP the ownership records AND the
-			// pending-tx journal so Panic / startup RecoverPending can retry the
-			// revert; report the true outcome rather than a false "rolled back".
+		if left, rbErr := p.rollBack(pt); rbErr != nil {
+			// The kernel wasn't fully reverted. The ownership records follow
+			// what was; the journal KEEPS what wasn't, so Panic / startup
+			// RecoverPending can retry it — report the true outcome rather
+			// than a false "rolled back".
+			if p.store != nil {
+				if err := p.store.PutPendingTx(pt.id, left); err != nil {
+					p.log.Warn("could not narrow the journal to the incomplete rollback", "tx", pt.id, "err", err)
+				}
+			}
 			pt.result = domain.TxRolledBack
 			p.audit(actor, "rollback", "rollback_incomplete", rbErr.Error(), nil, true)
 			p.finishTx(pt)
 			return
-		}
-		if pt.ownership {
-			p.applyOwnership(pt.plan, true)
 		}
 		p.clearPending(pt.id)
 		pt.result = domain.TxRolledBack
 		p.audit(actor, "rollback", "rolled_back", "watchdog or missed confirm", nil, true)
 	}
 	p.finishTx(pt)
+}
+
+// rollBack replays a transaction's inverse op by op, less the re-adds of a
+// tunnel's on-link routes (see withoutTunnelLinks): the tunnel may be gone
+// and its interface name another VPN's by now — the tunnels re-apply their
+// routes once the transaction has settled. The ownership map follows each op
+// that went through, so it agrees with the kernel even when some fail (a pin
+// re-added while the on-link route beside it failed must not be left in the
+// kernel unrecorded). It returns what failed as a plan of its own: those ops'
+// forward effect is still in place, and left.Inverse still undoes it.
+func (p *Protocol) rollBack(pt *pendingTx) (left domain.Plan, err error) {
+	exec := NewExecutor(p.prov)
+	ctx := provider.WithTableCache(context.Background())
+	for _, op := range withoutTunnelLinks(pt.plan.Inverse) {
+		if e := exec.do(ctx, op); e != nil {
+			if err == nil {
+				err = e
+			}
+			left.Inverse = append(left.Inverse, op)
+			continue
+		}
+		if pt.ownership {
+			p.recordOwnership(op)
+		}
+	}
+	for i := len(left.Inverse) - 1; i >= 0; i-- {
+		left.Ops = append(left.Ops, inverseOp(left.Inverse[i]))
+	}
+	return left, err
 }
 
 func (p *Protocol) clearPending(id string) {
@@ -553,6 +631,32 @@ func (p *Protocol) finishTx(pt *pendingTx) {
 	delete(p.pending, pt.id)
 	p.txmu.Unlock()
 	close(pt.done)
+	p.settled()
+}
+
+// SetOnSettled installs fn, called whenever a transaction on probation
+// resolves — its guard window commits it, a watchdog or a missed confirm
+// rolls it back, it is confirmed or rolled back by hand, a newer apply or a
+// panic settles it — and after a panic has flushed. Those are the moments an
+// apply refused meanwhile (ErrApplyInProgress, ErrPanicking) can go through,
+// and a rollback may have withdrawn routes the tunnels still want: the daemon
+// re-applies its tunnels' routes from it. A change that commits at once
+// (Options.Unguarded) or fails never had anyone waiting on it and doesn't
+// call it. fn runs on a goroutine of its own, never under the Protocol's
+// locks, so it may apply. nil removes it.
+func (p *Protocol) SetOnSettled(fn func()) {
+	if fn == nil {
+		p.onSettled.Store(nil)
+		return
+	}
+	p.onSettled.Store(&fn)
+}
+
+// settled calls the SetOnSettled hook, if any.
+func (p *Protocol) settled() {
+	if fn := p.onSettled.Load(); fn != nil {
+		p.goSafe("on-settled", *fn)
+	}
 }
 
 // Confirm keeps a pending interactive change (cancels the auto-revert).
@@ -604,6 +708,12 @@ func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
 // land around the flush. Guards still armed are settled before the flush, so
 // none can roll back afterwards and re-add what it removed.
 func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
+	err := p.panicWith(ctx, actor, before)
+	p.settled() // applies are accepted again
+	return err
+}
+
+func (p *Protocol) panicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
 	p.panicking.Add(1)
 	defer p.panicking.Add(-1)
 	if before != nil {
@@ -612,7 +722,9 @@ func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, before fun
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
 	p.settleForPanic()
-	err := Panic(ctx, p.prov, p.store)
+	// The flush runs to the end whether or not its caller still waits (see
+	// Apply): cut off half-way, what it failed to remove stays recorded.
+	err := Panic(context.WithoutCancel(ctx), p.prov, p.store)
 	result := "panicked"
 	if err != nil {
 		result = "panic-error"
@@ -754,6 +866,7 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	ctx = provider.WithTableCache(ctx)
 	n := 0
 	for _, o := range owned {
 		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
@@ -776,10 +889,12 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// withoutTunnelLinks drops the re-adds of tunnel on-link routes from a crash
-// recovery replay: no tunnel runs at startup, and such a route would go into
-// whatever interface has the recorded name now. (DropTunnelRoutes then drops
-// their records.)
+// withoutTunnelLinks drops the re-adds of tunnel on-link routes from a
+// replayed inverse. In crash recovery no tunnel runs yet, and such a route
+// would go into whatever interface has the recorded name now
+// (DropTunnelRoutes then drops their records); in a guard's rollback the
+// tunnel may be gone too, and the tunnels re-apply what they still route
+// once it has settled (SetOnSettled).
 func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
 	out := ops[:0:0]
 	for _, op := range ops {
@@ -848,22 +963,25 @@ func providerManaged(ctx context.Context, prov provider.RouteProvider) []domain.
 }
 
 func (p *Protocol) applyOwnership(plan domain.Plan, undo bool) {
-	if p.store == nil {
+	for _, op := range plan.Ops {
+		if undo {
+			op = inverseOp(op)
+		}
+		p.recordOwnership(op)
+	}
+}
+
+// recordOwnership records what a route op that went through did: an added
+// route is RiftRoute's, a deleted one no longer is.
+func (p *Protocol) recordOwnership(op domain.PlanOp) {
+	if p.store == nil || op.Route == nil {
 		return
 	}
-	for _, op := range plan.Ops {
-		if op.Route == nil {
-			continue
-		}
-		add := op.Kind == domain.OpAddRoute
-		if undo {
-			add = !add
-		}
-		if add {
-			_ = p.store.AddOwned(*op.Route)
-		} else {
-			_ = p.store.DelOwned(*op.Route)
-		}
+	switch op.Kind {
+	case domain.OpAddRoute:
+		_ = p.store.AddOwned(*op.Route)
+	case domain.OpDelRoute:
+		_ = p.store.DelOwned(*op.Route)
 	}
 }
 

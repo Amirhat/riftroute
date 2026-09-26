@@ -29,6 +29,8 @@ type tunnelHarness struct {
 	proto     *safety.Protocol
 	rec       *reconcile.Reconciler
 	autoApply atomic.Bool
+	clock     *safety.FakeClock
+	prober    *safety.FakeProber
 
 	mu     sync.Mutex
 	inputs []routing.TunnelInput
@@ -40,6 +42,17 @@ type hookProvider struct {
 	*fake.Provider
 	mu                sync.Mutex
 	onRules, onIfaces func()
+	// afterGateway runs once a gateway read has returned — the network
+	// moving right after it.
+	afterGateway func()
+}
+
+func (p *hookProvider) DefaultGateway(ctx context.Context, fam domain.Family) (netip.Addr, string, error) {
+	gw, iface, err := p.Provider.DefaultGateway(ctx, fam)
+	if f := p.take(&p.afterGateway); f != nil {
+		f()
+	}
+	return gw, iface, err
 }
 
 func (p *hookProvider) take(fn *func()) func() {
@@ -95,7 +108,8 @@ func newTunnelHarness(t *testing.T) *tunnelHarness {
 	t.Cleanup(func() { _ = st.Close() })
 	h.st = st
 	h.svc = core.New(h.prov, st, "test")
-	h.proto = safety.NewProtocol(h.prov, st, safety.NewFakeClock(time.Unix(0, 0)), func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	h.clock, h.prober = safety.NewFakeClock(time.Unix(0, 0)), safety.NewFakeProber()
+	h.proto = safety.NewProtocol(h.prov, st, h.clock, func() safety.Prober { return h.prober }, "fake", nil)
 	t.Cleanup(h.proto.ShutdownResolve)
 	h.rec = reconcile.New(h.svc, h.proto, slog.New(slog.NewTextHandler(io.Discard, nil)), 0, h.autoApply.Load)
 	h.svc.SetTunnels(func() []routing.TunnelInput {

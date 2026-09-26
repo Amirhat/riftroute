@@ -144,7 +144,7 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 // against.
 func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, routing.Installed) {
 	expected := map[string][]domain.ManagedRoute{}
-	if desired, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
+	if desired, _, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
 		for _, d := range desired {
 			if name, ok := strings.CutPrefix(d.ProfileID, routing.TunnelProfilePrefix); ok {
 				expected[name] = append(expected[name], d)
@@ -192,6 +192,11 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 		status = domain.CheckWarn
 		detail += "; not installed on this network: " + blockedList(t.Blocked)
 		fixes = append(fixes, "narrow the routes left out, or ignore them while on this network")
+	}
+	if len(t.Captured) > 0 {
+		status = domain.CheckWarn
+		detail += "; some traffic to it goes elsewhere: " + blockedList(t.Captured)
+		fixes = append(fixes, "use destination rules instead of app rules in the include profile, or disable it while the tunnel is up")
 	}
 	return status, detail, strings.Join(fixes, "; ")
 }

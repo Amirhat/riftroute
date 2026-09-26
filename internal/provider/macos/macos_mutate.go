@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/routing"
 )
 
@@ -34,6 +35,7 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 		}
 		return fmt.Errorf("route add %s: %w: %s", mr.DstCIDR, err, strings.TrimSpace(out))
 	}
+	provider.RouteAdded(ctx, mr.Route)
 	return nil
 }
 
@@ -47,6 +49,9 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 // tunnel's routes go with its utun, and the main VPN or the user may then
 // route the same destination; withdrawing the tunnel must leave theirs alone.
 // A user's edit of a route RiftRoute doesn't own acts on the route they chose.
+//
+// The table is read once per batch of changes carrying a table cache
+// (provider.WithTableCache), not once per delete.
 func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	args, err := macRouteArgs("delete", mr)
 	if err != nil {
@@ -64,10 +69,12 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	out, err := p.route(ctx, args...)
 	if err != nil {
 		if strings.Contains(out, "not in table") || strings.Contains(out, "No such") {
+			provider.RouteDeleted(ctx, mr.Route)
 			return nil // already gone → idempotent
 		}
 		return fmt.Errorf("route delete %s: %w: %s", mr.DstCIDR, err, strings.TrimSpace(out))
 	}
+	provider.RouteDeleted(ctx, mr.Route)
 	return nil
 }
 
@@ -86,7 +93,7 @@ func (p *Provider) stillOurs(ctx context.Context, r domain.Route) (bool, error) 
 	if p.listRoutes != nil {
 		list = p.listRoutes
 	}
-	kernel, err := list(ctx, fam)
+	kernel, err := provider.CachedRoutes(ctx, fam, list)
 	if err != nil {
 		return false, err
 	}

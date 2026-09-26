@@ -73,6 +73,12 @@ type TunnelStatus struct {
 	// Blocked are routes left out on the current network, and why (they
 	// contain its router, or another owner already routes that destination).
 	Blocked []TunnelBlocked `json:"blocked,omitempty"`
+	// Captured are routes installed, but that some traffic still goes past:
+	// an include-mode app rule selects an app's (or a user's) traffic to any
+	// destination before the routing table is consulted, and sends it into
+	// another VPN, to these networks too. (Include rules for destinations
+	// yield to a live tunnel's networks; an app's can't.)
+	Captured []TunnelBlocked `json:"captured,omitempty"`
 
 	// Unreadable: the saved definition can't be read; the tunnel can only
 	// be deleted (and added again).

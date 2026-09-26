@@ -19,7 +19,7 @@ func TestApplyBuiltBuildsFromTheOwnedSet(t *testing.T) {
 	h.mustApply(t, desired("9.9.9.0/24"))
 
 	var saw []domain.ManagedRoute
-	res, err := h.p.ApplyBuilt(ctx, func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+	res, err := h.p.ApplyBuilt(ctx, func(_ context.Context, owned []domain.ManagedRoute, _ *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 		saw = owned
 		return append(owned, desired("8.8.8.0/24")...), nil, nil
 	}, opts(false))
@@ -34,7 +34,7 @@ func TestApplyBuiltBuildsFromTheOwnedSet(t *testing.T) {
 	}
 
 	boom := errors.New("boom")
-	res, err = h.p.ApplyBuilt(ctx, func([]domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+	res, err = h.p.ApplyBuilt(ctx, func(context.Context, []domain.ManagedRoute, *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 		return nil, nil, boom
 	}, opts(false))
 	if !errors.Is(err, boom) || res.Status != domain.TxFailed || h.prov.CountManaged() != 2 {
@@ -266,7 +266,7 @@ func TestPanicRefusesAppliesUntilItHasFlushed(t *testing.T) {
 		if _, err := h.p.Apply(ctx, desired("9.9.9.0/24", "8.8.8.0/24"), nil, opts(false)); !errors.Is(err, safety.ErrPanicking) {
 			t.Errorf("apply during a panic: %v, want ErrPanicking", err)
 		}
-		if _, err := h.p.ApplyBuilt(ctx, func(o []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		if _, err := h.p.ApplyBuilt(ctx, func(_ context.Context, o []domain.ManagedRoute, _ *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 			return o, nil, nil
 		}, opts(false)); !errors.Is(err, safety.ErrPanicking) {
 			t.Errorf("built apply during a panic: %v, want ErrPanicking", err)

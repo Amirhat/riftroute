@@ -59,11 +59,12 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 		return res, err
 	}
 	var buildErr error
-	res, err := r.proto.ApplyBuilt(ctx, func([]domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		desired, rules, _, err := r.svc.DesiredManaged(ctx)
+	res, err := r.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		desired, rules, physGW, err := r.svc.DesiredManaged(ctx)
 		buildErr = err
+		o.UseGateway(physGW)
 		return desired, rules, err
-	}, r.options(ctx))
+	}, options())
 	if buildErr != nil {
 		// Fail-safe: cannot resolve gateway/desired → keep existing routes.
 		r.log.Warn("auto-apply skipped: cannot derive desired state", "err", buildErr)
@@ -92,25 +93,33 @@ func (r *Reconciler) ApplyTunnels(ctx context.Context) error {
 // the other owned routes it carries over untouched may be stale (auto-apply
 // off after a network move) and must not stop a tunnel installing or
 // withdrawing its own.
+//
+// It commits without a guard (safety.Options.Unguarded): what it changes
+// can't cut the gateway, a resolver or an anchor — a tunnel route holding one
+// is left out (routing.TunnelRouteBlock) — and a watchdog rollback would do
+// harm: re-add a withdrawn on-link route into an interface that's gone, or
+// withdraw a live tunnel's routes with nothing to put them back.
 func (r *Reconciler) applyTunnels(ctx context.Context) (safety.Result, error) {
-	opts := r.options(ctx)
+	opts := options()
 	opts.VetChangesOnly = true
-	return r.proto.ApplyBuilt(ctx, func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		return r.svc.DesiredTunnelsOnly(ctx, owned)
+	opts.Unguarded = true
+	return r.proto.ApplyBuilt(ctx, func(ctx context.Context, owned []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		desired, rules, physGW, err := r.svc.DesiredTunnelsOnly(ctx, owned)
+		o.UseGateway(physGW)
+		return desired, rules, err
 	}, opts)
 }
 
-// options are a guarded, non-interactive apply's.
-func (r *Reconciler) options(ctx context.Context) safety.Options {
-	physGW := r.svc.PhysicalGateway(ctx)
+// options are a guarded, non-interactive apply's. The physical gateway and
+// the anchors are the build's to set (safety.Options.UseGateway), from the
+// reads the desired set is built from.
+func options() safety.Options {
 	return safety.Options{
 		Interactive:   false, // auto-apply: skip manual confirm, keep the guard
-		Anchors:       safety.DefaultAnchors(physGW),
 		K:             3,
 		ProbeInterval: time.Second,
 		GuardWindow:   30 * time.Second,
 		Actor:         domain.ActorDaemon,
-		PhysGW:        physGW,
 	}
 }
 

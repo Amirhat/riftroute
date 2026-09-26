@@ -54,6 +54,56 @@ func TestPanicFiresTeardownHook(t *testing.T) {
 	}
 }
 
+// routesOutliveFlush is the fake with macOS's flush: PF only, routes go by
+// the ownership records.
+type routesOutliveFlush struct{ *fake.Provider }
+
+func (routesOutliveFlush) FlushOwned(context.Context) error { return nil }
+
+// A route that won't delete fails the panic — it stays recorded for a retry —
+// but the DNS teardown still runs: panic does all it can.
+func TestPanicTearsDownEvenWhenARouteStays(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	f := fake.New()
+	prov := routesOutliveFlush{f}
+	svc := core.New(prov, st, "test")
+	proto := safety.NewProtocol(prov, st, safety.RealClock{},
+		func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	t.Cleanup(proto.ShutdownResolve)
+	srv := NewServer(svc, st, proto, uint32(0), "test", nil)
+	route := []domain.ManagedRoute{{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}}
+	if _, err := proto.Apply(context.Background(), route, nil, srv.buildOptions(applyReq{Yes: true}, netip.MustParseAddr("192.168.1.1"))); err != nil {
+		t.Fatal(err)
+	}
+	f.FailDelRoute("9.9.9.0/24", true)
+	fired := false
+	srv.SetOnPanic(func(context.Context) { fired = true })
+
+	h := srv.Handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, peerInfo{uid: 0})))
+	}))
+	t.Cleanup(ts.Close)
+	resp, err := http.Post(ts.URL+"/panic", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("panic status %d, want the route left reported", resp.StatusCode)
+	}
+	if !fired {
+		t.Fatal("the DNS teardown didn't run")
+	}
+	if owned, _ := st.ListOwned(); len(owned) != 1 {
+		t.Fatalf("owned = %+v, want the route that stayed", owned)
+	}
+}
+
 // Panic takes the daemon's tunnels down BEFORE its flush: each tunnel going
 // down re-applies the surviving tunnels' routes, which must be refused, not
 // land after the flush. The post-flush teardown still runs after.
