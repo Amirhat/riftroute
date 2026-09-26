@@ -6,6 +6,8 @@
 package macos
 
 import (
+	"context"
+
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider"
 )
@@ -14,6 +16,11 @@ import (
 // methods fail safe with ErrNotImplemented until each is filled in.
 type Provider struct {
 	provider.Base
+
+	// listRoutes and runRoute stand in for the kernel table read and
+	// route(8) in tests (nil: the real ones).
+	listRoutes func(ctx context.Context, fam domain.Family) ([]domain.Route, error)
+	runRoute   func(ctx context.Context, args ...string) (string, error)
 }
 
 // New returns a macOS provider.
