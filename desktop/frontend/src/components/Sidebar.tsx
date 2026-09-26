@@ -10,7 +10,8 @@ import {
   ShieldIcon,
 } from './icons'
 
-export type View = 'dashboard' | 'routes' | 'profiles' | 'flows' | 'diagnostics' | 'history' | 'settings'
+export const VIEWS = ['dashboard', 'routes', 'profiles', 'flows', 'diagnostics', 'history', 'settings'] as const
+export type View = (typeof VIEWS)[number]
 
 type Item = {
   view: View

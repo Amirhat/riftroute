@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { FormEvent } from 'react'
@@ -46,7 +46,15 @@ export function filterRoutes(routes: Route[], q: string, owner: OwnerFilter): Ro
   })
 }
 
-export function RoutesView() {
+export function RoutesView({
+  focusLookup = false,
+  onLookupFocused,
+}: {
+  // focusLookup puts the cursor in the lookup box (View → Explain, ⌘3);
+  // onLookupFocused tells the caller it's done.
+  focusLookup?: boolean
+  onLookupFocused?: () => void
+} = {}) {
   const qc = useQueryClient()
   const [pending, setPending] = useState<ApplyResult | null>(null)
   const [matched, setMatched] = useState<string | null>(null)
@@ -114,7 +122,11 @@ export function RoutesView() {
 
   return (
     <div className="space-y-4">
-      <RouteLookup onResult={(r) => setMatched(r.kernel?.matched_cidr ?? null)} />
+      <RouteLookup
+        onResult={(r) => setMatched(r.kernel?.matched_cidr ?? null)}
+        focus={focusLookup}
+        onFocused={onLookupFocused}
+      />
       <ManualRoutes onPending={setPending} onApplied={refresh} />
       {opError && (
         <Card className="flex items-center justify-between border-danger/40 p-3 text-sm text-danger">
@@ -275,8 +287,23 @@ function EditRouteDialog({
 
 // --- "Where does traffic go?" — IP/domain lookup over the explain engine ---
 
-function RouteLookup({ onResult }: { onResult: (r: RouteExplain) => void }) {
+function RouteLookup({
+  onResult,
+  focus,
+  onFocused,
+}: {
+  onResult: (r: RouteExplain) => void
+  focus: boolean
+  onFocused?: () => void
+}) {
   const [target, setTarget] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (!focus) return
+    inputRef.current?.focus()
+    inputRef.current?.select()
+    onFocused?.()
+  }, [focus, onFocused])
   const m = useMutation({
     mutationFn: (t: string) => api.explain(t),
     onSuccess: onResult,
@@ -293,6 +320,7 @@ function RouteLookup({ onResult }: { onResult: (r: RouteExplain) => void }) {
       <CardHeader title="Where does traffic go?" hint="look up an IP or domain to see the route it takes" />
       <form onSubmit={submit} className="flex gap-2 p-4 pb-3">
         <input
+          ref={inputRef}
           value={target}
           onChange={(e) => setTarget(e.target.value)}
           placeholder="IP or domain — e.g. 8.8.8.8, netflix.com"
