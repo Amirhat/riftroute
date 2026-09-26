@@ -60,27 +60,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   doing anything; a second copy (say, a manual run beside the service) stops
   with a clear message instead of touching the running daemon's routes and
   tunnels.
-- **Routes survive a gateway change.** When a managed route's next hop
-  changed but its destination didn't — an exclude route after Wi-Fi →
-  Ethernet, or the VPN's gateway moving — the new route was added before the
-  old one was deleted; the kernel keeps one route per destination, so the
-  destination could end up with no route while RiftRoute showed it in sync.
-  The old route is now deleted first, and a rollback undoes it in the right
-  order. (#19)
-- **View → Explain (⌘3) opens the route lookup** — "Where does traffic go?"
-  on the Routing Table, with the cursor in it — instead of a blank page.
-  (#18)
-- **Tinted colors in the app.** Faded backgrounds and borders — error and
-  warning boxes, the sidebar's selected item, owner and state badges, hover
-  highlights — rendered with no color at all: the theme colors were plain CSS
-  variables, which Tailwind can't make translucent, so those classes produced
-  no CSS. Theme colors are now RGB channels, and every tint shows in both the
-  light and dark themes. (#18)
 - **Updates: a release built for another architecture is skipped** on macOS
   instead of being downloaded again at every check.
 - **Dialogs work with the keyboard and screen readers:** Escape closes them,
   Tab stays inside, focus returns to where it was, and each is announced by
   its title.
+
+## [0.2.7] — 2026-09-26
+
+### Fixed
+- **A route whose gateway changes is no longer lost.** When the network
+  changed (Wi-Fi → Ethernet, a new router) or the VPN's gateway did, an
+  exclude route — or Linux include mode's tunnel default — could disappear
+  while RiftRoute still showed everything in sync. It is now replaced in
+  place, and rolled back the same way.
+- **View → Explain (⌘3)** opens the route lookup on the Routing Table instead
+  of a blank page.
+- Tinted colors render: error and warning boxes, badges and the sidebar's
+  selected item had lost their tint (thanks @ssenerg).
+- Release builds no longer call themselves "-dirty".
 
 ## [0.2.6] — 2026-09-26
 
