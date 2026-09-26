@@ -8,6 +8,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite: nothing to install on the host
+
+	"github.com/Amirhat/riftroute/internal/update"
 )
 
 // store is the server's SQLite database. Sessions are kept by the SHA-256 of
@@ -33,6 +35,14 @@ var migrations = []string{
 	   token_hash TEXT PRIMARY KEY,
 	   created_at INTEGER NOT NULL,
 	   last_seen  INTEGER NOT NULL
+	 );`,
+	// Unsigned rollout advice per update channel (the signed manifest lives on
+	// disk). It can only hold an update back.
+	`CREATE TABLE update_channels (
+	   channel         TEXT PRIMARY KEY,
+	   rollout_percent INTEGER NOT NULL,
+	   halt            INTEGER NOT NULL,
+	   updated_at      INTEGER NOT NULL
 	 );`,
 }
 
@@ -128,6 +138,28 @@ func (s *store) touchDevice(tokenHash string, now time.Time) error {
 
 func (s *store) pruneDevices(now time.Time) error {
 	_, err := s.db.Exec(`DELETE FROM devices WHERE last_seen<=?`, now.Add(-deviceTTL).Unix())
+	return err
+}
+
+// advice is a channel's rollout advice; a channel nobody configured is fully
+// rolled out.
+func (s *store) advice(channel string) update.Advice {
+	a := update.Advice{RolloutPercent: 100}
+	var halt int
+	if err := s.db.QueryRow(`SELECT rollout_percent, halt FROM update_channels WHERE channel=?`, channel).Scan(&a.RolloutPercent, &halt); err == nil {
+		a.Halt = halt != 0
+	}
+	return a
+}
+
+func (s *store) setAdvice(channel string, a update.Advice, now time.Time) error {
+	halt := 0
+	if a.Halt {
+		halt = 1
+	}
+	_, err := s.db.Exec(`INSERT INTO update_channels(channel, rollout_percent, halt, updated_at) VALUES(?,?,?,?)
+	   ON CONFLICT(channel) DO UPDATE SET rollout_percent=excluded.rollout_percent, halt=excluded.halt, updated_at=excluded.updated_at`,
+		channel, a.RolloutPercent, halt, now.Unix())
 	return err
 }
 

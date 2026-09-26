@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,6 +30,11 @@ type testEnv struct {
 
 func newEnv(t *testing.T, password string) *testEnv {
 	t.Helper()
+	return newEnvKeys(t, password, nil)
+}
+
+func newEnvKeys(t *testing.T, password string, keys map[string]ed25519.PublicKey) *testEnv {
+	t.Helper()
 	dir := t.TempDir()
 	if password != "" {
 		if err := SetPassword(dir, password); err != nil {
@@ -39,7 +45,8 @@ func newEnv(t *testing.T, password string) *testEnv {
 	srv, err := New(Config{
 		DataDir: dir, Build: domain.BuildInfo{Version: "0.3.0", Commit: "abcdef1234567"},
 		Logger: slog.New(slog.NewTextHandler(e.logs, nil)), Now: func() time.Time { return e.now },
-		DiskFree: func(string) (uint64, error) { return 42 << 30, nil },
+		DiskFree:    func(string) (uint64, error) { return 42 << 30, nil },
+		TrustedKeys: keys,
 	})
 	if err != nil {
 		t.Fatal(err)
