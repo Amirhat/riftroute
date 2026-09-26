@@ -28,6 +28,9 @@ func TestDaemonInstallReportsTheShippedOpenVPN(t *testing.T) {
 	if !strings.Contains(errw.String(), "doesn't include openvpn") || out.Len() != 0 {
 		t.Fatalf("without openvpn: %q %q", out.String(), errw.String())
 	}
+	if _, err := os.Stat(platform.InstalledOpenVPNPath()); err != nil && !strings.Contains(errw.String(), "riftroute update check") {
+		t.Fatalf("without openvpn, and none installed: say how to get it: %q", errw.String())
+	}
 	if err := os.WriteFile(filepath.Join(dir, "openvpn"), []byte("openvpn"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -218,7 +218,8 @@ app, which doesn't include it:
   the daemon — **Check for updates** on the Tunnels page (or `riftroute update
   check`) installs it from the newest signed release, even with updates off;
   reinstalling the daemon from a current release puts it in place too.
-- **Linux:** install your distribution's package:
+- **Linux:** install your distribution's package (RiftRoute's `.deb`
+  recommends it, so apt installs it alongside by default):
 
 | System | Install |
 |---|---|
@@ -399,11 +400,23 @@ release reaches users only once its manifest is signed and published.
 `make dist` cross-compiles CLI+daemon tarballs (darwin/linux × amd64/arm64) and
 writes `checksums.txt`. `make package-deb`, `package-dmg`, `package-appimage`
 build the OS packages. Pushing a `vX.Y.Z` tag runs
-[`.github/workflows/release.yml`](.github/workflows/release.yml): it always
-builds the core + `.deb` + checksums and the AppImage, builds a **signed +
-notarized** `.dmg` when the Apple secrets are present (otherwise an unsigned one),
-and publishes a GitHub Release. The Homebrew formula is bumped from the
-checksums via [`scripts/bump-homebrew.sh`](scripts/bump-homebrew.sh).
+[`.github/workflows/release.yml`](.github/workflows/release.yml): its
+**openvpn** job builds the macOS openvpn first (static, from pinned and
+hash-checked sources — [`scripts/build-openvpn.sh`](scripts/build-openvpn.sh)),
+then it builds the core + `.deb` + checksums (the darwin tarballs carry that
+openvpn) and the AppImage, builds a **signed + notarized** `.dmg` when the Apple
+secrets are present (otherwise an unsigned one), and publishes a GitHub Release
+with the OpenVPN, LZO, LZ4 and OpenSSL source tarballs attached. openvpn is
+required there: if its job fails, nothing is published. The Homebrew formula is
+bumped from the checksums via
+[`scripts/bump-homebrew.sh`](scripts/bump-homebrew.sh).
+
+Locally, `make openvpn` (on a Mac) builds it into `build/openvpn/` — arm64,
+x86_64 and universal, each with its `licenses/`. `make dist` and `make
+package-dmg` take it from there; without it they still build, but **leave
+openvpn out** (macOS tunnels then say it's missing), and with
+`REQUIRE_OPENVPN=1` — as the release sets it — they fail instead. openvpn is
+never packaged without its licenses.
 
 Signing/notarization secrets: `MAC_CERT_P12`, `MAC_CERT_PASSWORD`,
 `MAC_SIGN_IDENTITY`, and `AC_APPLE_ID`/`AC_TEAM_ID`/`AC_PASSWORD`.

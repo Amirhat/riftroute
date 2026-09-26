@@ -139,9 +139,9 @@ func daemonInstallCmd() *cobra.Command {
 
 // reportOpenVPN says what install does about tunnels' openvpn: on macOS the
 // one shipped next to riftrouted is installed beside the daemon (tunnels
-// never run any other); without one, an earlier copy stays, or tunnels wait
-// for a release that includes it. On Linux the distribution's is used and
-// there's nothing to say.
+// never run any other); without one, an earlier copy stays, or the daemon's
+// update check fetches it (the updater's repair). On Linux the
+// distribution's is used and there's nothing to say.
 func reportOpenVPN(out, errw io.Writer, daemonBin string) {
 	dst := platform.InstalledOpenVPNPath()
 	if dst == "" {
@@ -156,7 +156,7 @@ func reportOpenVPN(out, errw io.Writer, daemonBin string) {
 		return
 	}
 	fmt.Fprintf(errw, "note: this build doesn't include openvpn (none next to %s), so tunnels won't be available\n"+
-		"until a RiftRoute release that includes it is installed\n", daemonBin)
+		"until it's installed: `riftroute update check` fetches the one the newest release ships\n", daemonBin)
 }
 
 // systemClient talks to the installed service's socket — the daemon install
