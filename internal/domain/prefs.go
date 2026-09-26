@@ -77,8 +77,10 @@ type UpdateStatus struct {
 	Staged string `json:"staged,omitempty"`
 	// RolledBackFrom is a version that failed its health check here and was
 	// rolled back automatically; it won't be offered again.
-	RolledBackFrom string    `json:"rolled_back_from,omitempty"`
-	InstalledAt    time.Time `json:"installed_at,omitzero"`
+	RolledBackFrom string `json:"rolled_back_from,omitempty"`
+	// RolledBackBy: "health" (it didn't start properly) or "you".
+	RolledBackBy string    `json:"rolled_back_by,omitempty"`
+	InstalledAt  time.Time `json:"installed_at,omitzero"`
 	// CanRollBack: a previous binary is kept and can be restored.
 	CanRollBack bool `json:"can_roll_back"`
 	// SelfUpdatable is false for package-managed or non-service installs.

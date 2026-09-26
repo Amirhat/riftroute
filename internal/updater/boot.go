@@ -35,8 +35,10 @@ func readMarker(dir string) (marker, bool) {
 
 // Boot guard settings.
 var (
-	maxBoots      = 3               // failed starts before rolling back
-	confirmWithin = 2 * time.Minute // a start that hasn't confirmed by then failed
+	maxBoots = 3 // failed starts before rolling back
+	// confirmWithin: a start that hasn't confirmed by then counts as failed.
+	// Generous — crash recovery and route reconciliation run before serving.
+	confirmWithin = 5 * time.Minute
 )
 
 // GuardEnv is what BootGuard needs. It runs before the database is opened,
@@ -48,8 +50,11 @@ type GuardEnv struct {
 	DBPath   string
 	// DBVersion reads a database file's schema version (PRAGMA user_version).
 	DBVersion func(path string) (int, error)
-	Log       *slog.Logger
-	Now       func() time.Time
+	// DBMinReader reads the oldest schema a database may be read with
+	// (store's schema_min_reader; 0 when unset).
+	DBMinReader func(path string) (int, error)
+	Log         *slog.Logger
+	Now         func() time.Time
 	// Exit ends the process (the watchdog's failed-start exit).
 	Exit func(code int)
 }
@@ -59,24 +64,34 @@ type Guard struct {
 	// RestartNow: a rollback was just performed; exit with RestartExitCode so
 	// the service manager starts the restored binary.
 	RestartNow bool
-	confirm    func()
+	// OnConfirm runs after a successful Confirm (the updater reloads its
+	// state).
+	OnConfirm func()
+	confirm   func()
 }
 
 // Confirm marks this start healthy: the update (if one was on probation) is
-// kept. Call it once the daemon is fully up.
+// kept. Call it once the daemon is serving.
 func (g *Guard) Confirm() {
-	if g != nil && g.confirm != nil {
-		g.confirm()
-		g.confirm = nil
+	if g == nil || g.confirm == nil {
+		return
+	}
+	g.confirm()
+	g.confirm = nil
+	if g.OnConfirm != nil {
+		g.OnConfirm()
 	}
 }
+
+// Probation reports whether this start is an update on probation.
+func (g *Guard) Probation() bool { return g != nil && g.confirm != nil }
 
 // BootGuard runs first thing in the daemon. With no marker it does nothing.
 // On the new binary it counts starts, arms a watchdog (a start that doesn't
 // confirm in time exits, which counts as a failed start) and, after
 // maxBoots failed starts, restores the previous binary — and the database
-// backup if the update changed the schema — then asks for a restart. It
-// needs no network.
+// backup if the old version can't read the current one — then asks for a
+// restart. It needs no network.
 func BootGuard(env GuardEnv) (*Guard, error) {
 	if env.Now == nil {
 		env.Now = time.Now
@@ -91,15 +106,16 @@ func BootGuard(env GuardEnv) (*Guard, error) {
 	if !ok {
 		return &Guard{}, nil
 	}
-	if m.Rollback {
+	switch {
+	case m.Rollback:
 		env.Log.Warn("rolling back as requested", "from", m.From)
-		return &Guard{RestartNow: true}, rollback(env, m, "rolled back by you")
-	}
-	if env.Current != m.To {
-		// Not the new binary: the rollback already happened (or someone
-		// reinstalled). Record the outcome once and clear the marker.
-		if env.Current == m.From {
-			recordRolledBack(env.StateDir, m.To)
+		return rollbackOrCarryOn(env, m, "you")
+	case env.Current != m.To:
+		// Not the new binary. Boots == 0: the swap never finished (a crash
+		// between the marker and the rename) — nothing happened, try again
+		// later. Otherwise the rollback already happened: record it once.
+		if env.Current == m.From && m.Boots > 0 {
+			recordRolledBack(env.StateDir, m.To, "health")
 		}
 		_ = os.Remove(pendingPath(env.StateDir))
 		return &Guard{}, nil
@@ -107,47 +123,68 @@ func BootGuard(env GuardEnv) (*Guard, error) {
 	m.Boots++
 	if m.Boots > maxBoots {
 		env.Log.Error("update failed its health check; rolling back", "version", m.To, "starts", m.Boots-1, "to", m.From)
-		return &Guard{RestartNow: true}, rollback(env, m, "failed its health check")
+		return rollbackOrCarryOn(env, m, "health")
 	}
 	if err := writeMarker(env.StateDir, m); err != nil {
-		return &Guard{}, fmt.Errorf("update marker: %w", err)
+		// The count can't be kept; the watchdog below still stops a hang.
+		env.Log.Error("update probation: can't record this start", "err", err)
 	}
 	env.Log.Info("starting an updated daemon on probation", "version", m.To, "start", m.Boots)
 	watchdog := time.AfterFunc(confirmWithin, func() {
 		env.Log.Error("updated daemon did not come up in time; counting a failed start", "version", m.To)
 		env.Exit(RestartExitCode)
 	})
+	version := m.To
 	return &Guard{confirm: func() {
 		watchdog.Stop()
-		_ = os.Remove(pendingPath(env.StateDir))
-		// Keep the database backup until the next update: a manual rollback
+		// Only our own probation marker: never a rollback the user asked for
+		// in the meantime.
+		if cur, ok := readMarker(env.StateDir); ok && !cur.Rollback && cur.To == version {
+			_ = os.Remove(pendingPath(env.StateDir))
+		}
+		// The database backup stays until the next update: a manual rollback
 		// may need it.
-		ps, _ := loadPersisted(env.StateDir)
-		ps.InstalledAt, ps.RolledBackFrom = env.Now(), ""
-		_ = savePersisted(env.StateDir, ps)
-		env.Log.Info("update confirmed healthy", "version", m.To)
+		_, _ = updateState(env.StateDir, func(ps *persisted) {
+			ps.InstalledAt, ps.RolledBackFrom, ps.RolledBackBy, ps.RollbackError = env.Now(), "", "", ""
+		})
+		env.Log.Info("update confirmed healthy", "version", version)
 	}}, nil
 }
 
-// rollback puts the previous binary back and, if the update moved the
-// database schema on, the pre-update database copy. The version rolled back
-// from is skipped from now on.
-func rollback(env GuardEnv, m marker, why string) error {
-	prev := prevBinary(env.Binary)
-	if _, err := os.Stat(prev); err != nil {
+// rollbackOrCarryOn rolls back and asks for a restart — or, if the rollback
+// itself fails, records that and lets this binary start (a restart loop
+// that can never succeed helps nobody).
+func rollbackOrCarryOn(env GuardEnv, m marker, by string) (*Guard, error) {
+	if err := rollback(env, m, by); err != nil {
+		env.Log.Error("rollback failed; starting the current version", "err", err)
 		_ = os.Remove(pendingPath(env.StateDir))
+		_, _ = updateState(env.StateDir, func(ps *persisted) { ps.RollbackError = err.Error() })
+		return &Guard{}, err
+	}
+	return &Guard{RestartNow: true}, nil
+}
+
+// rollback puts the previous binary back and — only if the version going
+// back can't read the current database (a breaking migration raised its
+// schema_min_reader past the old schema) — the pre-update database copy.
+// The version rolled back from is skipped from now on.
+func rollback(env GuardEnv, m marker, by string) error {
+	prev := prevBinary(env.Binary)
+	if !fileExists(prev) {
 		return errors.New("no previous binary to roll back to")
 	}
-	if b := backupPath(env.StateDir); fileExists(b) && env.DBVersion != nil {
-		live, err1 := env.DBVersion(env.DBPath)
-		old, err2 := env.DBVersion(b)
-		if err1 == nil && err2 == nil && live > old {
+	if b := backupPath(env.StateDir); fileExists(b) && env.DBVersion != nil && env.DBMinReader != nil {
+		oldSchema, err1 := env.DBVersion(b)
+		minReader, err2 := env.DBMinReader(env.DBPath)
+		if err1 == nil && err2 == nil && minReader > oldSchema {
+			// The old WAL belongs to the database being replaced: remove it
+			// first, so a crash can never pair it with the restored file.
+			_ = os.Remove(env.DBPath + "-wal")
+			_ = os.Remove(env.DBPath + "-shm")
 			if err := copyFileAtomic(b, env.DBPath, 0o600); err != nil {
 				return fmt.Errorf("restore database: %w", err)
 			}
-			_ = os.Remove(env.DBPath + "-wal")
-			_ = os.Remove(env.DBPath + "-shm")
-			env.Log.Warn("restored the database from before the update (its schema had moved on)")
+			env.Log.Warn("restored the database from before the update (the previous version can't read the new one)")
 		}
 	}
 	if err := copyFileAtomic(prev, env.Binary, 0o755); err != nil {
@@ -161,21 +198,13 @@ func rollback(env GuardEnv, m marker, why string) error {
 		// it on its first start.
 		_ = writeMarker(env.StateDir, marker{From: m.From, To: m.To, At: env.Now(), Boots: maxBoots + 1})
 	}
-	recordRolledBack(env.StateDir, m.To)
-	env.Log.Warn("rolled back", "from", m.To, "reason", why)
+	recordRolledBack(env.StateDir, m.To, by)
+	env.Log.Warn("rolled back", "from", m.To, "by", by)
 	return nil
 }
 
-func recordRolledBack(dir, version string) {
-	ps, err := loadPersisted(dir)
-	if err != nil {
-		return
-	}
-	ps.RolledBackFrom, ps.Skip = version, version
-	_ = savePersisted(dir, ps)
-}
-
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
+func recordRolledBack(dir, version, by string) {
+	_, _ = updateState(dir, func(ps *persisted) {
+		ps.RolledBackFrom, ps.RolledBackBy, ps.Skip, ps.RollbackError = version, by, version, ""
+	})
 }

@@ -66,11 +66,18 @@ this" (then: notify only).
 ## Where clients look
 
 1. `https://riftroute.tellnew.tech/api/v1/update/stable` → the signed manifest
-   and signature, plus unsigned advice `{rollout_percent, halt}`.
-2. If that fails (network, 5xx, bad signature):
+   and signature, plus unsigned advice `{rollout_percent, halt}`. The daemon
+   remembers the server's last advice on the newest release.
+2. If that fails (network, 404, 5xx, bad signature):
    `https://github.com/Amirhat/riftroute/releases/latest/download/manifest.json`
-   (+ `.sig`). No advice there: GitHub's copy is treated as 100 % rollout.
-3. If our server answered `halt`, the daemon does NOT fall back to GitHub.
+   (+ `.sig`). That copy obeys the server's last advice on the same version
+   (so a halt the daemon has seen holds even when the server is unreachable);
+   a release the server never advised on is held for 7 days after it was
+   published before it installs from GitHub — time to halt or pull it.
+3. **Halting a release** = Halt on the admin page. To pull one completely,
+   also delete `manifest.json` from its GitHub release.
+4. If the server can't read its own advice it answers 503 (fail closed), and
+   the daemon goes by the last advice it saw.
 
 The request carries no identifier: no install ID, no version in the URL; the
 User-Agent is just `riftroute`. The server keeps no access log.
@@ -85,30 +92,52 @@ User-Agent is just `riftroute`. The server keeps no access log.
   Nothing about the bucket is sent anywhere.
 - **notify:** record "0.2.6 available" in State; app and CLI show it with an
   Install button / `riftroute update install`.
-- **auto:** download → verify SHA-256 against the signed entry → unpack to a
-  root-only staging dir → **self-test the new binary** (`riftrouted -selftest`:
-  opens a *copy* of the database and runs its migrations, parses the config,
-  checks the provider is usable, exits) → wait for the **idle gate** → swap.
-- **Idle gate:** no transaction pending, no commit-confirm countdown running,
-  no apply in the last 10 minutes, kill switch not mid-sync. Otherwise retry
-  later.
+- "Check now" and "Install now" run on the daemon's own lifetime: the request
+  returns with the verdict, the download and self-test carry on, and clients
+  follow along through `GET /update` / State.
+- **auto:** download → verify SHA-256 and size against the signed entry →
+  unpack the daemon into a root-only staging dir of its own
+  (`update-staging/<version>/`) → **self-test the new binary**: its
+  `-version` must be the signed version, and `riftrouted -selftest` — run
+  with the service's own arguments, pointed at a *copy* of the database —
+  must migrate that copy and initialise the provider → wait for the **idle
+  gate** → look once more (a halt or a newer release since staging stops it;
+  the staged file's hash is re-checked) → swap.
+- A release is **skipped** only when it is itself broken (its self-test runs
+  and fails, its tarball lacks a proper `riftrouted`, its version doesn't
+  match). A cancelled, interrupted or I/O-failed attempt is retried later.
+- **Idle gate:** the daemon takes its apply lock only if nothing is being
+  applied, nothing awaits confirmation, and no change started in the last 10
+  minutes — and keeps it from the swap until it exits, so no change can
+  start in between. User rollbacks wait for the same quiet moment.
 - **Swap:** back up the database, keep the current binary as `riftrouted.prev`,
   atomically rename the new one into place, write an "update pending" marker,
   exit; launchd/systemd restart the daemon (KeepAlive / Restart=always).
-- **Health gate + offline rollback:** the new daemon's very first action is to
-  read the marker. It must come fully up (store open, provider ready, socket
-  serving) and then clears the marker. If it restarts 3 times within 5 minutes
-  without clearing it, that early code restores `riftrouted.prev` (and the
-  database backup if the schema moved), records "rolled back from 0.2.6", and
+- **Health gate + offline rollback:** before opening its database, the new
+  daemon reads the marker. It must answer `GET /healthz` on its socket
+  (checked from 20 s after start) within 5 minutes; a start that doesn't
+  counts as failed. After **three failed starts** that early code restores
+  `riftrouted.prev` — and the pre-update database only if the previous
+  version can't read the new one (a breaking migration raised
+  `schema_min_reader` past it) — records who rolled back and from what, and
   exits so the service manager starts the old binary. No network needed. A
-  rolled-back version is not retried until a newer one appears.
-- The CLI binary in the tarball is updated alongside the daemon's copy where
-  the daemon installed it; the desktop app bundle is not touched.
+  rolled-back version is not offered again until a newer one appears. If the
+  rollback itself can't be done, that is recorded and shown, and the current
+  binary starts (no restart loop).
+- A crash between writing the marker and replacing the binary changed
+  nothing; the next start clears the marker without skipping the release.
+- Only the daemon binary is replaced. The CLI inside the app bundle (or
+  wherever it was installed) and the desktop app are not touched.
+- `daemon install` / `uninstall` clear the previous binary, the database
+  backup and any pending marker.
+- **macOS:** the release tarball's daemon is ad-hoc signed; if the installed
+  one came from a Developer-ID-signed build, macOS may show its "background
+  item" notice once after the first automatic update.
 
 ## Where auto-install is NOT used
 
 - **Linux `.deb` installs** — the package manager owns those files; the daemon
-  only notifies. (Detected by `dpkg -S` on the installed binary.)
+  only notifies. (Detected by whether the `riftroute` package is installed.)
 - **The desktop app** (`RiftRoute.app` / AppImage) — notify with a download
   link; macOS app bundles need re-signing and the app replaces itself poorly.
 - A daemon that is not installed as a service (dev runs) never updates itself.
@@ -119,7 +148,9 @@ User-Agent is just `riftroute`. The server keeps no access log.
   The server verifies the signature on upload/load too, and refuses a manifest
   that doesn't verify or goes backwards.
 - Admin page "Releases": current version per channel, rollout percent (0 / 5 /
-  25 / 50 / 100), Halt / Resume. Changes are logged in the admin audit.
+  25 / 50 / 100), Halt / Resume. Changes are written to the server's log.
+- Re-publishing the same version (e.g. to add an asset) keeps its rollout and
+  halt; a new version starts at the percent given to publish (default 100).
 - No counting of update checks in this phase (that belongs to telemetry,
   phase 3, with its own consent rules).
 

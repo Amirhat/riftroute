@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,15 +50,18 @@ func selfUpdatable(exe, providerName string) bool {
 	return !packageManaged(exe)
 }
 
-// packageManaged reports whether a package manager owns the file (a .deb
-// install): those are updated through the package manager, not by us.
-func packageManaged(path string) bool {
+// packageManaged reports whether RiftRoute came from a package (the .deb):
+// those installs are updated through the package manager, not by us. The
+// .deb ships /usr/bin/riftrouted and its service runs a copy, so ask dpkg
+// whether the package is installed rather than who owns the running file.
+func packageManaged(string) bool {
 	if runtime.GOOS != "linux" {
 		return false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return exec.CommandContext(ctx, "dpkg-query", "-S", path).Run() == nil
+	out, err := exec.CommandContext(ctx, "dpkg-query", "-W", "-f=${Status}", "riftroute").Output()
+	return err == nil && strings.Contains(string(out), "install ok installed")
 }
 
 // bootGuard runs before the database is opened: it confirms, counts or rolls
@@ -65,7 +69,7 @@ func packageManaged(path string) bool {
 func bootGuard(current, exe, stateDir, dbPath string, logger *slog.Logger) (*updater.Guard, error) {
 	g, err := updater.BootGuard(updater.GuardEnv{
 		Current: current, Binary: exe, StateDir: stateDir, DBPath: dbPath,
-		DBVersion: store.FileUserVersion, Log: logger,
+		DBVersion: store.FileUserVersion, DBMinReader: store.FileMinReader, Log: logger,
 	})
 	if err != nil {
 		logger.Error("update boot guard", "err", err)
@@ -76,27 +80,68 @@ func bootGuard(current, exe, stateDir, dbPath string, logger *slog.Logger) (*upd
 	return g, err
 }
 
-// confirmWhenServing marks an update healthy once the daemon has been up and
-// answering on its socket for a while.
+// confirmWhenServing marks an update on probation healthy once the daemon
+// has been up for a while and answers GET /healthz on its socket (an HTTP
+// answer, not just an accepted connection). Until then — or if it never
+// answers — the boot guard's watchdog decides.
 func confirmWhenServing(ctx context.Context, g *updater.Guard, socket string) {
-	select {
-	case <-ctx.Done():
+	if !g.Probation() {
 		return
-	case <-time.After(30 * time.Second):
 	}
-	c, err := net.DialTimeout("unix", socket, 2*time.Second)
-	if err != nil {
-		return // not serving: the boot guard's watchdog counts this start as failed
+	hc := &http.Client{
+		Timeout: 3 * time.Second,
+		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		}},
 	}
-	_ = c.Close()
-	g.Confirm()
+	wait := 20 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = 5 * time.Second
+		resp, err := hc.Get("http://riftrouted/healthz")
+		if err != nil {
+			continue
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			g.Confirm()
+			return
+		}
+	}
+}
+
+// selfTestArgs is the command line the updater runs a staged binary with:
+// the running service's own arguments (so a release that dropped a flag the
+// service uses fails here, not at restart), pointed at a database copy.
+func selfTestArgs(serviceArgs []string, db string) []string {
+	out := []string{"-selftest", "-db", db}
+	for i := 0; i < len(serviceArgs); i++ {
+		a := serviceArgs[i]
+		name := strings.TrimLeft(a, "-")
+		switch {
+		case name == "db" || name == "selftest":
+			if name == "db" && !strings.Contains(a, "=") {
+				i++ // its value
+			}
+		case strings.HasPrefix(name, "db=") || strings.HasPrefix(name, "selftest="):
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // newUpdater builds the daemon's updater.
-func newUpdater(st *store.Store, proto *safety.Protocol, current, exe, stateDir, dbPath, providerName, channel string,
+func newUpdater(ctx context.Context, st *store.Store, proto *safety.Protocol, current, exe, stateDir, dbPath, providerName, channel string,
 	restart *atomic.Int32, stop func(), logger *slog.Logger) (*updater.Updater, error) {
+	serviceArgs := append([]string(nil), os.Args[1:]...)
 	return updater.New(updater.Env{
-		Current: current, Channel: channel,
+		Ctx: ctx, Current: current, Channel: channel,
 		ServerURL: updater.DefaultServerURL, FallbackURL: updater.DefaultFallbackURL,
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
 		Binary: exe, StateDir: stateDir, DBPath: dbPath,
@@ -109,19 +154,10 @@ func newUpdater(st *store.Store, proto *safety.Protocol, current, exe, stateDir,
 			}
 			return p.Updates
 		},
-		Idle: func() (bool, string) {
-			busy, last := proto.Busy()
-			if busy {
-				return false, "a change is being applied or awaits confirmation"
-			}
-			if !last.IsZero() && time.Since(last) < 10*time.Minute {
-				return false, "a change was made in the last 10 minutes"
-			}
-			return true, ""
-		},
+		Quiesce:  func() (func(), bool, string) { return proto.TryQuiesce(10 * time.Minute) },
 		BackupDB: st.BackupTo,
 		SelfTest: func(ctx context.Context, bin, db string) error {
-			out, err := exec.CommandContext(ctx, bin, "-selftest", "-db", db, "-provider", providerName).CombinedOutput()
+			out, err := exec.CommandContext(ctx, bin, selfTestArgs(serviceArgs, db)...).CombinedOutput()
 			if err != nil {
 				tail := strings.TrimSpace(string(out))
 				if len(tail) > 400 {

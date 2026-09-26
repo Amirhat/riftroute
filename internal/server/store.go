@@ -142,14 +142,19 @@ func (s *store) pruneDevices(now time.Time) error {
 }
 
 // advice is a channel's rollout advice; a channel nobody configured is fully
-// rolled out.
-func (s *store) advice(channel string) update.Advice {
+// rolled out. A read error is returned, never papered over with "go ahead".
+func (s *store) advice(channel string) (update.Advice, error) {
 	a := update.Advice{RolloutPercent: 100}
 	var halt int
-	if err := s.db.QueryRow(`SELECT rollout_percent, halt FROM update_channels WHERE channel=?`, channel).Scan(&a.RolloutPercent, &halt); err == nil {
-		a.Halt = halt != 0
+	err := s.db.QueryRow(`SELECT rollout_percent, halt FROM update_channels WHERE channel=?`, channel).Scan(&a.RolloutPercent, &halt)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return a, nil
+	case err != nil:
+		return update.Advice{}, err
 	}
-	return a
+	a.Halt = halt != 0
+	return a, nil
 }
 
 func (s *store) setAdvice(channel string, a update.Advice, now time.Time) error {

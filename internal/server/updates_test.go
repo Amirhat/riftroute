@@ -153,3 +153,46 @@ func TestAdminRolloutAndHalt(t *testing.T) {
 		t.Fatal("rollout changes not logged")
 	}
 }
+
+// Re-publishing the same release (e.g. to add an asset) keeps its rollout
+// and halt; only an explicit percent changes them.
+func TestRepublishKeepsTheRollout(t *testing.T) {
+	priv, keys := releaseKey(t)
+	e := newEnvKeys(t, "", keys)
+	raw, sig := signedRelease(t, priv, "stable", "0.2.6")
+	if _, err := PublishManifest(e.dir, "stable", raw, sig, 5, keys, e.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.st.setAdvice("stable", update.Advice{RolloutPercent: 5, Halt: true}, e.now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PublishManifest(e.dir, "stable", raw, sig, -1, keys, e.now); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := e.srv.st.advice("stable"); a.RolloutPercent != 5 || !a.Halt {
+		t.Fatalf("re-publish reset the advice: %+v", a)
+	}
+	next, nsig := signedRelease(t, priv, "stable", "0.2.7")
+	if _, err := PublishManifest(e.dir, "stable", next, nsig, -1, keys, e.now); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := e.srv.st.advice("stable"); a.RolloutPercent != 100 || a.Halt {
+		t.Fatalf("a new version should start fresh at 100%%: %+v", a)
+	}
+}
+
+// Without its rollout advice the server says nothing (503, not cached)
+// rather than "go ahead".
+func TestAdviceErrorFailsClosed(t *testing.T) {
+	priv, keys := releaseKey(t)
+	e := newEnvKeys(t, "", keys)
+	raw, sig := signedRelease(t, priv, "stable", "0.2.6")
+	if _, err := PublishManifest(e.dir, "stable", raw, sig, 0, keys, e.now); err != nil {
+		t.Fatal(err)
+	}
+	_ = e.srv.st.close()
+	w := e.do("GET", "/api/v1/update/stable", nil)
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("advice error: %d %q %s", w.Code, w.Header().Get("Cache-Control"), w.Body.String())
+	}
+}

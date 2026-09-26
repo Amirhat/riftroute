@@ -198,3 +198,16 @@ func cmdContains(needle string, name string, args ...string) bool {
 	}
 	return strings.Contains(string(out), needle)
 }
+
+// clearUpdateFiles removes what the daemon's updater keeps beside the
+// installed binary and database: the previous binary, the pre-update
+// database backup, a pending-update marker and staged downloads. (The
+// updater's small state file — rollout bucket, skipped version — stays.)
+func clearUpdateFiles() {
+	_ = os.Remove(installedBin + ".prev")
+	dir := DefaultPaths().StateDir
+	for _, f := range []string{"update-backup.db", "update-pending.json"} {
+		_ = os.Remove(filepath.Join(dir, f))
+	}
+	_ = os.RemoveAll(filepath.Join(dir, "update-staging"))
+}

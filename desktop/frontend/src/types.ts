@@ -344,6 +344,7 @@ export interface UpdateStatus {
   error?: string
   staged?: string
   rolled_back_from?: string
+  rolled_back_by?: 'health' | 'you'
   installed_at?: string
   can_roll_back: boolean
   self_updatable: boolean

@@ -46,7 +46,7 @@ func updateCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return showUpdate(cmd, st)
+				return showUpdate(cmd, settle(cmd, st))
 			},
 		},
 		&cobra.Command{
@@ -71,6 +71,25 @@ func updateCmd() *cobra.Command {
 		},
 	)
 	return cmd
+}
+
+// settle follows a check the daemon keeps working on (download, self-test)
+// until it has something to say, for up to a few minutes.
+func settle(cmd *cobra.Command, st domain.UpdateStatus) domain.UpdateStatus {
+	deadline := time.Now().Add(4 * time.Minute)
+	for (st.State == "checking" || st.State == "downloading") && time.Now().Before(deadline) {
+		select {
+		case <-cmd.Context().Done():
+			return st
+		case <-time.After(time.Second):
+		}
+		next, err := client().UpdateStatus(cmd.Context())
+		if err != nil {
+			return st
+		}
+		st = next
+	}
+	return st
 }
 
 // noUpdater: a daemon from before automatic updates (no /update endpoint) or

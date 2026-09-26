@@ -137,6 +137,30 @@ type Protocol struct {
 	lastTx   time.Time // start of the most recent transaction (txmu)
 }
 
+// TryQuiesce takes the apply lock if the daemon is quiet — nothing being
+// applied, nothing awaiting confirmation, no change started within quiet —
+// and keeps it until release is called (the updater holds it from the swap
+// until the process exits, so no change can start in between). When it isn't
+// quiet it says why and holds nothing.
+func (p *Protocol) TryQuiesce(quiet time.Duration) (release func(), ok bool, why string) {
+	if !p.applyMu.TryLock() {
+		return nil, false, "a change is being applied"
+	}
+	p.txmu.Lock()
+	pending, last := len(p.pending), p.lastTx
+	p.txmu.Unlock()
+	switch {
+	case pending > 0:
+		p.applyMu.Unlock()
+		return nil, false, "a change is awaiting confirmation"
+	case !last.IsZero() && p.clock.Now().Sub(last) < quiet:
+		p.applyMu.Unlock()
+		return nil, false, fmt.Sprintf("a change was made in the last %s", quiet.Round(time.Minute))
+	}
+	var once sync.Once
+	return func() { once.Do(p.applyMu.Unlock) }, true, ""
+}
+
 // Busy reports whether a change is being applied or is still on probation
 // (awaiting confirmation, watchdog armed), and when the last one started.
 // The updater waits for quiet before replacing the daemon.

@@ -17,12 +17,12 @@ type stubUpdater struct {
 }
 
 func (s *stubUpdater) Status() domain.UpdateStatus { return s.st }
-func (s *stubUpdater) Check(_ context.Context, manual bool) domain.UpdateStatus {
-	s.checkedHand = manual
+func (s *stubUpdater) CheckNow() domain.UpdateStatus {
+	s.checkedHand = true
 	s.st.Latest = "0.2.7"
 	return s.st
 }
-func (s *stubUpdater) InstallNow(context.Context) (domain.UpdateStatus, error) {
+func (s *stubUpdater) InstallNow() (domain.UpdateStatus, error) {
 	return s.st, s.installErr
 }
 func (s *stubUpdater) RequestRollback() error { s.rolledBack = true; return nil }

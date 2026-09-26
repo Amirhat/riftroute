@@ -11,14 +11,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,8 +129,23 @@ type harness struct {
 	env      Env
 	restarts atomic.Int32
 	idle     atomic.Bool
+	held     atomic.Int32 // apply lock taken and not released
 	mode     atomic.Value
-	selfErr  error // SelfTest runs synchronously inside Check
+	selfErr  error  // SelfTest runs synchronously inside a job
+	selfHook func() // runs inside SelfTest (e.g. to cancel mid-test)
+}
+
+// check runs the periodic job synchronously and returns the status.
+func (h *harness) check() domain.UpdateStatus {
+	h.u.runJob(context.Background(), jobAuto, nil)
+	return h.u.Status()
+}
+
+// tick is the loop's quiet-moment attempt.
+func (h *harness) tick() {
+	h.u.busy.Lock()
+	h.u.installLocked(context.Background())
+	h.u.busy.Unlock()
 }
 
 func newHarness(t *testing.T, f *fakeRelease, current string) *harness {
@@ -144,19 +162,27 @@ func newHarness(t *testing.T, f *fakeRelease, current string) *harness {
 	h.mode.Store(domain.UpdateAuto)
 	u, _ := url.Parse(f.srv.URL)
 	h.env = Env{
-		Current: current, Channel: "stable", ServerURL: DefaultServerURL, FallbackURL: DefaultFallbackURL,
+		Ctx: context.Background(), Current: current, Channel: "stable", ServerURL: DefaultServerURL, FallbackURL: DefaultFallbackURL,
 		Keys: f.keys, GOOS: "darwin", GOARCH: "arm64", Binary: bin, StateDir: dir, DBPath: db,
 		SelfUpdatable: true, HTTP: &http.Client{Transport: rewrite{u}},
 		Mode: func() domain.UpdateMode { return h.mode.Load().(domain.UpdateMode) },
-		Idle: func() (bool, string) {
-			if h.idle.Load() {
-				return true, ""
+		Quiesce: func() (func(), bool, string) {
+			if !h.idle.Load() {
+				return nil, false, "a change is awaiting confirmation"
 			}
-			return false, "a change is awaiting confirmation"
+			h.held.Add(1)
+			var once sync.Once
+			return func() { once.Do(func() { h.held.Add(-1) }) }, true, ""
 		},
 		BackupDB: func(p string) error { return os.WriteFile(p, []byte("db copy"), 0o600) },
 		SelfTest: func(ctx context.Context, bin, db string) error {
-			return h.selfErr
+			if h.selfHook != nil {
+				h.selfHook()
+			}
+			if h.selfErr != nil {
+				return h.selfErr
+			}
+			return ctx.Err()
 		},
 		Restart: func() { h.restarts.Add(1) },
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -173,16 +199,16 @@ func TestUpdateStagesThenInstallsAtAQuietMoment(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
 	h.idle.Store(false)
-	st := h.u.Check(context.Background(), false)
+	st := h.check()
 	if st.Action != "install" || st.Staged != "0.2.7" || st.Source != "server" {
 		t.Fatalf("after check: %+v", st)
 	}
-	h.u.maybeInstall(context.Background())
+	h.tick()
 	if st := h.u.Status(); st.State != "waiting" || !strings.Contains(st.Reason, "awaiting confirmation") || h.restarts.Load() != 0 {
 		t.Fatalf("busy daemon: %+v restarts=%d", st, h.restarts.Load())
 	}
 	h.idle.Store(true)
-	h.u.maybeInstall(context.Background())
+	h.tick()
 	if h.restarts.Load() != 1 {
 		t.Fatal("no restart after installing")
 	}
@@ -204,13 +230,13 @@ func TestFallsBackToGitHubButNeverPastAHalt(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
 	f.serverDown.Store(true)
-	if st := h.u.Check(context.Background(), false); st.Source != "github" || st.Action != "install" {
+	if st := h.check(); st.Source != "github" || st.Action != "install" {
 		t.Fatalf("fallback: %+v", st)
 	}
 	f2 := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	f2.advice = update.Advice{RolloutPercent: 100, Halt: true}
 	h2 := newHarness(t, f2, "0.2.6")
-	if st := h2.u.Check(context.Background(), false); st.Action != "hold" || st.Source != "server" || st.Staged != "" || f2.downloads.Load() != 0 {
+	if st := h2.check(); st.Action != "hold" || st.Source != "server" || st.Staged != "" || f2.downloads.Load() != 0 {
 		t.Fatalf("halt: %+v downloads=%d", st, f2.downloads.Load())
 	}
 }
@@ -219,12 +245,12 @@ func TestTamperedDownloadIsRefusedAndRetriedLater(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
 	f.tamper.Store(true)
-	st := h.u.Check(context.Background(), false)
+	st := h.check()
 	if st.Staged != "" || st.State != "error" || !strings.Contains(st.Error, "signed checksum") {
 		t.Fatalf("tampered: %+v", st)
 	}
 	f.tamper.Store(false) // a network glitch isn't the release's fault
-	if st := h.u.Check(context.Background(), false); st.Staged != "0.2.7" {
+	if st := h.check(); st.Staged != "0.2.7" {
 		t.Fatalf("retry: %+v", st)
 	}
 }
@@ -232,12 +258,12 @@ func TestTamperedDownloadIsRefusedAndRetriedLater(t *testing.T) {
 func TestReleaseThatFailsItsSelfTestIsSkipped(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
-	h.selfErr = errors.New("migration 9 failed")
-	if st := h.u.Check(context.Background(), false); st.Staged != "" || !strings.Contains(st.Error, "self-test") {
+	h.selfErr = exitError(t) // the binary ran and exited non-zero
+	if st := h.check(); st.Staged != "" || !strings.Contains(st.Error, "self-test") {
 		t.Fatalf("self-test failure: %+v", st)
 	}
 	h.selfErr = nil
-	if st := h.u.Check(context.Background(), false); st.Action != "none" || f.downloads.Load() != 1 {
+	if st := h.check(); st.Action != "none" || f.downloads.Load() != 1 {
 		t.Fatalf("failed release offered again: %+v downloads=%d", st, f.downloads.Load())
 	}
 }
@@ -246,7 +272,7 @@ func TestReleaseThatFailsItsSelfTestIsSkipped(t *testing.T) {
 func TestStagedBinaryMustBeTheSignedVersion(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.8"))
 	h := newHarness(t, f, "0.2.6")
-	if st := h.u.Check(context.Background(), false); st.Staged != "" || !strings.Contains(st.Error, "manifest says 0.2.7") {
+	if st := h.check(); st.Staged != "" || !strings.Contains(st.Error, "manifest says 0.2.7") {
 		t.Fatalf("version mismatch: %+v", st)
 	}
 }
@@ -255,25 +281,29 @@ func TestNotifyModeWaitsForTheUser(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
 	h.mode.Store(domain.UpdateNotify)
-	if st := h.u.Check(context.Background(), false); st.Action != "notify" || st.Staged != "" {
+	if st := h.check(); st.Action != "notify" || st.Staged != "" {
 		t.Fatalf("notify: %+v", st)
 	}
-	h.u.maybeInstall(context.Background())
+	h.tick()
 	if h.restarts.Load() != 0 {
 		t.Fatal("installed without being asked")
 	}
-	if _, err := h.u.InstallNow(context.Background()); err != nil || h.restarts.Load() != 1 {
-		t.Fatalf("install now: %v restarts=%d", err, h.restarts.Load())
+	if _, err := h.u.InstallNow(); err != nil {
+		t.Fatalf("install now: %v", err)
+	}
+	h.u.wait()
+	if h.restarts.Load() != 1 {
+		t.Fatalf("install now: restarts=%d", h.restarts.Load())
 	}
 }
 
 func TestDevBuildsAndManagedInstallsAreNotReplaced(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6-3-gabc1234")
-	if st := h.u.Check(context.Background(), false); st.Action != "notify" {
+	if st := h.check(); st.Action != "notify" {
 		t.Fatalf("dev build: %+v", st)
 	}
-	if _, err := h.u.InstallNow(context.Background()); err == nil {
+	if _, err := h.u.InstallNow(); err == nil {
 		t.Fatal("dev build installed a release over itself")
 	}
 }
@@ -282,8 +312,8 @@ func TestRolloutBucketIsStable(t *testing.T) {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
 	u2, err := New(h.env)
-	if err != nil || u2.bucket() != h.u.bucket() {
-		t.Fatalf("bucket changed across restarts: %d vs %d (%v)", u2.bucket(), h.u.bucket(), err)
+	if err != nil || u2.ps.Bucket != h.u.ps.Bucket {
+		t.Fatalf("bucket changed across restarts: %d vs %d (%v)", u2.ps.Bucket, h.u.ps.Bucket, err)
 	}
 }
 
@@ -298,8 +328,8 @@ func guardEnv(h *harness, current string) GuardEnv {
 func installed(t *testing.T) *harness {
 	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
 	h := newHarness(t, f, "0.2.6")
-	h.u.Check(context.Background(), false)
-	h.u.maybeInstall(context.Background())
+	h.check()
+	h.tick()
 	if h.restarts.Load() != 1 {
 		t.Fatal("setup: install didn't happen")
 	}
@@ -353,7 +383,7 @@ func TestUpdateThatNeverComesUpIsRolledBack(t *testing.T) {
 	if st := u2.Status(); st.RolledBackFrom != "0.2.7" {
 		t.Fatalf("rollback not recorded: %+v", st)
 	}
-	if st := u2.Check(context.Background(), false); st.Action != "none" {
+	if st := func() domain.UpdateStatus { u2.runJob(context.Background(), jobAuto, nil); return u2.Status() }(); st.Action != "none" {
 		t.Fatalf("rolled-back version offered again: %+v", st)
 	}
 }
@@ -362,11 +392,12 @@ func TestRollbackRestoresTheDatabaseOnlyWhenTheSchemaMoved(t *testing.T) {
 	for _, moved := range []bool{false, true} {
 		h := installed(t)
 		env := guardEnv(h, "0.2.7")
-		env.DBVersion = func(p string) (int, error) {
-			if p == h.env.DBPath && moved {
-				return 5, nil
+		env.DBVersion = func(string) (int, error) { return 4, nil } // the backup's schema
+		env.DBMinReader = func(string) (int, error) {               // the live database's minimum reader
+			if moved {
+				return 5, nil // a breaking migration: the old version can't read it
 			}
-			return 4, nil
+			return 0, nil
 		}
 		for i := 0; i <= maxBoots; i++ {
 			_, _ = BootGuard(env)
@@ -430,8 +461,18 @@ func TestNoReleaseYetIsNotAnError(t *testing.T) {
 	h := newHarness(t, f, "0.2.6")
 	u, _ := url.Parse(httptest.NewServer(http.NotFoundHandler()).URL)
 	h.u.env.HTTP = &http.Client{Transport: rewrite{u}}
-	st := h.u.Check(context.Background(), true)
+	st := func() domain.UpdateStatus { h.u.runJob(context.Background(), jobManual, nil); return h.u.Status() }()
 	if st.Error != "" || st.State != "idle" || st.Action != "none" || !strings.Contains(st.Reason, "No signed release") {
 		t.Fatalf("no release yet: %+v", st)
 	}
+}
+
+func exitError(t *testing.T) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit 3").Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		t.Fatalf("setup: %v", err)
+	}
+	return fmt.Errorf("self-test failed: %w", err)
 }

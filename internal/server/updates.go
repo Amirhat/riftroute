@@ -84,7 +84,12 @@ func (s *Server) channels() ([]*Channel, map[string]error) {
 			errs[e.Name()] = err
 			continue
 		}
-		c.Advice = s.st.advice(e.Name())
+		adv, err := s.st.advice(e.Name())
+		if err != nil {
+			errs[e.Name()] = err
+			continue
+		}
+		c.Advice = adv
 		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -102,8 +107,9 @@ func (s *Server) keys() map[string]ed25519.PublicKey {
 // (the `riftroute-server publish` command, run on the server as the service
 // account). It refuses anything a client would refuse, a manifest for another
 // channel, and a version older than the one already published; re-publishing
-// the same version (e.g. to add an asset) is allowed. rollout sets the new
-// release's starting rollout percent (the halt switch is cleared).
+// the same version (e.g. to add an asset) is allowed and keeps its rollout and
+// halt as they are. rollout sets a new version's starting percent (-1: 100);
+// for the same version, -1 keeps the current advice.
 func PublishManifest(dataDir, channel string, raw, sig []byte, rollout int, keys map[string]ed25519.PublicKey, now time.Time) (update.Manifest, error) {
 	if keys == nil {
 		keys = update.TrustedKeys
@@ -111,7 +117,7 @@ func PublishManifest(dataDir, channel string, raw, sig []byte, rollout int, keys
 	if !reChannel.MatchString(channel) {
 		return update.Manifest{}, fmt.Errorf("channel %q invalid", channel)
 	}
-	if rollout < 0 || rollout > 100 {
+	if rollout < -1 || rollout > 100 {
 		return update.Manifest{}, errors.New("rollout must be 0–100")
 	}
 	m, err := update.Verify(raw, sig, keys)
@@ -121,8 +127,12 @@ func PublishManifest(dataDir, channel string, raw, sig []byte, rollout int, keys
 	if m.Channel != channel {
 		return update.Manifest{}, fmt.Errorf("this manifest is for channel %q, not %q", m.Channel, channel)
 	}
-	if cur, err := loadChannel(dataDir, channel, keys); err == nil && update.Newer(m.Version, cur.Manifest.Version) {
-		return update.Manifest{}, fmt.Errorf("%s is older than the published %s", m.Version, cur.Manifest.Version)
+	sameVersion := false
+	if cur, err := loadChannel(dataDir, channel, keys); err == nil {
+		if update.Newer(m.Version, cur.Manifest.Version) {
+			return update.Manifest{}, fmt.Errorf("%s is older than the published %s", m.Version, cur.Manifest.Version)
+		}
+		sameVersion = cur.Manifest.Version == m.Version
 	}
 	dir := channelDir(dataDir, channel)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -135,6 +145,12 @@ func PublishManifest(dataDir, channel string, raw, sig []byte, rollout int, keys
 	}
 	if err := writeAtomic(filepath.Join(dir, "manifest.json"), raw); err != nil {
 		return update.Manifest{}, err
+	}
+	if sameVersion && rollout == -1 {
+		return m, nil // same release: its rollout and halt stay as they are
+	}
+	if rollout == -1 {
+		rollout = 100
 	}
 	st, err := openStore(filepath.Join(dataDir, "server.db"))
 	if err != nil {
@@ -192,13 +208,23 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"no release on this channel"}` + "\n"))
 		return
 	}
+	adv, err := s.st.advice(c.Name)
+	if err != nil {
+		// Fail closed: without the rollout advice, say nothing (clients then
+		// go by the last advice they saw).
+		s.cfg.Logger.Error("update advice unreadable", "channel", c.Name, "err", err)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}` + "\n"))
+		return
+	}
 	// A minute of caching (Cloudflare and clients): a halt reaches everyone
 	// within about a minute.
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	_ = json.NewEncoder(w).Encode(updateResponse{
 		Manifest:  base64.StdEncoding.EncodeToString(c.raw),
 		Signature: base64.StdEncoding.EncodeToString(c.sig),
-		Advice:    s.st.advice(c.Name),
+		Advice:    adv,
 	})
 }
 
@@ -218,7 +244,12 @@ func (s *Server) handleReleasesPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown channel", http.StatusBadRequest)
 		return
 	}
-	adv := s.st.advice(channel)
+	adv, err := s.st.advice(channel)
+	if err != nil {
+		s.cfg.Logger.Error("update advice unreadable", "err", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	switch r.PostFormValue("action") {
 	case "halt":
 		adv.Halt = true

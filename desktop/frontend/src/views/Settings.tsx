@@ -448,7 +448,9 @@ function UpdateCard({ prefs, live }: { prefs?: Preferences; live?: UpdateStatus 
         <UpdateLine st={st} />
         {st?.rolled_back_from && (
           <p className="text-xs text-warning">
-            {st.rolled_back_from} didn’t start properly on this computer and was rolled back automatically. It won’t be offered again.
+            {st.rolled_back_by === 'you'
+              ? `You went back from ${st.rolled_back_from}. It won’t be offered again; a newer release will be.`
+              : `${st.rolled_back_from} didn’t start properly on this computer and was rolled back automatically. It won’t be offered again.`}
           </p>
         )}
         {st && !st.self_updatable && available && (

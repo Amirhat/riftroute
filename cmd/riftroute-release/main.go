@@ -125,6 +125,11 @@ func pubkey() error {
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		return errors.New("key file has no valid public key")
 	}
+	// The clear-text public key must be the one its ID names (the ID is bound
+	// to the sealed private key); `sign` proves the pair itself.
+	if update.KeyID(ed25519.PublicKey(pub)) != kf.KeyID {
+		return errors.New("key file's public key doesn't match its key ID — the file was changed")
+	}
 	printPub(ed25519.PublicKey(pub))
 	return nil
 }

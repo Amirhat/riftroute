@@ -434,12 +434,13 @@ func run() error {
 	// Updates: the updater restarts the daemon (via restartCode) into a new
 	// binary; the boot guard confirms this start once it's serving.
 	var restartCode atomic.Int32
-	upd, uerr := newUpdater(st, proto, current, exe, updateDir, dbPath, providerName, channel, &restartCode, stop, logger)
+	upd, uerr := newUpdater(ctx, st, proto, current, exe, updateDir, dbPath, providerName, channel, &restartCode, stop, logger)
 	if uerr != nil {
 		logger.Warn("updater unavailable", "err", uerr)
 	} else {
 		srv.SetUpdater(upd)
 		svc.SetUpdateStatus(upd.Status)
+		guard.OnConfirm = upd.Reload
 		go supervise(ctx, logger, "updater", upd.Run)
 	}
 	go confirmWhenServing(ctx, guard, socketPath)

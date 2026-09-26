@@ -4,6 +4,9 @@
 #
 #   RR_SERVER_HOST=root@<server> [RR_SERVER_KEY=<ssh key>] scripts/publish-manifest.sh v0.2.6 [channel] [rollout%]
 #
+# rollout% defaults to 100 for a new version; re-publishing the same version
+# keeps its current rollout and halt unless you pass one.
+#
 # The files go to a temporary directory on the server; the server's own
 # `riftroute-server publish` (run as its service account) verifies the
 # signature against the release keys compiled into it, refuses anything older
@@ -14,14 +17,14 @@ cd "$(dirname "$0")/.."
 
 TAG=${1:?usage: publish-manifest.sh <tag> [channel] [rollout%]}
 CHANNEL=${2:-stable}
-ROLLOUT=${3:-100}
+ROLLOUT=${3:--1}
 HOST=${RR_SERVER_HOST:?set RR_SERVER_HOST=root@<server>}
 OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 [[ -n "${RR_SERVER_KEY:-}" ]] && OPTS+=(-i "$RR_SERVER_KEY")
 DIR=dist/release/$TAG
 [[ -f $DIR/manifest.json && -f $DIR/manifest.json.sig ]] || { echo "no signed manifest in $DIR (run: riftroute-release sign $TAG)"; exit 1; }
 [[ $CHANNEL =~ ^[a-z][a-z0-9-]{0,31}$ ]] || { echo "bad channel"; exit 1; }
-[[ $ROLLOUT =~ ^[0-9]{1,3}$ ]] && (( ROLLOUT <= 100 )) || { echo "rollout must be 0–100"; exit 1; }
+[[ $ROLLOUT == -1 || ( $ROLLOUT =~ ^[0-9]{1,3}$ && ROLLOUT -le 100 ) ]] || { echo "rollout must be 0–100"; exit 1; }
 
 TMP=$(ssh "${OPTS[@]}" "$HOST" 'd=$(mktemp -d /tmp/rr-publish-XXXXXX) && chmod 755 "$d" && echo "$d"')
 trap 'ssh "${OPTS[@]}" "$HOST" "rm -rf -- $TMP"' EXIT

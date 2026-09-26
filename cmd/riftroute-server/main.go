@@ -179,7 +179,7 @@ func publish(args []string) error {
 	channel := fs.String("channel", "stable", "update channel")
 	manifest := fs.String("manifest", "", "manifest.json")
 	sig := fs.String("sig", "", "manifest.json.sig")
-	rollout := fs.Int("rollout", 100, "starting rollout percent (0–100)")
+	rollout := fs.Int("rollout", -1, "starting rollout percent 0–100 (default: 100 for a new version; unchanged when re-publishing the same one)")
 	_ = fs.Parse(args)
 	if *manifest == "" || *sig == "" {
 		return errors.New("-manifest and -sig are required")
@@ -199,6 +199,6 @@ func publish(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "published %s %s (%d assets) at %d%% rollout\n", *channel, m.Version, len(m.Assets), *rollout)
+	fmt.Fprintf(os.Stderr, "published %s %s (%d assets)\n", *channel, m.Version, len(m.Assets))
 	return nil
 }

@@ -242,7 +242,7 @@ func Decide(in DecideInput) Decision {
 		return Decision{ActionNone, "up to date"}
 	}
 	if in.Skip != "" && !Newer(in.Skip, m.Version) {
-		return Decision{ActionNone, fmt.Sprintf("%s was rolled back on this computer", m.Version)}
+		return Decision{ActionNone, fmt.Sprintf("%s didn't work on this computer and is skipped; a newer release will be offered", m.Version)}
 	}
 	if in.Advice != nil {
 		if in.Advice.Halt {
