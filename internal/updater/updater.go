@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -93,10 +94,12 @@ type Updater struct {
 	st         domain.UpdateStatus
 	ps         persisted // cached; refreshed from disk on every write and by Reload
 	staged     *staged
-	wantNow    bool // the user asked to install: the mode doesn't apply to it
-	installing bool // swapped (or rolling back): nothing more until we exit
+	wantNow    bool              // the user asked to install: the mode doesn't apply to it
+	wantMode   domain.UpdateMode // the mode when they asked (switching to Off later cancels)
+	installing bool              // swapped (or rolling back): nothing more until we exit
 	kick       chan struct{}
-	busy       sync.Mutex // one check/stage/install at a time
+	busy       sync.Mutex  // one check/stage/install at a time
+	queued     atomic.Bool // a job is waiting for busy (at most one)
 	jobs       sync.WaitGroup
 }
 
@@ -227,17 +230,25 @@ func (u *Updater) InstallNow() (domain.UpdateStatus, error) {
 		return u.Status(), errors.New("this is a development build; install the release yourself")
 	}
 	u.mu.Lock()
-	u.wantNow = true
+	u.wantNow, u.wantMode = true, u.env.Mode()
 	u.mu.Unlock()
 	return u.startJob(jobInstall), nil
 }
 
 func (u *Updater) startJob(kind jobKind) domain.UpdateStatus {
+	// Repeated clicks don't pile up: if a job is already waiting, it will
+	// see this request (wantNow is read when it decides).
+	if !u.queued.CompareAndSwap(false, true) {
+		return u.Status()
+	}
 	decided := make(chan struct{})
 	u.jobs.Add(1)
 	go func() {
 		defer u.jobs.Done()
-		u.runJob(u.env.Ctx, kind, decided)
+		u.busy.Lock()
+		u.queued.Store(false)
+		defer u.busy.Unlock()
+		u.job(u.env.Ctx, kind, decided)
 	}()
 	select {
 	case <-decided:
@@ -344,28 +355,31 @@ func (u *Updater) installLocked(ctx context.Context) {
 		return
 	}
 	u.mu.Lock()
-	s, want, installing := u.staged, u.wantNow, u.installing
+	s, want, wantMode, installing := u.staged, u.wantNow, u.wantMode, u.installing
 	u.mu.Unlock()
 	if installing || s == nil {
 		return
 	}
 	mode := u.env.Mode()
-	if mode == domain.UpdateOff {
-		u.clearWant()
+	if want && mode == domain.UpdateOff && wantMode != domain.UpdateOff {
+		u.clearWant() // updates were turned off after "Install now": cancel it
 		want = false
 	}
 	if !want && mode != domain.UpdateAuto {
 		return
 	}
-	release, ok, why := u.env.Quiesce()
-	if !ok {
-		u.set(func(st *domain.UpdateStatus) {
-			st.State, st.Reason = "waiting", fmt.Sprintf("%s is ready; installing at a quiet moment (%s)", s.version, why)
-		})
+	// Look before taking the apply lock: the fetch can take seconds, and a
+	// Panic or a change must never wait on the network.
+	if ok, why := u.quietEnough(); !ok {
+		u.waiting(s.version, why)
 		return
 	}
 	if !u.stillWanted(ctx, s.version) {
-		release()
+		return
+	}
+	release, ok, why := u.env.Quiesce()
+	if !ok {
+		u.waiting(s.version, why)
 		return
 	}
 	if sum, err := fileSHA256(s.path); err != nil || sum != s.sum {
@@ -389,6 +403,21 @@ func (u *Updater) installLocked(ctx context.Context) {
 	u.set(func(st *domain.UpdateStatus) { st.State, st.Staged = "installing", s.version })
 	// The apply lock stays held: no change may start before the restart.
 	u.env.Restart()
+}
+
+func (u *Updater) waiting(version, why string) {
+	u.set(func(st *domain.UpdateStatus) {
+		st.State, st.Reason = "waiting", fmt.Sprintf("%s is ready; installing at a quiet moment (%s)", version, why)
+	})
+}
+
+// quietEnough is a look-only Quiesce: take the lock and give it straight back.
+func (u *Updater) quietEnough() (bool, string) {
+	release, ok, why := u.env.Quiesce()
+	if ok {
+		release()
+	}
+	return ok, why
 }
 
 // stillWanted re-checks the staged version just before the swap. When
@@ -453,7 +482,9 @@ func (u *Updater) RequestRollback() error {
 	if !fileExists(prevBinary(u.env.Binary)) {
 		return errors.New("no previous version is kept on this computer")
 	}
-	u.busy.Lock()
+	if !u.busy.TryLock() {
+		return errors.New("an update check is running; try again in a moment")
+	}
 	defer u.busy.Unlock()
 	u.mu.Lock()
 	installing := u.installing

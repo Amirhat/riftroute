@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -19,7 +20,13 @@ type marker struct {
 	Rollback bool      `json:"rollback,omitempty"` // user-requested rollback
 }
 
+// markerMu serializes marker writes with Confirm's read-then-remove, so a
+// rollback request written in between can never be removed by mistake.
+var markerMu sync.Mutex
+
 func writeMarker(dir string, m marker) error {
+	markerMu.Lock()
+	defer markerMu.Unlock()
 	b, _ := json.Marshal(m)
 	return writeFileAtomic(pendingPath(dir), b, 0o600)
 }
@@ -139,9 +146,11 @@ func BootGuard(env GuardEnv) (*Guard, error) {
 		watchdog.Stop()
 		// Only our own probation marker: never a rollback the user asked for
 		// in the meantime.
+		markerMu.Lock()
 		if cur, ok := readMarker(env.StateDir); ok && !cur.Rollback && cur.To == version {
 			_ = os.Remove(pendingPath(env.StateDir))
 		}
+		markerMu.Unlock()
 		// The database backup stays until the next update: a manual rollback
 		// may need it.
 		_, _ = updateState(env.StateDir, func(ps *persisted) {
@@ -177,11 +186,18 @@ func rollback(env GuardEnv, m marker, by string) error {
 		oldSchema, err1 := env.DBVersion(b)
 		minReader, err2 := env.DBMinReader(env.DBPath)
 		if err1 == nil && err2 == nil && minReader > oldSchema {
-			// The old WAL belongs to the database being replaced: remove it
-			// first, so a crash can never pair it with the restored file.
+			// Copy the backup beside the database first: if that fails, the
+			// live database and its WAL are untouched. Then drop the WAL
+			// (it belongs to the database being replaced — a crash must never
+			// pair it with the restored file) and rename into place.
+			tmp := env.DBPath + ".restore"
+			if err := copyFileAtomic(b, tmp, 0o600); err != nil {
+				_ = os.Remove(tmp)
+				return fmt.Errorf("restore database: %w", err)
+			}
 			_ = os.Remove(env.DBPath + "-wal")
 			_ = os.Remove(env.DBPath + "-shm")
-			if err := copyFileAtomic(b, env.DBPath, 0o600); err != nil {
+			if err := os.Rename(tmp, env.DBPath); err != nil {
 				return fmt.Errorf("restore database: %w", err)
 			}
 			env.Log.Warn("restored the database from before the update (the previous version can't read the new one)")
