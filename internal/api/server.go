@@ -66,6 +66,10 @@ type Server struct {
 	// the protocol doesn't own — the wildcard DNS learner and its resolver
 	// files — restoring the DNS baseline alongside routes/PF. nil = no-op.
 	onPanic func(context.Context)
+	// beforePanic fires inside a panic, before the flush, while every apply
+	// is refused: the daemon takes its tunnels down there, so none of them
+	// re-applies routes after the flush. nil = no-op.
+	beforePanic func(context.Context)
 }
 
 // SetDebugVPN installs a fake-VPN toggle (daemon wires this only for -provider
@@ -86,6 +90,9 @@ func (s *Server) SetOnProfilesChanged(fn func(context.Context)) { s.onProfilesCh
 
 // SetOnPanic installs the post-panic teardown hook (daemon wiring).
 func (s *Server) SetOnPanic(fn func(context.Context)) { s.onPanic = fn }
+
+// SetBeforePanic installs the pre-flush panic step (daemon wiring).
+func (s *Server) SetBeforePanic(fn func(context.Context)) { s.beforePanic = fn }
 
 // notifyProfilesChanged fires the profile-mutation hook, if wired.
 func (s *Server) notifyProfilesChanged(ctx context.Context) {

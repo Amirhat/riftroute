@@ -133,7 +133,9 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	// Detached from the request: a client giving up (uninstall's timeout)
 	// must not cut the removal off half-way.
 	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
-	if err := s.proto.Panic(r.Context(), domain.ActorUI); err != nil {
+	// The daemon's tunnels go down before the flush (beforePanic): each one
+	// going down re-applies the survivors' routes, refused while this runs.
+	if err := s.proto.PanicWith(r.Context(), domain.ActorUI, s.beforePanic); err != nil {
 		writeErr(w, http.StatusInternalServerError, errors.Join(err, ksErr))
 		return
 	}

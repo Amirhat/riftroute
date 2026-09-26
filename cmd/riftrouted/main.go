@@ -438,12 +438,18 @@ func run() error {
 		syncPerApp(ctx)
 		syncWildcards(ctx)
 	})
+	// Panic takes the tunnels down first — before its flush, while it refuses
+	// every apply — so a tunnel going down can't re-add the surviving
+	// tunnels' routes after the flush (their withdrawals are refused; the
+	// flush removes the routes, and the manager's retry then has nothing to do).
+	srv.SetBeforePanic(func(context.Context) {
+		tunnels.DisconnectAll() // back to baseline: no tunnel, no tunnel routes
+	})
 	// Panic restores the DNS baseline alongside routes/PF: stop the learner and
 	// rewrite resolver files to the user selection only (dropping the learner's
 	// proxy-pointing entries), so nothing dangles at a stopped proxy. The learner
 	// re-establishes on the next profile change / restart if still wanted.
 	srv.SetOnPanic(func(ctx context.Context) {
-		tunnels.DisconnectAll() // back to baseline: no tunnel, no tunnel routes
 		proxy.SetWildcards(nil)
 		proxy.Stop()
 		lastLearnerReady.Store(false)

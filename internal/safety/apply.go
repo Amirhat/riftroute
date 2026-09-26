@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -21,6 +22,7 @@ var (
 	ErrGuardrail       = errors.New("change refused by a guardrail")
 	ErrApplyInProgress = errors.New("another apply is pending; try again")
 	ErrNoSuchTx        = errors.New("no such transaction")
+	ErrPanicking       = errors.New("a panic is flushing every managed route; try again")
 )
 
 // snapshotRetention caps stored pre-apply snapshots (newest kept).
@@ -143,6 +145,8 @@ type Protocol struct {
 	resolved map[string]domain.TxResult
 	idseq    int
 	lastTx   time.Time // start of the most recent transaction (txmu)
+
+	panicking atomic.Int32 // panics in progress: every apply is refused
 }
 
 // TryQuiesce takes the apply lock if the daemon is quiet — nothing being
@@ -213,9 +217,27 @@ func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute
 // success it executes atomically, arms the watchdog + commit-confirm, and
 // returns a pending transaction (resolved later via Confirm/timeout/watchdog).
 func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
-	p.applyMu.Lock()
+	if !p.lockApply() {
+		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	}
 	defer p.applyMu.Unlock()
 	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts)
+}
+
+// lockApply takes the apply lock unless a panic is in progress — checked
+// before waiting (a panic's first step may itself be waiting on an apply)
+// and again after (an apply queued behind the panic's flush must not undo
+// it).
+func (p *Protocol) lockApply() bool {
+	if p.panicking.Load() > 0 {
+		return false
+	}
+	p.applyMu.Lock()
+	if p.panicking.Load() > 0 {
+		p.applyMu.Unlock()
+		return false
+	}
+	return true
 }
 
 // Build derives the desired routes and rules from owned — the routes
@@ -228,7 +250,9 @@ type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.Ma
 // (a tunnel transition and an auto-apply racing would otherwise each revert
 // the other). A build error aborts before anything is touched.
 func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
-	p.applyMu.Lock()
+	if !p.lockApply() {
+		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	}
 	defer p.applyMu.Unlock()
 	owned := p.actualManaged(ctx)
 	desired, desiredRules, err := build(owned)
@@ -331,7 +355,9 @@ func (p *Protocol) takeSnapshot(ctx context.Context, opts Options) {
 // and crash-repair must leave the results alone; the journaled inverse is
 // what protects the change until it's confirmed.
 func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Plan, opts Options) (Result, error) {
-	p.applyMu.Lock()
+	if !p.lockApply() {
+		return Result{Plan: plan, Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	}
 	defer p.applyMu.Unlock()
 
 	diff := diffFromPlan(plan)
@@ -573,8 +599,23 @@ func (p *Protocol) Wait(txID string) (domain.TxResult, bool) {
 
 // Panic flushes all managed routes and clears ownership (spec §2.1). Idempotent.
 func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
+	return p.PanicWith(ctx, actor, nil)
+}
+
+// PanicWith is Panic with a first step: before runs before the flush, while
+// every apply is refused — the daemon takes its tunnels down there, and a
+// tunnel going down re-applies the surviving tunnels' routes, which must not
+// land around the flush. Guards still armed are settled before the flush, so
+// none can roll back afterwards and re-add what it removed.
+func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
+	p.panicking.Add(1)
+	defer p.panicking.Add(-1)
+	if before != nil {
+		before(ctx)
+	}
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
+	p.settleForPanic()
 	err := Panic(ctx, p.prov, p.store)
 	result := "panicked"
 	if err != nil {
@@ -582,6 +623,25 @@ func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
 	}
 	p.audit(actor, "panic", result, errString(err), nil, true)
 	return err
+}
+
+// settleForPanic commits the policy transactions still on probation: the
+// flush is about to remove every managed route, and a guard firing afterwards
+// would replay an inverse that re-adds some. Plan-level edits of routes
+// RiftRoute doesn't own aren't flushed, so they keep their guard.
+func (p *Protocol) settleForPanic() {
+	p.txmu.Lock()
+	var settle []*pendingTx
+	for _, pt := range p.pending {
+		if pt.ownership {
+			settle = append(settle, pt)
+		}
+	}
+	p.txmu.Unlock()
+	for _, pt := range settle {
+		pt.decide(decCommit)
+		<-pt.done
+	}
 }
 
 // ReconcileOwnership repairs partial state after a crash (spec §2.5): it makes

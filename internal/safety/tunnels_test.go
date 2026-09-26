@@ -207,6 +207,60 @@ func TestRecoverPendingDoesNotReAddTunnelLinks(t *testing.T) {
 	}
 }
 
+// A guard still armed when panic flushes must not roll back afterwards: its
+// inverse would re-add a route the flush just removed. (Tunnels going down
+// right before a panic leave exactly such guards.)
+func TestPanicSettlesArmedGuards(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.mustApply(t, desired("9.9.9.0/24", "8.8.8.0/24"))
+	res, err := h.p.Apply(ctx, desired("9.9.9.0/24"), nil, opts(false)) // withdraws 8.8.8.0/24
+	if err != nil || res.Status != domain.TxPending {
+		t.Fatalf("apply: %s %v", res.Status, err)
+	}
+	if err := h.p.Panic(ctx, domain.ActorUI); err != nil {
+		t.Fatal(err)
+	}
+	h.prober.SetReachable("192.168.1.1", false) // the guard would fire now
+	h.clock.Advance(time.Second)
+	h.p.Wait(res.TxID)
+	if n := h.prov.CountManaged(); n != 0 {
+		rs, _ := h.prov.ListRoutes(ctx, domain.FamilyV4)
+		t.Fatalf("%d managed route(s) back after the panic: %+v", n, rs)
+	}
+}
+
+// While a panic runs — including the step before its flush that takes the
+// tunnels down — every apply is refused; the flush then removes what is left.
+func TestPanicRefusesAppliesUntilItHasFlushed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.mustApply(t, desired("9.9.9.0/24"))
+	ran := false
+	err := h.p.PanicWith(ctx, domain.ActorUI, func(ctx context.Context) {
+		ran = true
+		if h.prov.CountManaged() == 0 {
+			t.Error("flushed before the step that comes first")
+		}
+		// A tunnel's teardown re-applying the surviving tunnels' routes:
+		if _, err := h.p.Apply(ctx, desired("9.9.9.0/24", "8.8.8.0/24"), nil, opts(false)); !errors.Is(err, safety.ErrPanicking) {
+			t.Errorf("apply during a panic: %v, want ErrPanicking", err)
+		}
+		if _, err := h.p.ApplyBuilt(ctx, func(o []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+			return o, nil, nil
+		}, opts(false)); !errors.Is(err, safety.ErrPanicking) {
+			t.Errorf("built apply during a panic: %v, want ErrPanicking", err)
+		}
+	})
+	if err != nil || !ran {
+		t.Fatalf("panic: %v (step ran: %v)", err, ran)
+	}
+	if n := h.prov.CountManaged(); n != 0 {
+		t.Fatalf("%d managed route(s) after the panic", n)
+	}
+	h.mustApply(t, desired("9.9.9.0/24")) // applies work again afterwards
+}
+
 // mustApply runs a non-interactive apply that must go through.
 func (h *harness) mustApply(t *testing.T, d []domain.ManagedRoute) {
 	t.Helper()
