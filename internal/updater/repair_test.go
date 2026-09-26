@@ -68,9 +68,10 @@ func TestRepairGivesUpOnAReleaseWithoutOpenVPN(t *testing.T) {
 }
 
 // Whatever holds the daemon back from the newest release — a rollout that
-// hasn't reached it, a halt, a skipped version, updates in notify mode or off
-// — a missing openvpn still comes from that release: every openvpn
-// RiftRoute ships runs every daemon's tunnels. Only openvpn is taken.
+// hasn't reached it, a skipped version, updates in notify mode or off — a
+// missing openvpn still comes from that release: every openvpn RiftRoute
+// ships runs every daemon's tunnels. Only openvpn is taken. (Not a halt:
+// see TestRepairNeverFromAHaltedRelease.)
 func TestRepairTakesOpenVPNFromANewerReleaseItIsHeldBackFrom(t *testing.T) {
 	for _, c := range []struct {
 		name  string
@@ -82,7 +83,6 @@ func TestRepairTakesOpenVPNFromANewerReleaseItIsHeldBackFrom(t *testing.T) {
 		{"not in the rollout yet", func(f *fakeRelease, h *harness) {
 			f.advice = update.Advice{RolloutPercent: 0}
 		}, jobAuto},
-		{"halted", func(f *fakeRelease, _ *harness) { f.advice = update.Advice{RolloutPercent: 100, Halt: true} }, jobAuto},
 		{"skipped", func(_ *fakeRelease, h *harness) {
 			h.u.save(func(ps *persisted) { ps.Skip = "0.3.1" })
 		}, jobAuto},
@@ -129,4 +129,18 @@ func TestCheckNowAnswersAfterTheRepair(t *testing.T) {
 		t.Fatal("check now returned before openvpn was repaired")
 	}
 	h.u.wait()
+}
+
+// A halt may be about the release's openvpn itself: the repair doesn't take
+// one from a halted release.
+func TestRepairNeverFromAHaltedRelease(t *testing.T) {
+	f := newFakeRelease(t, "0.3.1", fakeDaemon("0.3.1"))
+	f.tgz = macRelease(t, "0.3.1", fakeOpenVPN("halted"))
+	f.advice = update.Advice{RolloutPercent: 100, Halt: true}
+	h := newHarness(t, f, "0.3.0")
+	ovpn := withOpenVPN(t, h, nil)
+	h.check()
+	if fileExists(ovpn) || f.downloads.Load() != 0 {
+		t.Fatal("openvpn taken from a halted release")
+	}
 }

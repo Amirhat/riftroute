@@ -315,8 +315,11 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 		// An update being installed brings its openvpn with it. Otherwise a
 		// missing one comes from this release, before the verdict is
 		// reported: a "check now" meant to bring it back answers once it's in
-		// place (or decideWait has passed).
-		u.repairOpenVPN(ctx, f.m)
+		// place (or decideWait has passed). Never from a halted release: a
+		// halt may be about that very openvpn.
+		if f.advice == nil || !f.advice.Halt {
+			u.repairOpenVPN(ctx, f.m)
+		}
 	}
 	signal()
 	if d.Action != update.ActionInstall {
