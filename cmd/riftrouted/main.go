@@ -238,7 +238,12 @@ func run() error {
 			if rec == nil {
 				return errors.New("daemon still starting")
 			}
-			return rec.ApplyTunnels(ctx)
+			// A panic takes every tunnel down before it flushes: nothing is
+			// left to apply for them, and retrying would only race it.
+			if err := rec.ApplyTunnels(ctx); !errors.Is(err, safety.ErrPanicking) {
+				return err
+			}
+			return nil
 		},
 		OnChange: func() { srv.BroadcastState(context.Background()) },
 		Log:      logger,

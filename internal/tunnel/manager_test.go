@@ -193,8 +193,14 @@ func TestViaDefaultPinsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, h.m, "infra", domain.TunnelConnected)
-	if in := h.lastApply(); len(in) != 1 || len(in[0].Bypass) != 0 {
+	in := h.lastApply()
+	if len(in) != 1 || len(in[0].Bypass) != 0 {
 		t.Fatalf("via default must not pin the server: %+v", in)
+	}
+	// …but the engine still knows the server, so no listed route can carry
+	// openvpn's own packets into the tunnel.
+	if len(in[0].Servers) != 1 || in[0].Servers[0].String() != "198.51.100.7" {
+		t.Fatalf("servers = %v", in[0].Servers)
 	}
 }
 

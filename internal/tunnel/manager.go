@@ -81,6 +81,10 @@ type live struct {
 	tail    []string
 	in, out uint64
 	bypass  []netip.Addr
+	// servers are the addresses openvpn may connect to (the pins for via
+	// direct; resolved here, best-effort, for via default), so the engine
+	// never routes the tunnel's own server into it.
+	servers []netip.Addr
 	sess    *session
 	// deleting refuses new connections while Delete tears the tunnel down.
 	deleting bool
@@ -261,7 +265,8 @@ func (m *Manager) Inputs() []routing.TunnelInput {
 		if r.sess == nil {
 			continue
 		}
-		in := routing.TunnelInput{Name: name, V6: r.v6, Bypass: append([]netip.Addr(nil), r.bypass...)}
+		in := routing.TunnelInput{Name: name, V6: r.v6, Bypass: append([]netip.Addr(nil), r.bypass...),
+			Servers: append([]netip.Addr(nil), r.servers...)}
 		if r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting {
 			in.Iface = r.iface
 		}
@@ -721,7 +726,11 @@ func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *s
 		m.setErr(name, err.Error())
 		return
 	}
-	m.update(name, func(r *live) { r.bypass, r.detail = bypass, "starting openvpn" })
+	servers := bypass
+	if d.Via != domain.TunnelViaDirect {
+		servers = m.serverAddrs(ctx, p.Remotes)
+	}
+	m.update(name, func(r *live) { r.bypass, r.servers, r.detail = bypass, servers, "starting openvpn" })
 	if len(bypass) > 0 {
 		// Pin the server to the physical gateway before the first packet.
 		if err := m.applyAndWait(ctx, 10*time.Second); err != nil {
@@ -1097,7 +1106,7 @@ func explained(dst netip.Prefix, nets []netip.Prefix) bool {
 func (m *Manager) finish(name string, s *session) {
 	m.mu.Lock()
 	if r := m.rt[name]; r != nil && r.sess == s {
-		r.sess, r.iface, r.bypass, r.detail = nil, "", nil, ""
+		r.sess, r.iface, r.bypass, r.servers, r.detail = nil, "", nil, nil, ""
 		if p, ok := s.proc.Load().(Process); ok {
 			r.tail = p.Tail()
 		}
@@ -1177,6 +1186,36 @@ func (m *Manager) resolveRemotes(ctx context.Context, via domain.TunnelVia, rs [
 		return cmpBool(IsAddr(a.Host) && netip.MustParseAddr(a.Host).Is4(), IsAddr(b.Host) && netip.MustParseAddr(b.Host).Is4())
 	})
 	return out, pins, nil
+}
+
+// serverAddrs resolves the profile's servers the way openvpn will (best
+// effort: a name that doesn't resolve here is openvpn's to retry), for a
+// tunnel that isn't pinned.
+func (m *Manager) serverAddrs(ctx context.Context, rs []Remote) []netip.Addr {
+	var out []netip.Addr
+	seen := map[netip.Addr]bool{}
+	add := func(a netip.Addr) {
+		if a = a.Unmap(); a.IsValid() && !seen[a] && len(out) < maxPins {
+			seen[a] = true
+			out = append(out, a)
+		}
+	}
+	for _, r := range rs {
+		if a, err := netip.ParseAddr(r.Host); err == nil {
+			add(a)
+			continue
+		}
+		if m.o.Resolve == nil {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		addrs, _ := m.o.Resolve(rctx, r.Host)
+		cancel()
+		for _, a := range addrs {
+			add(a)
+		}
+	}
+	return out
 }
 
 // maxPins caps the server addresses one tunnel pins to the physical gateway
