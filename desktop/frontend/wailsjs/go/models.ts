@@ -1025,6 +1025,66 @@ export namespace domain {
 	        this.port = source["port"];
 	    }
 	}
+	export class UpdateStatus {
+	    mode: string;
+	    current: string;
+	    state: string;
+	    // Go type: time
+	    last_check: any;
+	    latest?: string;
+	    source?: string;
+	    action?: string;
+	    reason?: string;
+	    notes_url?: string;
+	    error?: string;
+	    staged?: string;
+	    rolled_back_from?: string;
+	    // Go type: time
+	    installed_at: any;
+	    can_roll_back: boolean;
+	    self_updatable: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.current = source["current"];
+	        this.state = source["state"];
+	        this.last_check = this.convertValues(source["last_check"], null);
+	        this.latest = source["latest"];
+	        this.source = source["source"];
+	        this.action = source["action"];
+	        this.reason = source["reason"];
+	        this.notes_url = source["notes_url"];
+	        this.error = source["error"];
+	        this.staged = source["staged"];
+	        this.rolled_back_from = source["rolled_back_from"];
+	        this.installed_at = this.convertValues(source["installed_at"], null);
+	        this.can_roll_back = source["can_roll_back"];
+	        this.self_updatable = source["self_updatable"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class VPNStatus {
 	    active: boolean;
 	    interfaces: string[];
@@ -1054,6 +1114,7 @@ export namespace domain {
 	    kill_switch: boolean;
 	    kill_switch_notice?: string;
 	    preferences: Preferences;
+	    update?: UpdateStatus;
 	    // Go type: time
 	    generated_at: any;
 	
@@ -1077,6 +1138,7 @@ export namespace domain {
 	        this.kill_switch = source["kill_switch"];
 	        this.kill_switch_notice = source["kill_switch_notice"];
 	        this.preferences = this.convertValues(source["preferences"], Preferences);
+	        this.update = this.convertValues(source["update"], UpdateStatus);
 	        this.generated_at = this.convertValues(source["generated_at"], null);
 	    }
 	
@@ -1098,6 +1160,7 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
 
 }
 
@@ -1238,65 +1301,6 @@ export namespace sysinfo {
 	        this.username = source["username"];
 	        this.full_name = source["full_name"];
 	    }
-	}
-
-}
-
-export namespace update {
-	
-	export class Asset {
-	    name: string;
-	    browser_download_url: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new Asset(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.browser_download_url = source["browser_download_url"];
-	    }
-	}
-	export class Result {
-	    current: string;
-	    latest: string;
-	    available: boolean;
-	    url?: string;
-	    notes?: string;
-	    assets?: Asset[];
-	
-	    static createFrom(source: any = {}) {
-	        return new Result(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.current = source["current"];
-	        this.latest = source["latest"];
-	        this.available = source["available"];
-	        this.url = source["url"];
-	        this.notes = source["notes"];
-	        this.assets = this.convertValues(source["assets"], Asset);
-	    }
-	
-		convertValues(a: any, classs: any, asMap: boolean = false): any {
-		    if (!a) {
-		        return a;
-		    }
-		    if (a.slice && a.map) {
-		        return (a as any[]).map(elem => this.convertValues(elem, classs));
-		    } else if ("object" === typeof a) {
-		        if (asMap) {
-		            for (const key of Object.keys(a)) {
-		                a[key] = new classs(a[key]);
-		            }
-		            return a;
-		        }
-		        return new classs(a);
-		    }
-		    return a;
-		}
 	}
 
 }

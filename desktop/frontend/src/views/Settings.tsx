@@ -9,7 +9,7 @@ import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
 import { BuildNotes } from '../components/BuildNotes'
 import { fmtBuildMeta, fmtUptime, friendly } from '../lib/format'
-import type { Preferences, TelemetryLevel, UpdateMode, UpdateResult } from '../types'
+import type { Preferences, TelemetryLevel, UpdateMode, UpdateStatus } from '../types'
 
 type Theme = 'dark' | 'light'
 
@@ -229,7 +229,7 @@ export function Settings({ theme, onToggleTheme }: { theme: Theme; onToggleTheme
 
       <ConfigCard />
 
-      <UpdateCard prefs={s?.preferences} />
+      <UpdateCard prefs={s?.preferences} live={s?.update} />
 
       <TelemetryCard prefs={s?.preferences} />
 
@@ -387,7 +387,7 @@ const UPDATE_OPTIONS: { value: UpdateMode; label: string; help: string; recommen
     recommended: true,
   },
   { value: 'notify', label: 'Notify me', help: 'Check for updates and tell you. Installing is your choice.' },
-  { value: 'off', label: 'Off', help: 'Never check on its own. “Check for updates” still works when you ask.' },
+  { value: 'off', label: 'Off', help: 'Never checks on its own. “Check now” still works when you ask.' },
 ]
 
 const TELEMETRY_OPTIONS: { value: TelemetryLevel; label: string; help: string; recommended?: boolean }[] = [
@@ -396,34 +396,42 @@ const TELEMETRY_OPTIONS: { value: TelemetryLevel; label: string; help: string; r
   { value: 'off', label: 'Off', help: 'Nothing is sent — no telemetry request is made at all.' },
 ]
 
-// UpdateCard: what RiftRoute may do about new releases, plus a manual check.
-// The check never installs anything.
-function UpdateCard({ prefs }: { prefs?: Preferences }) {
-  const [busy, setBusy] = useState(false)
-  const [res, setRes] = useState<UpdateResult | null>(null)
-  const [err, setErr] = useState<string | null>(null)
+// UpdateCard: what RiftRoute may do about new releases, and what its updater
+// is doing. The daemon verifies each release's signature and checksum, tests
+// the new version before switching, installs at a quiet moment, and rolls back
+// on its own if the new version doesn't come up healthy.
+function UpdateCard({ prefs, live }: { prefs?: Preferences; live?: UpdateStatus }) {
+  const qc = useQueryClient()
   const pref = usePreferenceSetter()
+  const [busy, setBusy] = useState<'' | 'check' | 'install' | 'rollback'>('')
+  const [checked, setChecked] = useState<UpdateStatus | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [askRollback, setAskRollback] = useState(false)
+  const st = newestStatus(live, checked)
 
-  async function check() {
-    setBusy(true)
+  async function run(kind: 'check' | 'install' | 'rollback') {
+    setBusy(kind)
     setErr(null)
-    setRes(null)
     try {
-      setRes(await api.checkUpdate())
+      if (kind === 'check') setChecked(await api.checkUpdate())
+      if (kind === 'install') setChecked(await api.installUpdate())
+      if (kind === 'rollback') await api.rollbackUpdate()
     } catch (e) {
       setErr(friendly(e))
     } finally {
-      setBusy(false)
+      setBusy('')
+      qc.invalidateQueries({ queryKey: stateKey })
     }
   }
 
+  const available = st?.action === 'notify' && st.latest && st.latest !== st.current
   return (
     <Card>
       <CardHeader
         title="Updates"
         hint={
-          <button onClick={check} disabled={busy} className="rounded-lg border border-line px-2.5 py-1 text-xs text-muted hover:text-default disabled:opacity-50">
-            {busy ? 'Checking…' : 'Check for updates'}
+          <button onClick={() => void run('check')} disabled={busy !== ''} className="rounded-lg border border-line px-2.5 py-1 text-xs text-muted hover:text-default disabled:opacity-50">
+            {busy === 'check' ? 'Checking…' : 'Check now'}
           </button>
         }
       />
@@ -437,25 +445,118 @@ function UpdateCard({ prefs }: { prefs?: Preferences }) {
       <div className="space-y-2 border-t border-line p-4 text-sm">
         {!prefs && <p className="text-xs text-warning">This daemon is too old to store an update preference — install the current daemon.</p>}
         {pref.err && <p className="text-xs text-danger">{pref.err}</p>}
-        <p className="text-xs text-muted">
-          RiftRoute doesn’t check or install updates on its own yet — your choice here is what it will do once it can.
-        </p>
-        {err && <p className="text-danger">Update check failed: {err}</p>}
-        {res && !res.available && (
-          <p className="text-success">✓ Up to date ({res.current}{res.latest ? `; latest ${res.latest}` : ''})</p>
+        <UpdateLine st={st} />
+        {st?.rolled_back_from && (
+          <p className="text-xs text-warning">
+            {st.rolled_back_by === 'you'
+              ? `You went back from ${st.rolled_back_from}. It won’t be offered again; a newer release will be.`
+              : `${st.rolled_back_from} didn’t start properly on this computer and was rolled back automatically. It won’t be offered again.`}
+          </p>
         )}
-        {res && res.available && (
-          <div className="space-y-1">
-            <p className="text-default">
-              Update available: <span className="font-mono">{res.current}</span> → <span className="font-mono text-accent">{res.latest}</span>
-            </p>
-            {res.url && <p className="ltr break-all font-mono text-xs text-muted">{res.url}</p>}
-            <p className="text-xs text-muted">Download the asset for your platform, verify its SHA-256 against the release checksums, then reinstall.</p>
+        {st && !st.self_updatable && available && (
+          <p className="text-xs text-muted">This install isn’t updated automatically — update it the way you installed it.</p>
+        )}
+        {err && <p className="text-danger">{err}</p>}
+        {(available || st?.can_roll_back || (st?.notes_url && st.latest && st.latest !== st.current)) && (
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {available && st.self_updatable && (
+              <button onClick={() => void run('install')} disabled={busy !== ''} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-contrast disabled:opacity-50">
+                {busy === 'install' ? 'Installing…' : `Install ${st.latest}`}
+              </button>
+            )}
+            {st?.notes_url && st.latest && st.latest !== st.current && (
+              <button onClick={() => void api.openReleaseNotes(st.notes_url!)} className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:text-default">
+                What’s new in {st.latest}
+              </button>
+            )}
+            {st?.can_roll_back && (
+              <button onClick={() => setAskRollback(true)} disabled={busy !== ''} className="rounded-lg border border-line px-3 py-1.5 text-xs text-muted hover:text-default disabled:opacity-50">
+                Go back to the previous version
+              </button>
+            )}
           </div>
         )}
       </div>
+      <ConfirmModal
+        open={askRollback}
+        title="Go back to the previous version?"
+        message="The daemon restarts into the version the last update replaced, and that update won’t be offered again. If the update changed how settings are stored, your settings return to how they were just before it."
+        confirmLabel="Go back"
+        danger
+        onConfirm={() => {
+          setAskRollback(false)
+          void run('rollback')
+        }}
+        onCancel={() => setAskRollback(false)}
+      />
     </Card>
   )
+}
+
+// newestStatus prefers whichever status was checked last: the live one from
+// State, or the answer to our own "Check now".
+function newestStatus(live?: UpdateStatus, checked?: UpdateStatus | null): UpdateStatus | undefined {
+  if (!checked) return live
+  if (!live) return checked
+  const t = (s: UpdateStatus) => (s.last_check ? Date.parse(s.last_check) : 0)
+  return t(checked) > t(live) ? checked : live
+}
+
+const capitalize = (t: string) => t.charAt(0).toUpperCase() + t.slice(1)
+
+function UpdateLine({ st }: { st?: UpdateStatus }) {
+  if (!st) return <p className="text-xs text-muted">Not checked yet.</p>
+  const when = st.last_check ? ` · checked ${new Date(st.last_check).toLocaleString()}` : ''
+  const from = st.source === 'github' ? ' (GitHub)' : ''
+  const meta = <span className="text-xs text-muted">{`${when}${from}`}</span>
+  switch (st.state) {
+    case 'checking':
+      return <p className="text-muted">Checking…</p>
+    case 'downloading':
+      return <p className="text-default">Downloading and verifying {st.latest}…</p>
+    case 'installing':
+      return <p className="text-default">Installing {st.staged} — the daemon restarts in a moment.</p>
+  }
+  if (st.error) return <p className="text-danger">Last check failed: {st.error}{meta}</p>
+  if (st.state === 'waiting' && st.staged) {
+    return (
+      <p className="text-default">
+        {st.staged} is verified and ready. {capitalize(st.reason?.replace(/^.*?; /, '') ?? '')}
+        {meta}
+      </p>
+    )
+  }
+  switch (st.action) {
+    case 'none':
+      if (!st.latest) {
+        return (
+          <p className="text-muted">
+            {st.reason}
+            {meta}
+          </p>
+        )
+      }
+      return (
+        <p className="text-success">
+          ✓ Up to date ({st.current}){meta}
+        </p>
+      )
+    case 'notify':
+      return (
+        <p className="text-default">
+          {st.latest} is available.{meta}
+        </p>
+      )
+    case 'hold':
+    case 'install':
+      return (
+        <p className="text-muted">
+          {st.reason}
+          {meta}
+        </p>
+      )
+  }
+  return <p className="text-xs text-muted">Running {st.current}.</p>
 }
 
 // TelemetryCard: how much anonymous usage data RiftRoute may send. The hard

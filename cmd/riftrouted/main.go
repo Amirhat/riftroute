@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -37,6 +38,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
+	"github.com/Amirhat/riftroute/internal/updater"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=...".
@@ -44,6 +46,10 @@ var version = "dev"
 
 func main() {
 	if err := run(); err != nil {
+		var re restartExit
+		if errors.As(err, &re) {
+			os.Exit(int(re)) // the service manager restarts us (update / rollback)
+		}
 		fmt.Fprintln(os.Stderr, "riftrouted:", err)
 		os.Exit(1)
 	}
@@ -60,6 +66,8 @@ func run() error {
 		pollInterval time.Duration
 		showVersion  bool
 		allowUIDFlag int
+		selfTest     bool
+		channel      string
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -69,6 +77,8 @@ func run() error {
 	flag.BoolVar(&autoApply, "auto-apply", true, "reconcile automatically on network changes (VPN up/down, etc.)")
 	flag.DurationVar(&pollInterval, "poll-interval", 2*time.Second, "network-change poll interval")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.BoolVar(&selfTest, "selftest", false, "check this binary against a database copy (-db) and exit (used by the updater)")
+	flag.StringVar(&channel, "update-channel", "stable", "update channel")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
@@ -79,12 +89,28 @@ func run() error {
 	}
 
 	logger := newLogger(logLevel)
+	if selfTest {
+		return runSelfTest(dbPath, providerName, logger)
+	}
 	paths := platform.DefaultPaths()
 	if socketPath == "" {
 		socketPath = paths.Socket
 	}
 	if dbPath == "" {
 		dbPath = paths.DB
+	}
+
+	// Before the database is opened: confirm, count or roll back an update.
+	// The version the updater compares is the one -version prints first
+	// ("0.2.6" for a release, "0.2.6-3-gabc1234" for a dev build).
+	current := buildinfo.Label(build)
+	exe := executable()
+	// Update state lives beside the database it goes with (a -db elsewhere
+	// keeps a test daemon's update files away from the real ones).
+	updateDir := filepath.Dir(dbPath)
+	guard, _ := bootGuard(current, exe, updateDir, dbPath, logger)
+	if guard.RestartNow {
+		return restartExit(updater.RestartExitCode)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
@@ -405,6 +431,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Updates: the updater restarts the daemon (via restartCode) into a new
+	// binary; the boot guard confirms this start once it's serving.
+	var restartCode atomic.Int32
+	upd, uerr := newUpdater(ctx, st, proto, current, exe, updateDir, dbPath, providerName, channel, &restartCode, stop, logger)
+	if uerr != nil {
+		logger.Warn("updater unavailable", "err", uerr)
+	} else {
+		srv.SetUpdater(upd)
+		svc.SetUpdateStatus(upd.Status)
+		guard.OnConfirm = upd.Reload
+		go supervise(ctx, logger, "updater", upd.Run)
+	}
+	go confirmWhenServing(ctx, guard, socketPath)
+
 	if pushInterval > 0 {
 		go supervise(ctx, logger, "broadcast", func(c context.Context) { broadcastLoop(c, srv, pushInterval) })
 	}
@@ -508,6 +548,10 @@ func run() error {
 
 	// Clean up the socket so the next launch starts fresh (spec/AGENTS §4).
 	_ = os.Remove(socketPath)
+	if code := restartCode.Load(); code != 0 {
+		logger.Info("riftrouted stopped to restart into an update or rollback")
+		return restartExit(code)
+	}
 	if serveErr != nil {
 		return serveErr
 	}

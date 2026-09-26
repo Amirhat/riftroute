@@ -110,7 +110,13 @@ const App = {
   // Native file dialogs: empty path = user cancelled (the UI treats it as a no-op).
   OpenConfigDialog: () => Promise.resolve({ path: '', name: '', format: 'yaml', content: '' }),
   ExportConfigDialog: () => Promise.resolve(''),
-  CheckUpdate: () => Promise.resolve({ available: false, current: 'browser-dev' }),
+  CheckUpdate: () => req('POST', '/update/check'),
+  InstallUpdate: () => req('POST', '/update/install'),
+  RollbackUpdate: () => req('POST', '/update/rollback'),
+  OpenReleaseNotes: (url: string) => {
+    window.open(url, '_blank', 'noopener')
+    return Promise.resolve()
+  },
   CreateBugReport: () => req('GET', '/bugreport'),
   SaveBugReport: notInBrowser('Saving a file'),
   OpenIssuePage: () => {

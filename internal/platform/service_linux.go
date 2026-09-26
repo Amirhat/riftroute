@@ -28,6 +28,9 @@ func (systemdManager) Install(daemonBin, socket string, allowUID int) error {
 	if os.Geteuid() != 0 {
 		return ErrNeedRoot
 	}
+	// A manual install starts over: the updater's previous binary and
+	// backup belong to whatever was installed before.
+	clearUpdateFiles()
 	if err := copyFile(daemonBin, installedBin, 0o755); err != nil {
 		return fmt.Errorf("install binary: %w", err)
 	}
@@ -58,6 +61,7 @@ func (systemdManager) Uninstall() error {
 	_ = runCmd("systemctl", "disable", "--now", systemdUnitName)
 	_ = os.Remove(systemdUnitPath)
 	_ = os.Remove(installedBin) // remove the privileged binary too
+	clearUpdateFiles()
 	_ = runCmd("systemctl", "daemon-reload")
 	return nil
 }

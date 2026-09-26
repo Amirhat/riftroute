@@ -36,6 +36,8 @@ type Service struct {
 	autoApply  atomic.Bool
 	domains    *dns.Cache
 	killStatus func() bool
+	// updateStatus reports the updater's state (nil = not wired).
+	updateStatus func() domain.UpdateStatus
 	// wildcardIPs returns the LEARNED addresses for a wildcard rule value
 	// (fed by the daemon's DNS learner); nil = apex-only resolution.
 	wildcardIPs func(rule string) []string
@@ -79,6 +81,9 @@ func (s *Service) SetResolver(c *dns.Cache) { s.domains = c }
 // SetKillSwitchStatus installs a callback reporting whether the kill switch is
 // active, so State can surface it (the manager lives in the daemon).
 func (s *Service) SetKillSwitchStatus(fn func() bool) { s.killStatus = fn }
+
+// SetUpdateStatus wires the updater's status into State (nil: no updater).
+func (s *Service) SetUpdateStatus(fn func() domain.UpdateStatus) { s.updateStatus = fn }
 
 // SetWildcardIPs installs the daemon's learned-answer source for wildcard
 // domain rules (see internal/dnsproxy).
@@ -507,6 +512,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		AutoApply:         s.autoApply.Load(),
 		KillSwitch:        s.killStatus != nil && s.killStatus(),
 		Preferences:       s.Preferences(),
+		Update:            s.updateSnapshot(),
 		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
 		GeneratedAt:       s.now(),
 	}, nil
@@ -518,6 +524,14 @@ func (s *Service) setting(key string) string {
 	}
 	v, _, _ := s.store.GetSetting(key)
 	return v
+}
+
+func (s *Service) updateSnapshot() *domain.UpdateStatus {
+	if s.updateStatus == nil {
+		return nil
+	}
+	st := s.updateStatus()
+	return &st
 }
 
 // Preferences returns the user's update/telemetry choices: defaults when

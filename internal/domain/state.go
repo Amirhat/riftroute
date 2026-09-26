@@ -90,5 +90,7 @@ type State struct {
 	KillSwitchNotice string `json:"kill_switch_notice,omitempty"`
 	// Preferences are the user's update/telemetry choices.
 	Preferences Preferences `json:"preferences"`
-	GeneratedAt time.Time   `json:"generated_at"`
+	// Update is the updater's status (nil on daemons without one).
+	Update      *UpdateStatus `json:"update,omitempty"`
+	GeneratedAt time.Time     `json:"generated_at"`
 }

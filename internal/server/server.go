@@ -9,6 +9,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -57,6 +58,8 @@ type Config struct {
 	Now     func() time.Time // tests
 	// DiskFree reports free bytes on the data volume (nil: not shown).
 	DiskFree func(path string) (uint64, error)
+	// TrustedKeys verify release manifests (nil: the compiled-in keys).
+	TrustedKeys map[string]ed25519.PublicKey
 }
 
 // Server serves the site and the admin area.
@@ -170,6 +173,8 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /static/{hash}/{file}", s.handleStatic)
 	m.HandleFunc("GET /healthz", s.handleHealth)
 	m.HandleFunc("GET /licenses/{name}", s.handleLicense)
+	m.HandleFunc("GET /api/v1/update/{channel}", s.handleUpdate)
+	m.HandleFunc("POST /admin/releases", s.handleReleasesPost)
 	m.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, "User-agent: *\nDisallow: /admin\nDisallow: /login\n")
@@ -454,6 +459,8 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			data["DiskFree"] = free
 		}
 	}
+	data["Channels"], data["ChannelErrors"] = s.channels()
+	data["RolloutSteps"] = rolloutSteps
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, http.StatusOK, "admin.html", data)
 }

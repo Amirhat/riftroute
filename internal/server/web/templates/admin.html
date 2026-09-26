@@ -25,7 +25,34 @@
     </dl>
   </section>
   <section class="card later"><h2>Telemetry</h2><p>Coming in phase 3: anonymous usage counts from the app (opt-out, never addresses, domains or names), as charts here.</p></section>
-  <section class="card later"><h2>Releases &amp; updates</h2><p>Coming in phase 2: the signed update manifest, staged rollout and a halt switch.</p></section>
+  <section class="card" id="releases">
+    <h2>Releases &amp; updates</h2>
+    {{range .Channels}}
+    <div class="channel">
+      <dl class="stats">
+        <div><dt>Channel</dt><dd>{{.Name}}</dd></div>
+        <div><dt>Version</dt><dd>{{.Manifest.Version}}</dd></div>
+        <div><dt>Signed by</dt><dd><code>{{.KeyID}}</code></dd></div>
+        <div><dt>Published here</dt><dd>{{.Published.UTC.Format "2006-01-02 15:04"}} UTC</dd></div>
+        <div><dt>Rollout</dt><dd>{{if .Advice.Halt}}<span class="halted">halted</span>{{else}}{{.Advice.RolloutPercent}}%{{end}}</dd></div>
+      </dl>
+      <form method="post" action="/admin/releases" class="rollout">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="channel" value="{{.Name}}"><input type="hidden" name="action" value="rollout">
+        <span>Offer it to</span>
+        {{$cur := .Advice.RolloutPercent}}{{range $.RolloutSteps}}<button type="submit" name="percent" value="{{.}}" class="step{{if eq . $cur}} on{{end}}">{{.}}%</button>{{end}}
+        <span>of installs</span>
+      </form>
+      <form method="post" action="/admin/releases">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="channel" value="{{.Name}}">
+        {{if .Advice.Halt}}<button type="submit" name="action" value="resume" class="btn">Resume rollout</button>
+        {{else}}<button type="submit" name="action" value="halt" class="btn danger">Halt rollout</button>{{end}}
+      </form>
+    </div>
+    {{else}}
+    <p class="muted">No release has been published yet. Sign one on the maintainer's machine, then run <code>scripts/publish-manifest.sh &lt;tag&gt;</code>.</p>
+    {{end}}
+    {{range $name, $err := .ChannelErrors}}<p class="note error">Channel {{$name}} is not being served: {{$err}}</p>{{end}}
+  </section>
   <section class="card later"><h2>Bug reports</h2><p>Coming in phase 4: redacted reports users choose to upload.</p></section>
 </main>
 </body>

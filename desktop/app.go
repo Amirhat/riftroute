@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -366,12 +368,51 @@ func (a *App) SetSplitDNS(routes []domain.SplitDNSRoute) ([]domain.SplitDNSRoute
 	return a.client.SetSplitDNS(ctx, routes)
 }
 
-// CheckUpdate queries GitHub Releases for a newer version (never self-installs;
-// spec §7.9 — applying an update stays a documented, verified, manual step).
-func (a *App) CheckUpdate() (update.Result, error) {
-	ctx, cancel := context.WithTimeout(a.ctx, 15*time.Second)
+// CheckUpdate asks the daemon's updater to check now: it verifies the signed
+// release manifest and, when allowed, stages the update (download, verify,
+// self-test) — which can take a minute. A daemon from before automatic
+// updates is answered from GitHub Releases directly, in the same shape.
+func (a *App) CheckUpdate() (domain.UpdateStatus, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 3*time.Minute)
 	defer cancel()
-	return update.Check(ctx, nil, "", version)
+	st, err := a.client.UpdateCheck(ctx)
+	var ae *apiclient.APIError
+	if !errors.As(err, &ae) || (ae.StatusCode != http.StatusNotFound && ae.StatusCode != http.StatusServiceUnavailable) {
+		return st, err
+	}
+	res, err := update.Check(ctx, nil, "", version)
+	if err != nil {
+		return domain.UpdateStatus{}, err
+	}
+	st = domain.UpdateStatus{Current: res.Current, Latest: res.Latest, Source: "github", State: "idle", LastCheck: time.Now(), NotesURL: res.URL,
+		Action: "none", Reason: "up to date"}
+	if res.Available {
+		st.Action = "notify"
+		st.Reason = res.Latest + " is available — this daemon predates automatic updates: install the new release (app and daemon)"
+	}
+	return st, nil
+}
+
+// InstallUpdate asks the daemon to install the available update; it
+// restarts itself at the first quiet moment.
+func (a *App) InstallUpdate() (domain.UpdateStatus, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, 3*time.Minute)
+	defer cancel()
+	return a.client.UpdateInstall(ctx)
+}
+
+// RollbackUpdate asks the daemon to go back to the version it replaced.
+func (a *App) RollbackUpdate() error {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.UpdateRollback(ctx)
+}
+
+// OpenReleaseNotes opens a release page — only the project's own releases.
+func (a *App) OpenReleaseNotes(url string) {
+	if strings.HasPrefix(url, "https://github.com/Amirhat/riftroute/releases/") {
+		wruntime.BrowserOpenURL(a.ctx, url)
+	}
 }
 
 // GetDoctor runs the diagnostics battery.

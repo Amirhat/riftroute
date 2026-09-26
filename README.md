@@ -213,7 +213,7 @@ riftroute killswitch <on|off|status>
 riftroute list <list|refresh>
 riftroute snapshot ...           # inspect saved snapshots
 riftroute panic                  # flush all managed routes immediately
-riftroute update                 # check GitHub Releases for a newer build
+riftroute update                 # update status (see Updating)
 riftroute daemon <install|...>   # manage the privileged service
 riftroute version
 ```
@@ -268,10 +268,34 @@ routes without the Apply Protocol's guardrails.
 
 ## Updating
 
-`riftroute update` reports whether a newer release exists. Applying an update is
-deliberate and verified, not silent: download the signed asset for your
-platform, verify its SHA-256 against the release `checksums.txt`, then reinstall
-(Homebrew/dpkg/dmg). RiftRoute never self-replaces a running privileged binary.
+The daemon keeps itself up to date from **signed releases** (design:
+[`docs/updates.md`](docs/updates.md)). Each release is described by a manifest
+signed with a key that lives only on the maintainer's machine; the daemon
+trusts nothing but that signature — not the server it came from — and checks
+every download against the signed SHA-256 and size. Before switching it tests
+the new version on a copy of its database, installs only when nothing is being
+applied or awaiting confirmation, and rolls back on its own (no network needed)
+if the new version doesn't come up healthy; a version that was rolled back is
+never offered again.
+
+```bash
+riftroute update                # status
+riftroute update check          # check now
+riftroute update install        # install the available update now (notify mode)
+riftroute update rollback       # back to the version the last update replaced
+riftroute update mode auto|notify|off
+```
+
+`auto` (the default) installs at a quiet moment, `notify` tells you and waits,
+`off` never checks on its own. Update checks send nothing that identifies your
+install. Only the daemon installed as a service updates itself; `.deb` installs
+are updated through the package manager, and the desktop app tells you when a
+new version is out.
+
+Maintainers: tag → CI builds the release → on your machine
+`riftroute-release sign <tag>` → `riftroute-release publish <tag>` (GitHub) and
+`scripts/publish-manifest.sh <tag> [channel] [rollout%]` (update server). A
+release reaches users only once its manifest is signed and published.
 
 ## Packaging & release
 

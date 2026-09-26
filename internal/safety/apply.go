@@ -134,6 +134,45 @@ type Protocol struct {
 	pending  map[string]*pendingTx
 	resolved map[string]domain.TxResult
 	idseq    int
+	lastTx   time.Time // start of the most recent transaction (txmu)
+}
+
+// TryQuiesce takes the apply lock if the daemon is quiet — nothing being
+// applied, nothing awaiting confirmation, no change started within quiet —
+// and keeps it until release is called (the updater holds it from the swap
+// until the process exits, so no change can start in between). When it isn't
+// quiet it says why and holds nothing.
+func (p *Protocol) TryQuiesce(quiet time.Duration) (release func(), ok bool, why string) {
+	if !p.applyMu.TryLock() {
+		return nil, false, "a change is being applied"
+	}
+	p.txmu.Lock()
+	pending, last := len(p.pending), p.lastTx
+	p.txmu.Unlock()
+	switch {
+	case pending > 0:
+		p.applyMu.Unlock()
+		return nil, false, "a change is awaiting confirmation"
+	case !last.IsZero() && p.clock.Now().Sub(last) < quiet:
+		p.applyMu.Unlock()
+		return nil, false, fmt.Sprintf("a change was made in the last %s", quiet.Round(time.Minute))
+	}
+	var once sync.Once
+	return func() { once.Do(p.applyMu.Unlock) }, true, ""
+}
+
+// Busy reports whether a change is being applied or is still on probation
+// (awaiting confirmation, watchdog armed), and when the last one started.
+// The updater waits for quiet before replacing the daemon.
+func (p *Protocol) Busy() (busy bool, lastTx time.Time) {
+	if !p.applyMu.TryLock() {
+		busy = true
+	} else {
+		p.applyMu.Unlock()
+	}
+	p.txmu.Lock()
+	defer p.txmu.Unlock()
+	return busy || len(p.pending) > 0, p.lastTx
 }
 
 // NewProtocol builds an Apply Protocol. newProber may be nil (defaults to a TCP
@@ -321,6 +360,9 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 	// replays the inverse — the only crash-safe recovery on macOS, where kernel
 	// routes carry no owner tag to reattribute them.
 	txID := p.nextTxID()
+	p.txmu.Lock()
+	p.lastTx = p.clock.Now()
+	p.txmu.Unlock()
 	if !ownership {
 		txID = routeOpTxPrefix + strings.TrimPrefix(txID, "tx-")
 	}

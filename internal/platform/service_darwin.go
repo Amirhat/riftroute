@@ -172,6 +172,9 @@ func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
 	if err := secureRootDir(installDir); err != nil {
 		return fmt.Errorf("secure install dir: %w", err)
 	}
+	// A manual install starts over: the updater's previous binary and
+	// backup belong to whatever was installed before.
+	clearUpdateFiles()
 	if err := copyFile(daemonBin, installedBin, 0o755); err != nil {
 		return fmt.Errorf("install binary: %w", err)
 	}
@@ -203,6 +206,7 @@ func (launchdManager) Uninstall() error {
 	}
 	_ = os.Remove(launchdPlist)
 	_ = os.Remove(installedBin) // remove the privileged binary too
+	clearUpdateFiles()
 	return nil
 }
 

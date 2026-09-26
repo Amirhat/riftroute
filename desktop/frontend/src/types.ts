@@ -120,6 +120,8 @@ export interface State {
   kill_switch_notice?: string
   // Absent from daemons that predate update/telemetry preferences.
   preferences?: Preferences
+  // The daemon's updater (absent from daemons without one).
+  update?: UpdateStatus
   generated_at: string
 }
 
@@ -327,13 +329,25 @@ export interface SplitDNSRoute {
   port?: number // non-standard resolver port (wildcard DNS learner entries)
 }
 
-// UpdateResult mirrors update.Result — the GitHub Releases check.
-export interface UpdateResult {
+// UpdateStatus mirrors domain.UpdateStatus — what the daemon's updater knows.
+export interface UpdateStatus {
+  mode: UpdateMode
   current: string
-  latest: string
-  available: boolean
-  url?: string
-  notes?: string
+  // idle | checking | downloading | waiting (staged, for a quiet moment) | installing | error
+  state: string
+  last_check?: string
+  latest?: string
+  source?: 'server' | 'github'
+  action?: 'none' | 'hold' | 'notify' | 'install'
+  reason?: string
+  notes_url?: string
+  error?: string
+  staged?: string
+  rolled_back_from?: string
+  rolled_back_by?: 'health' | 'you'
+  installed_at?: string
+  can_roll_back: boolean
+  self_updatable: boolean
 }
 
 // ConfigFile mirrors desktop/config.go — a config the user picked in the native

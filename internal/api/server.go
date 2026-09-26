@@ -26,6 +26,7 @@ import (
 
 // Server exposes the daemon's core over a UDS.
 type Server struct {
+	updater  Updater // nil: no updater wired
 	svc      *core.Service
 	store    *store.Store
 	proto    *safety.Protocol
@@ -137,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /system/apps", s.handleSystemApps)
 	// Redacted diagnostics report for bug reports (never uploaded).
 	s.mux.HandleFunc("GET /bugreport", s.handleBugReport)
+	s.routesUpdate()
 
 	// Mutating endpoints — peer-credential gated (spec §12). /plan is a dry-run
 	// preview and does not mutate, but lives with its siblings for clarity.

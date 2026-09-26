@@ -45,6 +45,9 @@ import {
   GetSystemUsers,
   ExportConfigDialog,
   CheckUpdate,
+  InstallUpdate,
+  RollbackUpdate,
+  OpenReleaseNotes,
   BuildNotes,
   GetPreferences,
   SetPreferences,
@@ -73,7 +76,7 @@ import type {
   SplitDNSRoute,
   SystemApp,
   SystemUser,
-  UpdateResult,
+  UpdateStatus,
   Preferences,
   BugReport,
 } from '../types'
@@ -144,8 +147,11 @@ export const api = {
   // Local catalogs feeding the per-app searchable pickers.
   systemUsers: () => GetSystemUsers() as unknown as Promise<SystemUser[]>,
   systemApps: () => GetSystemApps() as unknown as Promise<SystemApp[]>,
-  // Update check (never self-installs).
-  checkUpdate: () => CheckUpdate() as unknown as Promise<UpdateResult>,
+  // Updates: the daemon verifies, self-tests and installs; the app asks.
+  checkUpdate: () => CheckUpdate() as unknown as Promise<UpdateStatus>,
+  installUpdate: () => InstallUpdate() as unknown as Promise<UpdateStatus>,
+  rollbackUpdate: () => RollbackUpdate() as Promise<void>,
+  openReleaseNotes: (url: string) => OpenReleaseNotes(url) as Promise<void>,
   // Daemon lifecycle (privileged ops prompt for admin via the OS).
   daemonInfo: () => GetDaemonInfo() as unknown as Promise<DaemonInfo>,
   installDaemon: () => InstallDaemon() as Promise<void>,

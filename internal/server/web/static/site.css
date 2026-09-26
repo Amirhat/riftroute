@@ -434,3 +434,11 @@ body.admin .note.error { background: color-mix(in srgb, var(--signal) 11%, var(-
 .stats dt { font-size: .875rem; color: var(--ink-2); }
 .stats dd { margin: 4px 0 0; font-size: 1.125rem; font-weight: 700; font-variant-numeric: tabular-nums; }
 body.admin .later p { color: var(--ink-2); max-width: 70ch; }
+.channel + .channel { margin-block-start: 22px; padding-block-start: 22px; border-block-start: 1.5px solid var(--rule); }
+.rollout { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-block: 18px 12px; color: var(--ink-2); }
+.rollout .step { min-height: 36px; padding-inline: 12px; border: 1.5px solid var(--rule); border-radius: 999px; background: var(--ground); color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
+.rollout .step.on { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+.btn.danger { background: var(--signal); color: #fff; }
+.halted { color: var(--signal); }
+.muted { color: var(--ink-2); }
+

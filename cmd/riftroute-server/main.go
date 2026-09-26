@@ -5,6 +5,7 @@
 //
 //	riftroute-server serve  -listen 127.0.0.1:7780 -data /var/lib/riftroute-server
 //	riftroute-server passwd -data /var/lib/riftroute-server   (prompts; never an argument)
+//	riftroute-server publish -data /var/lib/riftroute-server -channel stable -manifest m.json -sig m.json.sig [-rollout 100]
 //	riftroute-server version
 package main
 
@@ -43,6 +44,8 @@ func main() {
 		err = serve(os.Args[2:])
 	case "passwd":
 		err = passwd(os.Args[2:])
+	case "publish":
+		err = publish(os.Args[2:])
 	case "version":
 		fmt.Println(buildinfo.Short(buildinfo.Current(version)))
 	default:
@@ -56,7 +59,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: riftroute-server serve|passwd|version [flags]")
+	fmt.Fprintln(os.Stderr, "usage: riftroute-server serve|passwd|publish|version [flags]")
 }
 
 func serve(args []string) error {
@@ -164,5 +167,38 @@ func passwd(args []string) error {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "admin password saved; every existing sign-in and remembered device was signed out")
+	return nil
+}
+
+// publish installs a signed release manifest as a channel's current release.
+// It verifies the signature against the release keys compiled into this
+// binary and refuses anything older than what's published.
+func publish(args []string) error {
+	fs := flag.NewFlagSet("publish", flag.ExitOnError)
+	data := fs.String("data", "/var/lib/riftroute-server", "data directory")
+	channel := fs.String("channel", "stable", "update channel")
+	manifest := fs.String("manifest", "", "manifest.json")
+	sig := fs.String("sig", "", "manifest.json.sig")
+	rollout := fs.Int("rollout", -1, "starting rollout percent 0–100 (default: 100 for a new version; unchanged when re-publishing the same one)")
+	_ = fs.Parse(args)
+	if *manifest == "" || *sig == "" {
+		return errors.New("-manifest and -sig are required")
+	}
+	if err := requireDataOwner(*data); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(*manifest)
+	if err != nil {
+		return err
+	}
+	s, err := os.ReadFile(*sig)
+	if err != nil {
+		return err
+	}
+	m, err := server.PublishManifest(*data, *channel, raw, s, *rollout, nil, time.Now())
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "published %s %s (%d assets)\n", *channel, m.Version, len(m.Assets))
 	return nil
 }

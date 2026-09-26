@@ -223,6 +223,46 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+// BackupTo writes a consistent copy of the database to path (which must not
+// exist) — the updater's pre-update backup and self-test copy.
+func (s *Store) BackupTo(path string) error {
+	_, err := s.db.Exec(`VACUUM INTO ?`, path)
+	return err
+}
+
+// FileMinReader reads a database file's schema_min_reader — the oldest
+// schema that may read it (0 when no breaking migration set one).
+func FileMinReader(path string) (int, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var v string
+	err = db.QueryRow(`SELECT value FROM settings WHERE key=?`, minReaderKey).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, _ := strconv.Atoi(v)
+	return n, nil
+}
+
+// FileUserVersion reads the schema version of a database file without
+// migrating it (read-only).
+func FileUserVersion(path string) (int, error) {
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var v int
+	err = db.QueryRow(`PRAGMA user_version`).Scan(&v)
+	return v, err
+}
+
 // UserVersion is the schema version recorded in the database file (it can
 // exceed SchemaVersion when a newer release migrated it).
 func (s *Store) UserVersion() (int, error) {

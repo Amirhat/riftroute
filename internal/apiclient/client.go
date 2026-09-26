@@ -578,6 +578,34 @@ func (c *Client) BugReport(ctx context.Context) (domain.BugReport, error) {
 	return rep, err
 }
 
+// UpdateStatus returns what the daemon's updater knows.
+func (c *Client) UpdateStatus(ctx context.Context) (domain.UpdateStatus, error) {
+	var st domain.UpdateStatus
+	err := c.do(ctx, http.MethodGet, "/update", nil, &st)
+	return st, err
+}
+
+// UpdateCheck asks the daemon to check for an update now.
+func (c *Client) UpdateCheck(ctx context.Context) (domain.UpdateStatus, error) {
+	var st domain.UpdateStatus
+	err := c.do(ctx, http.MethodPost, "/update/check", nil, &st)
+	return st, err
+}
+
+// UpdateInstall asks the daemon to install the available update (at the
+// first quiet moment); it restarts itself to do so.
+func (c *Client) UpdateInstall(ctx context.Context) (domain.UpdateStatus, error) {
+	var st domain.UpdateStatus
+	err := c.do(ctx, http.MethodPost, "/update/install", nil, &st)
+	return st, err
+}
+
+// UpdateRollback asks the daemon to go back to the version it replaced; it
+// restarts itself to do so.
+func (c *Client) UpdateRollback(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/update/rollback", nil, nil)
+}
+
 // Preferences returns the update mode and telemetry level.
 func (c *Client) Preferences(ctx context.Context) (domain.Preferences, error) {
 	var p domain.Preferences
