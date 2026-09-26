@@ -356,12 +356,13 @@ func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) 
 			others = append(others, o)
 		}
 	}
-	prev := s.stillWanted(ctx, s.loadYielded())
+	dest := s.destinations(ctx)
+	prev := s.loadYielded().stillWanted(dest)
 	others = prev.putBackRoutes(others)
 	rules := prev.putBackRules(s.actualManagedRules(ctx))
 	tp := routing.PlanTunnels(in)
 	routes := tp.Beside(others)
-	return routes, tp.RulesBeside(rules), in.GatewayV4, yieldedTo(tp, others, rules, routes)
+	return routes, tp.RulesBeside(rules), in.GatewayV4, yieldedTo(tp, others, rules, routes).attributed(dest)
 }
 
 // DesiredForApply is DesiredManaged for a full apply. It also returns what

@@ -56,6 +56,39 @@ func (s *Service) saveYielded(y yielded) {
 	_ = s.store.SetSetting(yieldedKey, string(b))
 }
 
+// destinations returns the profiles' destinations (routing.Destinations),
+// read at most once and only if asked for — false when they can't be read.
+// A domain rule whose own lookup came back empty (DNS not up yet after a
+// restart) is left without addresses, whatever the learner saw under it:
+// its profile is then unsure of what it routes.
+func (s *Service) destinations(ctx context.Context) func() (routing.Destinations, bool) {
+	var d routing.Destinations
+	var ok, read bool
+	return func() (routing.Destinations, bool) {
+		if read {
+			return d, ok
+		}
+		read = true
+		if s.store == nil {
+			return d, false
+		}
+		profiles, err := s.store.ListProfiles()
+		if err != nil {
+			return d, false
+		}
+		if _, err := s.store.ListLists(); err != nil {
+			return d, false
+		}
+		domains, unresolved := s.lookupDomains(ctx, profiles)
+		for v := range unresolved {
+			domains[v] = nil
+		}
+		d = routing.ProfileDestinations(routing.DesiredInput{Profiles: profiles, Lists: s.listsMap(), Domains: domains})
+		ok = true
+		return d, ok
+	}
+}
+
 // stillWanted is y less what no enabled profile routes any more. A record
 // can outlive its profile: a deletion that changed nothing (its only route
 // had yielded) records in the place of a change still on probation, and
@@ -69,24 +102,14 @@ func (s *Service) saveYielded(y yielded) {
 // address of its family (DNS not up yet after a restart, a partial answer)
 // — that profile's own items only, so an unrelated profile's typo never
 // brings back a deleted one's route.
-func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
-	if (len(y.Routes) == 0 && len(y.Rules) == 0) || s.store == nil {
+func (y yielded) stillWanted(dest func() (routing.Destinations, bool)) yielded {
+	if len(y.Routes) == 0 && len(y.Rules) == 0 {
 		return y
 	}
-	profiles, err := s.store.ListProfiles()
-	if err != nil {
+	d, ok := dest()
+	if !ok {
 		return y
 	}
-	if _, err := s.store.ListLists(); err != nil {
-		return y
-	}
-	domains, unresolved := s.lookupDomains(ctx, profiles)
-	for v := range unresolved {
-		domains[v] = nil // what the learner saw under it doesn't make it known
-	}
-	d := routing.ProfileDestinations(routing.DesiredInput{
-		Profiles: profiles, Lists: s.listsMap(), Domains: domains,
-	})
 	var out yielded
 	for _, r := range y.Routes {
 		if d.HoldsRoute(r) {
@@ -99,6 +122,24 @@ func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
 		}
 	}
 	return out
+}
+
+// attributed gives each recorded rule that has no profile — one read from
+// the kernel, which keeps none — the enabled include profile that routes it
+// (routing.Destinations.IncludeOwner), so it is judged as that profile's
+// later: gone with it if it's deleted, held while it is unsure.
+func (y yielded) attributed(dest func() (routing.Destinations, bool)) yielded {
+	for i := range y.Rules {
+		if y.Rules[i].Rule.ProfileID != "" {
+			continue
+		}
+		d, ok := dest()
+		if !ok {
+			return y
+		}
+		y.Rules[i].Rule.ProfileID = d.IncludeOwner(y.Rules[i].Rule.PolicyRule)
+	}
+	return y
 }
 
 // putBackRoutes adds the yielded routes to routes (once each).

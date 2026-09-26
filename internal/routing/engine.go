@@ -310,6 +310,14 @@ type Destinations struct {
 	// of those families can't be judged unrouted.
 	unsure map[string]map[domain.Family]bool
 	mode   map[string]domain.Mode // the enabled profiles
+	// includes are the enabled include profiles' own destinations, in
+	// profile order (aggregated), for telling whose a rule is.
+	includes []profileNets
+}
+
+type profileNets struct {
+	id   string
+	nets map[domain.Family][]netip.Prefix
 }
 
 // ProfileDestinations reads the destinations from in's Profiles, Domains and
@@ -328,8 +336,15 @@ func ProfileDestinations(in DesiredInput) Destinations {
 		if p.Mode == domain.ModeInclude {
 			into = d.include
 		}
-		for fam, pfxs := range profilePrefixes(p, in) {
+		own := profilePrefixes(p, in)
+		for fam, pfxs := range own {
 			into[fam] = append(into[fam], pfxs...)
+		}
+		if p.Mode == domain.ModeInclude {
+			for fam, pfxs := range own {
+				own[fam] = Aggregate(pfxs)
+			}
+			d.includes = append(d.includes, profileNets{id: p.ID, nets: own})
 		}
 		for _, r := range p.Rules {
 			if r.Type != domain.RuleDomain {
@@ -384,29 +399,43 @@ func (d Destinations) HoldsRoute(r domain.ManagedRoute) bool {
 // HoldsRule reports whether an include profile still routes a destination
 // rule's whole network ("to <prefix>"). A rule it can't judge holds: an
 // app's, an unparsable one, and one whose own profile is unsure of its
-// family — or, for a rule read from the kernel (no profile), one while any
-// include profile is: sent into the VPN, it can't leak.
+// family. One with no profile — no enabled profile routed it when it was
+// recorded (see IncludeOwner) — is judged by coverage alone.
 func (d Destinations) HoldsRule(r domain.ManagedRule) bool {
-	dst, ok := strings.CutPrefix(r.Selector, "to ")
+	pfx, ok := ruleNet(r.PolicyRule)
 	if !ok {
 		return true
 	}
-	pfx, err := netip.ParsePrefix(dst)
-	if err != nil {
-		return true
+	return within(pfx, d.include[r.Family]) || d.unsureOf(r.ProfileID, true, r.Family)
+}
+
+// IncludeOwner is the first enabled include profile that routes a
+// destination rule's whole network — whose rule one read from the kernel
+// is — or "" if none does.
+func (d Destinations) IncludeOwner(r domain.PolicyRule) string {
+	pfx, ok := ruleNet(r)
+	if !ok {
+		return ""
 	}
-	if within(pfx.Masked(), d.include[r.Family]) {
-		return true
-	}
-	if r.ProfileID != "" {
-		return d.unsureOf(r.ProfileID, true, r.Family)
-	}
-	for id := range d.mode {
-		if d.unsureOf(id, true, r.Family) {
-			return true
+	for _, p := range d.includes {
+		if within(pfx, p.nets[r.Family]) {
+			return p.id
 		}
 	}
-	return false
+	return ""
+}
+
+// ruleNet is a destination rule's network ("to <prefix>"), masked.
+func ruleNet(r domain.PolicyRule) (netip.Prefix, bool) {
+	dst, ok := strings.CutPrefix(r.Selector, "to ")
+	if !ok {
+		return netip.Prefix{}, false
+	}
+	pfx, err := netip.ParsePrefix(dst)
+	if err != nil {
+		return netip.Prefix{}, false
+	}
+	return pfx.Masked(), true
 }
 
 // within reports whether pfx lies inside one of the aggregated prefixes: an

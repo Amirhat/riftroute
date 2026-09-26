@@ -411,3 +411,99 @@ func TestTunnelApplyKeepsADomainsYieldWhileItsLookupFails(t *testing.T) {
 		t.Errorf("the domain's route after the disconnect = %v, want it back via en0", got)
 	}
 }
+
+// An include rule a tunnel apply records is read from the kernel, which
+// keeps no profile: the record gives it the profile that routes it. Deleted
+// later, that profile's rule stays out after the disconnect — even while
+// another include profile has a domain rule that never resolves.
+func TestTunnelApplyNeverPutsBackADeletedProfilesRule(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.svc.SetResolver(dns.NewCache(dns.NewFakeResolver(), time.Minute)) // typo.exampel.com never resolves
+	for _, p := range []domain.Profile{
+		{ID: "gone", Name: "gone", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.9.0/24"}}},
+		{ID: "typo", Name: "typo", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{
+			{Type: domain.RuleCIDR, Value: "192.0.2.0/24"}, {Type: domain.RuleDomain, Value: "typo.exampel.com"}}},
+	} {
+		if err := h.st.UpsertProfile(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, dst := range []string{"10.70.9.0/24", "192.0.2.0/24"} { // as a full apply installed them
+		if err := h.prov.AddRule(ctx, domain.ManagedRule{PolicyRule: domain.PolicyRule{
+			Priority: routing.ModelBRulePrio, Selector: "to " + dst, Table: routing.ModelBTable, Family: domain.FamilyV4, Proto: "riftroute",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	selectors := func() []string {
+		rules, _ := h.prov.ListRules(ctx, domain.FamilyV4)
+		var out []string
+		for _, r := range rules {
+			if r.Proto == "riftroute" {
+				out = append(out, r.Selector)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	if got := selectors(); slices.Contains(got, "to 10.70.9.0/24") {
+		t.Fatalf("the rule didn't yield to the tunnel: %v", got)
+	}
+
+	if err := h.st.DeleteProfile("gone"); err != nil {
+		t.Fatal(err)
+	}
+	h.setTunnels()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectors(); slices.Contains(got, "to 10.70.9.0/24") {
+		t.Errorf("the deleted profile's rule came back: %v", got)
+	}
+}
+
+// ...and while its profile stays, it comes back — even when that profile's
+// domain can't be looked up at the disconnect (a restart, DNS not up yet):
+// attributed, it's held as its own profile's; judged by coverage alone it
+// would be dropped, and that host's traffic would leave outside the VPN.
+func TestTunnelApplyPutsBackAnAttributedRuleWhileItsLookupFails(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	fr := dns.NewFakeResolver()
+	fr.Set("corp.example.com", "10.70.1.5")
+	h.svc.SetResolver(dns.NewCache(fr, time.Minute))
+	if err := h.st.UpsertProfile(domain.Profile{ID: "p", Name: "p", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "corp.example.com"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.prov.AddRule(ctx, domain.ManagedRule{PolicyRule: domain.PolicyRule{ // as a full apply installed it
+		Priority: routing.ModelBRulePrio, Selector: "to 10.70.1.5/32", Table: routing.ModelBTable, Family: domain.FamilyV4, Proto: "riftroute",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	h.svc.SetResolver(dns.NewCache(dns.NewFakeResolver(), time.Minute)) // restarted; DNS not up
+	h.setTunnels()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := h.prov.ListRules(ctx, domain.FamilyV4)
+	var ours []string
+	for _, r := range rules {
+		if r.Proto == "riftroute" {
+			ours = append(ours, r.Selector)
+		}
+	}
+	if len(ours) != 1 || ours[0] != "to 10.70.1.5/32" {
+		t.Errorf("rules after the disconnect = %q, want p's back", ours)
+	}
+}
