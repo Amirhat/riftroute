@@ -3,6 +3,8 @@ package reconcile_test
 import (
 	"context"
 	"net/netip"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +75,7 @@ func TestTunnelDisconnectRestoresWhatItsConnectCut(t *testing.T) {
 	}
 	exclude := domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.70.5.5/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute}, ProfileID: "p1"}
 	h.own(t, exclude)
+	h.profilesBehind(t)
 
 	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
 	if err := h.rec.ApplyTunnels(ctx); err != nil {
@@ -101,6 +104,21 @@ func TestTunnelDisconnectRestoresWhatItsConnectCut(t *testing.T) {
 	}
 }
 
+// profilesBehind saves the profiles the include rule "to 10.0.0.0/8" and the
+// exclude route 10.70.5.5/32 come from: only what a profile still routes is
+// put back.
+func (h *tunnelHarness) profilesBehind(t *testing.T) {
+	t.Helper()
+	for _, p := range []domain.Profile{
+		{ID: "inc", Name: "inc", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}},
+		{ID: "p1", Name: "p1", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto", Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.5.5/32"}}},
+	} {
+		if err := h.st.UpsertProfile(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // A panic flushes everything; the tunnel apply that follows it must not put
 // back what earlier applies had made yield to a tunnel.
 func TestPanicForgetsWhatYielded(t *testing.T) {
@@ -112,6 +130,7 @@ func TestPanicForgetsWhatYielded(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.own(t, domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.70.5.5/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute}, ProfileID: "p1"})
+	h.profilesBehind(t)
 	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
 	if err := h.rec.ApplyTunnels(ctx); err != nil {
 		t.Fatal(err)
@@ -239,5 +258,113 @@ func TestTunnelApplyBesideAPendingApplyLeavesWhatThatOneDisabled(t *testing.T) {
 	}
 	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 0 {
 		t.Errorf("the disabled profile's route was installed: %v", got)
+	}
+}
+
+// A record outlives its profile: the user deletes a profile whose only route
+// had yielded — the apply changes nothing and reports committed — and an
+// unrelated change beside it then rolls back, taking the deletion's record
+// with it. The disconnect's tunnel apply still doesn't install the deleted
+// profile's route: only what a profile still routes is put back.
+func TestTunnelApplyNeverPutsBackADeletedProfilesRoute(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.UpsertProfile(domain.Profile{ID: "p", Name: "p", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.9.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+	h.autoApply.Store(true)
+	if res, err := h.rec.Reconcile(ctx); err != nil || res.Status != domain.TxCommitted {
+		t.Fatalf("the apply recording p's yield: %v, %s", err, res.Status)
+	}
+	h.autoApply.Store(false)
+
+	if err := h.st.UpsertProfile(domain.Profile{ID: "q", Name: "q", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.81.0.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+	txQ := h.fullApplyOnProbation(t)
+	if err := h.st.DeleteProfile("p"); err != nil {
+		t.Fatal(err)
+	}
+	h.autoApply.Store(true)
+	if res, err := h.rec.Reconcile(ctx); err != nil || res.Status != domain.TxCommitted || len(res.Plan.Ops) != 0 {
+		t.Fatalf("the deletion's apply: %v, %s, %d op(s)", err, res.Status, len(res.Plan.Ops))
+	}
+	h.autoApply.Store(false)
+	h.blip(t) // q's watchdog rolls it back
+	if got, _ := h.proto.Wait(txQ); got != domain.TxRolledBack {
+		t.Fatalf("q's apply: %s, want rolled back", got)
+	}
+
+	h.setTunnels()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 0 {
+		t.Errorf("the deleted profile's route was installed: %v", got)
+	}
+}
+
+// What yielded may be a piece of a profile's rule: cut around one tunnel by
+// a full apply, then yielded to a second tunnel. The profile still routes
+// it, so it comes back when the second tunnel goes.
+func TestTunnelApplyPutsBackAPieceOfAProfilesRule(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	if err := h.st.UpsertProfile(domain.Profile{ID: "inc", Name: "inc", Enabled: true, Mode: domain.ModeInclude,
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}}); err != nil {
+		t.Fatal(err)
+	}
+	// "to 10.0.0.0/8" as a full apply cut it around the first tunnel.
+	pieces := []string{"10.0.0.0/10", "10.64.0.0/14", "10.68.0.0/15", "10.71.0.0/16", "10.72.0.0/13", "10.80.0.0/12", "10.96.0.0/11", "10.128.0.0/9"}
+	for _, p := range pieces {
+		if err := h.prov.AddRule(ctx, domain.ManagedRule{PolicyRule: domain.PolicyRule{
+			Priority: routing.ModelBRulePrio, Selector: "to " + p, Table: routing.ModelBTable, Family: domain.FamilyV4, Proto: "riftroute",
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := routing.TunnelInput{Name: "a", Iface: "utun9", Routes: []string{"10.70.0.0/16"}}
+	h.setTunnels(first)
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	selectors := func() []string {
+		rules, _ := h.prov.ListRules(ctx, domain.FamilyV4)
+		var out []string
+		for _, r := range rules {
+			if r.Proto == "riftroute" {
+				out = append(out, strings.TrimPrefix(r.Selector, "to "))
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	want := append([]string(nil), pieces...)
+	sort.Strings(want)
+	if got := selectors(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("rules with the first tunnel = %v", got)
+	}
+
+	h.prov.SetTunnelIface("utun8", "10.98.0.2", true)
+	h.setTunnels(first, routing.TunnelInput{Name: "b", Iface: "utun8", Routes: []string{"10.80.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectors(); slices.Contains(got, "10.80.0.0/12") {
+		t.Fatalf("the piece wasn't cut around the second tunnel: %v", got)
+	}
+
+	h.setTunnels(first)
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectors(); strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("rules after the second tunnel went = %v, want the pieces from before it", got)
 	}
 }

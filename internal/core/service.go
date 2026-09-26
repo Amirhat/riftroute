@@ -356,7 +356,7 @@ func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) 
 			others = append(others, o)
 		}
 	}
-	prev := s.loadYielded()
+	prev := s.stillWanted(ctx, s.loadYielded())
 	others = prev.putBackRoutes(others)
 	rules := prev.putBackRules(s.actualManagedRules(ctx))
 	tp := routing.PlanTunnels(in)

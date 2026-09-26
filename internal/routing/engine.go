@@ -85,30 +85,7 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 		if !p.Enabled {
 			continue
 		}
-		byFamily := map[domain.Family][]netip.Prefix{}
-		for _, r := range p.Rules {
-			if pfx, fam, ok := ruleToPrefix(r); ok {
-				byFamily[fam] = append(byFamily[fam], pfx)
-				continue
-			}
-			// domain rules expand to their resolved A/AAAA addresses (asn/country
-			// need a GeoIP DB — deferred).
-			if r.Type == domain.RuleDomain {
-				for _, ip := range in.Domains[r.Value] {
-					if pfx, fam, ok := entryToPrefix(ip); ok {
-						byFamily[fam] = append(byFamily[fam], pfx)
-					}
-				}
-			}
-		}
-		// Expand referenced lists (static + fetched remote entries).
-		for _, listName := range p.Lists {
-			for _, e := range in.Lists[listName] {
-				if pfx, fam, ok := entryToPrefix(e); ok {
-					byFamily[fam] = append(byFamily[fam], pfx)
-				}
-			}
-		}
+		byFamily := profilePrefixes(p, in)
 
 		switch p.Mode {
 		case domain.ModeInclude:
@@ -289,6 +266,106 @@ func buildDarwinInclude(p domain.Profile, byFamily map[domain.Family][]netip.Pre
 		}
 	}
 	return nil
+}
+
+// profilePrefixes are the destinations p routes, by family: its CIDR rules,
+// its domain rules' resolved addresses (in.Domains) and its lists' entries.
+func profilePrefixes(p domain.Profile, in DesiredInput) map[domain.Family][]netip.Prefix {
+	byFamily := map[domain.Family][]netip.Prefix{}
+	for _, r := range p.Rules {
+		if pfx, fam, ok := ruleToPrefix(r); ok {
+			byFamily[fam] = append(byFamily[fam], pfx)
+			continue
+		}
+		// domain rules expand to their resolved A/AAAA addresses (asn/country
+		// need a GeoIP DB — deferred).
+		if r.Type == domain.RuleDomain {
+			for _, ip := range in.Domains[r.Value] {
+				if pfx, fam, ok := entryToPrefix(ip); ok {
+					byFamily[fam] = append(byFamily[fam], pfx)
+				}
+			}
+		}
+	}
+	// Expand referenced lists (static + fetched remote entries).
+	for _, listName := range p.Lists {
+		for _, e := range in.Lists[listName] {
+			if pfx, fam, ok := entryToPrefix(e); ok {
+				byFamily[fam] = append(byFamily[fam], pfx)
+			}
+		}
+	}
+	return byFamily
+}
+
+// Destinations are the networks the enabled profiles route, by mode and
+// family, as if no tunnel were up — what a full apply's routes and include
+// rules are made of, before they are cut around live tunnels. Only which
+// destinations matters, not where they go: they need no gateway or VPN.
+type Destinations struct {
+	exclude, include map[domain.Family][]netip.Prefix // aggregated
+}
+
+// ProfileDestinations reads the destinations from in's Profiles, Domains and
+// Lists.
+func ProfileDestinations(in DesiredInput) Destinations {
+	d := Destinations{exclude: map[domain.Family][]netip.Prefix{}, include: map[domain.Family][]netip.Prefix{}}
+	for _, p := range in.Profiles {
+		if !p.Enabled {
+			continue
+		}
+		into := d.exclude
+		if p.Mode == domain.ModeInclude {
+			into = d.include
+		}
+		for fam, pfxs := range profilePrefixes(p, in) {
+			into[fam] = append(into[fam], pfxs...)
+		}
+	}
+	for _, m := range []map[domain.Family][]netip.Prefix{d.exclude, d.include} {
+		for fam, pfxs := range m {
+			m[fam] = Aggregate(pfxs)
+		}
+	}
+	return d
+}
+
+// HoldsRoute reports whether an exclude profile still routes r's whole
+// destination. A route it can't judge — in a table, or unparsable — holds.
+func (d Destinations) HoldsRoute(r domain.Route) bool {
+	if r.Table != "" {
+		return true
+	}
+	pfx, err := netip.ParsePrefix(r.DstCIDR)
+	if err != nil {
+		return true
+	}
+	return within(pfx.Masked(), d.exclude[r.Family])
+}
+
+// HoldsRule reports whether an include profile still routes a destination
+// rule's whole network ("to <prefix>"). Other rules (an app's) hold.
+func (d Destinations) HoldsRule(r domain.PolicyRule) bool {
+	dst, ok := strings.CutPrefix(r.Selector, "to ")
+	if !ok {
+		return true
+	}
+	pfx, err := netip.ParsePrefix(dst)
+	if err != nil {
+		return true
+	}
+	return within(pfx.Masked(), d.include[r.Family])
+}
+
+// within reports whether pfx lies inside one of the aggregated prefixes: an
+// aligned block inside their union lies inside one of its maximal blocks.
+func within(pfx netip.Prefix, aggregated []netip.Prefix) bool {
+	for _, a := range aggregated {
+		if a.Bits() <= pfx.Bits() && a.Contains(pfx.Addr()) {
+			return true
+		}
+	}
+	return false
 }
 
 func addRoute(seen map[string]bool, out *[]domain.ManagedRoute, rt domain.Route, profile string, now time.Time) bool {

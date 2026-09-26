@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -13,7 +14,8 @@ import (
 // tunnel apply puts them back before placing everything beside the tunnels
 // live then, so they return when the tunnel goes — including with auto-apply
 // off, where no full apply follows. Only what an apply already installed is
-// ever put back: a full apply rewrites the record from the profiles.
+// ever put back — a full apply rewrites the record from the profiles — and
+// only while a profile still routes it (stillWanted).
 type yielded struct {
 	Routes []domain.ManagedRoute `json:"routes,omitempty"`
 	Rules  []yieldedRule         `json:"rules,omitempty"`
@@ -52,6 +54,38 @@ func (s *Service) saveYielded(y yielded) {
 		return
 	}
 	_ = s.store.SetSetting(yieldedKey, string(b))
+}
+
+// stillWanted is y less what no enabled profile routes any more. A record
+// can outlive its profile: a deletion that changed nothing (its only route
+// had yielded) records in the place of a change still on probation, and
+// its record is lost with that change if it rolls back. This only ever
+// takes put-backs away, so it never applies a change staged for the user.
+// Coverage, not equality: what yielded may be a piece of a profile's route,
+// cut around a tunnel before it yielded to another.
+func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
+	if (len(y.Routes) == 0 && len(y.Rules) == 0) || s.store == nil {
+		return y
+	}
+	profiles, err := s.store.ListProfiles()
+	if err != nil {
+		return y
+	}
+	d := routing.ProfileDestinations(routing.DesiredInput{
+		Profiles: profiles, Lists: s.listsMap(), Domains: s.resolveDomains(ctx, profiles),
+	})
+	var out yielded
+	for _, r := range y.Routes {
+		if d.HoldsRoute(r.Route) {
+			out.Routes = append(out.Routes, r)
+		}
+	}
+	for _, r := range y.Rules {
+		if d.HoldsRule(r.Rule.PolicyRule) {
+			out.Rules = append(out.Rules, r)
+		}
+	}
+	return out
 }
 
 // putBackRoutes adds the yielded routes to routes (once each).
