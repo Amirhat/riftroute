@@ -253,6 +253,58 @@ func TestNetworkMoveRePinsTunnelsWithAutoApplyOff(t *testing.T) {
 	}
 }
 
+// A previous run's tunnel withdrawal was refused at shutdown (an interactive
+// change awaited confirmation), leaving its routes. Startup — the drop, then
+// the tunnels' resync (the manager's Resync applies through ApplyTunnels) —
+// must leave nothing behind, even when the pin won't delete at first.
+func TestStartupCleansALeftoverTunnel(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	infra := routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"192.168.70.0/24"}, Bypass: []netip.Addr{netip.MustParseAddr("198.51.100.7")}}
+	h.setTunnels(infra)
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.proto.ShutdownResolve()
+
+	// Restart: openvpn is gone (with utun9's routes), the pin is not.
+	h.prov.SetTunnelIface("utun9", "", false)
+	h.prov.PurgeIface("utun9")
+	h.setTunnels()
+	h.proto = safety.NewProtocol(h.prov, h.st, safety.NewFakeClock(time.Unix(0, 0)), func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	h.rec = reconcile.New(h.svc, h.proto, slog.New(slog.NewTextHandler(io.Discard, nil)), 0, h.autoApply.Load)
+
+	h.prov.FailDelRoute("198.51.100.7/32", true) // the pin won't delete yet
+	if _, err := h.proto.RecoverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.proto.DropTunnelRoutes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.proto.ReconcileOwnership(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !h.svc.OwnsTunnelRoutes(ctx) {
+		t.Fatal("the pin that wouldn't delete must stay recorded, for the resync")
+	}
+	if got := h.kernel(t)["192.168.70.0/24"]; len(got) != 0 {
+		t.Fatalf("startup re-added the old tunnel's route by interface name: %v", got)
+	}
+	h.prov.FailDelRoute("198.51.100.7/32", false)
+	if err := h.rec.ApplyTunnels(ctx); err != nil { // tunnels.Resync
+		t.Fatal(err)
+	}
+	for _, o := range h.ownedTunnelRoutes(t) {
+		t.Errorf("still recorded: %+v", o)
+	}
+	k := h.kernel(t)
+	for _, dst := range []string{"192.168.70.0/24", "198.51.100.7/32"} {
+		if len(k[dst]) != 0 {
+			t.Errorf("%s left in the kernel via %v", dst, k[dst])
+		}
+	}
+}
+
 func (h *tunnelHarness) ownedTunnelRoutes(t *testing.T) []domain.ManagedRoute {
 	t.Helper()
 	owned, err := h.st.ListOwned()

@@ -149,6 +149,17 @@ func run() error {
 		logger.Warn("pending-tx recovery incomplete", "err", perr)
 	}
 
+	// No tunnel is running yet, so the routes a previous run's tunnels left
+	// are stale: forget them before step 2 re-adds owned routes — by interface
+	// name, and after a reboot a tunnel's utun name may be another VPN's. Their
+	// server pins are withdrawn; one that won't delete is retried by the
+	// tunnels' resync below.
+	if n, terr := proto.DropTunnelRoutes(context.Background()); terr != nil {
+		logger.Warn("could not drop the previous run's tunnel routes", "err", terr)
+	} else if n > 0 {
+		logger.Info("dropped routes left by the previous run's tunnels", "count", n)
+	}
+
 	// Crash recovery, step 2: re-assert/repair owned routes against the kernel
 	// (spec §2.5/§13). No-op on a fresh DB.
 	if added, removed, rerr := proto.ReconcileOwnership(context.Background()); rerr != nil {
@@ -569,10 +580,10 @@ func run() error {
 		}
 	})
 	logger.Info("auto-apply loops running", "enabled", autoApplyOn.Load(), "poll", pollInterval)
-	// A daemon that died with tunnels up left their routes behind (a server
-	// pin outlives the tunnel's interface). Withdraw them — ungated by
-	// auto-apply, like every tunnel change, and retried if refused for now —
-	// before auto-connect brings tunnels back.
+	// A server pin the startup drop couldn't withdraw is still recorded:
+	// withdraw it through the protocol — ungated by auto-apply, like every
+	// tunnel change, and retried if refused for now — before auto-connect
+	// brings tunnels back.
 	go func() {
 		if svc.OwnsTunnelRoutes(ctx) {
 			logger.Info("withdrawing routes left by the previous run's tunnels")

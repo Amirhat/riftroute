@@ -647,7 +647,8 @@ func (p *Protocol) ShutdownResolve() {
 // the daemon last stopped (crash/power loss/SIGKILL). We can't know it was safe,
 // so we replay its inverse to revert to the pre-change state and clear it. This
 // is the only crash recovery that works on macOS, where kernel routes carry no
-// owner tag to reattribute. Run it on startup BEFORE ReconcileOwnership.
+// owner tag to reattribute. Run it on startup BEFORE ReconcileOwnership. A
+// tunnel's on-link routes are never re-added (see withoutTunnelLinks).
 func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	if p.store == nil {
 		return 0, nil
@@ -663,7 +664,7 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	exec := NewExecutor(p.prov)
 	n := 0
 	for id, plan := range pend {
-		_ = exec.RunOps(ctx, plan.Inverse) // best-effort revert to baseline
+		_ = exec.RunOps(ctx, withoutTunnelLinks(plan.Inverse)) // best-effort revert to baseline
 		if !strings.HasPrefix(id, routeOpTxPrefix) {
 			p.applyOwnership(plan, true) // undo any ownership records it wrote
 		}
@@ -673,6 +674,66 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 		n++
 	}
 	return n, err
+}
+
+// DropTunnelRoutes forgets the routes a previous run's tunnels left: at
+// startup no tunnel is running, so every one is stale. Run it after
+// RecoverPending and before ReconcileOwnership, which would otherwise re-add
+// them — an on-link route by interface name, into whatever interface has that
+// name now (after a reboot, the tunnel's utun5 may be another VPN's).
+//
+// An on-link route's record is only dropped: the route went with its
+// interface (or goes when the orphaned openvpn is stopped), and deleting it by
+// name could hit the new owner's. A server pin goes via the physical gateway
+// and outlives its tunnel, so it is withdrawn from the kernel too; one that
+// won't delete keeps its record, for the tunnels' startup resync to withdraw
+// through the Apply Protocol. A tunnel re-pins when it connects.
+func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
+	if p.store == nil {
+		return 0, nil
+	}
+	p.applyMu.Lock()
+	defer p.applyMu.Unlock()
+	owned, err := p.store.ListOwned()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, o := range owned {
+		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			continue
+		}
+		if o.Gateway != "" {
+			if err := p.prov.DelRoute(ctx, o); err != nil {
+				p.log.Warn("could not withdraw a previous run's tunnel pin; retrying later", "route", o.DstCIDR, "err", err)
+				continue
+			}
+		}
+		if err := p.store.DelOwned(o); err == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		p.audit(domain.ActorDaemon, "recover", "dropped_tunnel_routes",
+			fmt.Sprintf("startup: forgot %d route(s) left by the previous run's tunnels", n), nil, false)
+	}
+	return n, nil
+}
+
+// withoutTunnelLinks drops the re-adds of tunnel on-link routes from a crash
+// recovery replay: no tunnel runs at startup, and such a route would go into
+// whatever interface has the recorded name now. (DropTunnelRoutes then drops
+// their records.)
+func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
+	out := ops[:0:0]
+	for _, op := range ops {
+		if op.Kind == domain.OpAddRoute && op.Route != nil && op.Route.Gateway == "" &&
+			strings.HasPrefix(op.Route.ProfileID, routing.TunnelProfilePrefix) {
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
 }
 
 // --- internals ---
