@@ -29,10 +29,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Profiles made for OpenVPN Connect work against older servers too: the
   profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
   openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
-  Works on macOS and Linux. RiftRoute doesn't bundle `openvpn` (2.5 or
-  newer): until you've installed it, the Tunnels page and `riftroute tunnel
-  list` say so up front, with the install command for your system (Homebrew,
-  apt, dnf, pacman, zypper, apk, …), and pick it up without a restart.
+  Works on macOS and Linux. On macOS RiftRoute ships its own `openvpn` (a
+  static OpenVPN 2.6 build, installed root-owned beside the daemon and updated
+  with it — never Homebrew's, which the user who installed Homebrew could
+  swap for something the daemon would run as root). On Linux it uses the
+  distribution's (2.5 or newer): until you've installed it, the Tunnels page
+  and `riftroute tunnel list` say so up front, with the install command for
+  your system (apt, dnf, pacman, zypper, apk, …), and pick it up without a
+  restart. Only a root-owned openvpn in a root-owned folder is ever run.
 ## [0.2.6] — 2026-09-26
 
 Automatic, signed updates. From this version on, the daemon keeps itself up to
