@@ -144,7 +144,7 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 // against.
 func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, routing.Installed) {
 	expected := map[string][]domain.ManagedRoute{}
-	if desired, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
+	if desired, _, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
 		for _, d := range desired {
 			if name, ok := strings.CutPrefix(d.ProfileID, routing.TunnelProfilePrefix); ok {
 				expected[name] = append(expected[name], d)

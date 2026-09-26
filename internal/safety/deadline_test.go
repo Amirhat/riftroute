@@ -111,7 +111,7 @@ func TestApplyGivesUpWaitingForTheLock(t *testing.T) {
 	}()
 	built := false
 	go func() {
-		res, err := h.p.ApplyBuilt(ctx, func([]domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		res, err := h.p.ApplyBuilt(ctx, func(context.Context, []domain.ManagedRoute, *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 			built = true
 			return desired("8.8.8.0/24"), nil, nil
 		}, opts(false))

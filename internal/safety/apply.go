@@ -78,6 +78,13 @@ type Options struct {
 	VetChangesOnly bool
 }
 
+// UseGateway points the guardrails and the watchdog at physGW, the physical
+// gateway a desired set was built against: PhysGW, and the default anchors.
+func (o *Options) UseGateway(physGW netip.Addr) {
+	o.PhysGW = physGW
+	o.Anchors = DefaultAnchors(physGW)
+}
+
 func (o Options) window() time.Duration {
 	if o.Interactive {
 		if o.ConfirmTimeout <= 0 {
@@ -252,8 +259,11 @@ func (p *Protocol) lockApply(ctx context.Context) error {
 }
 
 // Build derives the desired routes and rules from owned — the routes
-// RiftRoute owns right now (the ownership map).
-type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error)
+// RiftRoute owns right now (the ownership map) — on the apply's ctx. It sets
+// what in opts depends on the network (see Options.UseGateway) from the same
+// reads the set is built from: after a network move, a set built for the new
+// gateway must not be vetted and guarded against the old one.
+type Build func(ctx context.Context, owned []domain.ManagedRoute, opts *Options) ([]domain.ManagedRoute, []domain.ManagedRule, error)
 
 // ApplyBuilt runs the Apply Protocol like Apply, but derives desired state
 // under the apply lock: no other apply can land between the reads it is
@@ -267,7 +277,7 @@ func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (R
 	defer p.applyMu.Unlock()
 	ctx = context.WithoutCancel(ctx) // see Apply
 	owned := p.actualManaged(ctx)
-	desired, desiredRules, err := build(owned)
+	desired, desiredRules, err := build(ctx, owned, &opts)
 	if err != nil {
 		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}

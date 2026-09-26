@@ -308,7 +308,10 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 // The other owned routes are carried over as they are, placed beside the
 // tunnels as a full reconcile would: a route inside a live tunnel's networks
 // yields to it, so the set never routes one destination two ways.
-func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+//
+// Like DesiredManaged it also returns the v4 physical gateway the set was
+// built against (zero if none), for the guardrails and the watchdog.
+func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
 	if owned == nil {
 		owned = []domain.ManagedRoute{} // owns nothing: don't let networkInput read the map again
 	}
@@ -319,17 +322,7 @@ func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.Managed
 			others = append(others, o)
 		}
 	}
-	return routing.PlanTunnels(in).Beside(others), s.actualManagedRules(ctx), nil
-}
-
-// PhysicalGateway is the resolved v4 physical gateway (zero if none) — what
-// an apply's guardrails and watchdog anchor on.
-func (s *Service) PhysicalGateway(ctx context.Context) netip.Addr {
-	gw, _, err := s.prov.DefaultGateway(ctx, domain.FamilyV4)
-	if err != nil {
-		return netip.Addr{}
-	}
-	return gw
+	return routing.PlanTunnels(in).Beside(others), s.actualManagedRules(ctx), in.GatewayV4, nil
 }
 
 // TunnelsActive reports whether a tunnel is running, or has routes recorded

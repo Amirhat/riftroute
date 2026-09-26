@@ -90,7 +90,7 @@ func TestDoctorChecksTunnelsAgainstTheKernel(t *testing.T) {
 		t.Errorf("routes not in the kernel: %s %q, want them reported", c.Status, c.Detail)
 	}
 
-	desired, _, err := svc.DesiredTunnelsOnly(ctx, nil)
+	desired, _, _, err := svc.DesiredTunnelsOnly(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

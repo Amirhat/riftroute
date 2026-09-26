@@ -40,6 +40,17 @@ type hookProvider struct {
 	*fake.Provider
 	mu                sync.Mutex
 	onRules, onIfaces func()
+	// afterGateway runs once a gateway read has returned — the network
+	// moving right after it.
+	afterGateway func()
+}
+
+func (p *hookProvider) DefaultGateway(ctx context.Context, fam domain.Family) (netip.Addr, string, error) {
+	gw, iface, err := p.Provider.DefaultGateway(ctx, fam)
+	if f := p.take(&p.afterGateway); f != nil {
+		f()
+	}
+	return gw, iface, err
 }
 
 func (p *hookProvider) take(fn *func()) func() {
