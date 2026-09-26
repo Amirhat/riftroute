@@ -1,11 +1,30 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Modal } from './Modal'
 import { Badge, Label, Toggle, fieldCls } from './ui'
 import { api } from '../lib/api'
 import { friendly } from '../lib/format'
+import { validateRouteTarget } from '../lib/validate'
 import type { ConfigIssue, TunnelProfileFile, TunnelStatus, TunnelVia } from '../types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
+
+// parseRoutes reads the networks box: one IP or CIDR per line (commas and
+// spaces separate too). Each bad entry is reported with its line, as the
+// Profile Builder does per row, so it shows before Save.
+function parseRoutes(text: string): { routes: string[]; errors: RouteError[] } {
+  const routes: string[] = []
+  const errors: RouteError[] = []
+  text.split('\n').forEach((line, i) => {
+    for (const r of line.split(/[\s,]+/).filter(Boolean)) {
+      routes.push(r)
+      const msg = validateRouteTarget(r)
+      if (msg) errors.push({ line: i + 1, value: r, msg })
+    }
+  })
+  return { routes, errors }
+}
+
+type RouteError = { line: number; value: string; msg: string }
 
 // TunnelEditor adds or edits a RiftRoute-run OpenVPN tunnel: the profile, the
 // login, the networks that go through it, and how its own connection reaches
@@ -14,11 +33,15 @@ const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
 export function TunnelEditor({
   existing,
   takenNames,
+  canConnect,
   onClose,
   onSaved,
 }: {
   existing?: TunnelStatus
   takenNames: string[]
+  // False when the openvpn program isn't usable: saving still works, but
+  // connecting would only fail.
+  canConnect: boolean
   onClose: () => void
   onSaved: (t: TunnelStatus, warnings: string[], connect: boolean) => void
 }) {
@@ -33,6 +56,7 @@ export function TunnelEditor({
   const [issues, setIssues] = useState<ConfigIssue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const engineHintId = useId()
 
   const needsAuth = profile ? profile.needs_auth : !!existing?.needs_auth
   const servers = profile ? (profile.servers ?? []) : (existing?.servers ?? [])
@@ -43,7 +67,14 @@ export function TunnelEditor({
       : !editing && takenNames.includes(name)
         ? 'A tunnel with this name exists'
         : null
-  const issueFor = (field: string) => issues.filter((i) => i.field === field).map((i) => i.msg)
+  const issuesFor = (field: string) => issues.filter((i) => i.field === field)
+  const errorFor = (field: string) => issuesFor(field).find((i) => i.severity === 'error')?.msg ?? null
+  // Issues for a field this form doesn't show (or doesn't show right now)
+  // go under the form, so a refused save never looks like a no-op.
+  const shownFields = ['config', 'name', 'routes', ...(needsAuth ? ['username', 'password'] : [])]
+  const otherIssues = issues.filter((i) => !i.field || !shownFields.includes(i.field))
+  const parsed = parseRoutes(routesText)
+  const files = profile?.files ?? []
 
   async function pickProfile() {
     setError(null)
@@ -77,10 +108,7 @@ export function TunnelEditor({
         username: username || undefined,
         password: password || undefined,
         via,
-        routes: routesText
-          .split(/[\s,]+/)
-          .map((s) => s.trim())
-          .filter(Boolean),
+        routes: parsed.routes,
         auto_connect: autoConnect,
       })
       const errs = (res.issues ?? []).filter((i) => i.severity === 'error')
@@ -100,7 +128,8 @@ export function TunnelEditor({
     }
   }
 
-  const canSave = !busy && name !== '' && !nameError && (editing || (profile && !profile.error))
+  const canSave =
+    !busy && name !== '' && !nameError && parsed.errors.length === 0 && (editing || (profile && !profile.error))
 
   return (
     <Modal onBackdrop={busy ? undefined : onClose} className="max-w-xl">
@@ -130,11 +159,7 @@ export function TunnelEditor({
             </span>
           </div>
           {profile?.error && <p className="text-sm text-danger">{profile.error}</p>}
-          {issueFor('config').map((m) => (
-            <p key={m} className="text-sm text-danger">
-              {m}
-            </p>
-          ))}
+          <IssueList issues={issuesFor('config')} />
           {servers.length > 0 && (
             <p className="text-xs text-muted">
               Server <span className="ltr font-mono text-default">{servers.join(', ')}</span>
@@ -142,8 +167,13 @@ export function TunnelEditor({
           )}
           {ignored.length > 0 && (
             <p className="text-xs text-muted">
-              Ignored from the profile: <span className="font-mono">{ignored.join(', ')}</span> — RiftRoute decides
+              Ignored from the profile: <span className="ltr font-mono">{ignored.join(', ')}</span> — RiftRoute decides
               routes and DNS, so your main VPN isn't pushed aside.
+            </p>
+          )}
+          {files.length > 0 && (
+            <p className="text-xs text-muted">
+              Also read: <span className="ltr font-mono">{files.join(', ')}</span>
             </p>
           )}
         </div>
@@ -155,11 +185,10 @@ export function TunnelEditor({
             disabled={editing}
             onChange={(e) => setName(e.target.value)}
             placeholder="infra"
-            className={fieldCls(nameError || issueFor('name')[0])}
+            aria-label="Name"
+            className={fieldCls(nameError || errorFor('name'))}
           />
-          {(nameError || issueFor('name')[0]) && (
-            <p className="text-sm text-danger">{nameError || issueFor('name')[0]}</p>
-          )}
+          {nameError ? <p className="text-sm text-danger">{nameError}</p> : <IssueList issues={issuesFor('name')} />}
         </div>
 
         {needsAuth && (
@@ -170,13 +199,10 @@ export function TunnelEditor({
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="off"
-                className={fieldCls(issueFor('username')[0])}
+                aria-label="Username"
+                className={fieldCls(errorFor('username'))}
               />
-              {issueFor('username').map((m) => (
-                <p key={m} className="text-sm text-danger">
-                  {m}
-                </p>
-              ))}
+              <IssueList issues={issuesFor('username')} />
             </div>
             <div className="space-y-1.5">
               <Label>Password</Label>
@@ -186,13 +212,10 @@ export function TunnelEditor({
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="off"
                 placeholder={existing?.has_password ? 'saved — leave blank to keep' : ''}
-                className={fieldCls(issueFor('password')[0])}
+                aria-label="Password"
+                className={fieldCls(errorFor('password'))}
               />
-              {issueFor('password').map((m) => (
-                <p key={m} className="text-sm text-danger">
-                  {m}
-                </p>
-              ))}
+              <IssueList issues={issuesFor('password')} />
             </div>
           </div>
         )}
@@ -205,14 +228,17 @@ export function TunnelEditor({
             rows={4}
             spellCheck={false}
             placeholder={'192.168.70.0/24\n192.168.72.11'}
-            className={`ltr font-mono ${fieldCls(issueFor('routes').find((m) => !m.includes('router')))}`}
+            aria-label="Networks through this tunnel"
+            aria-invalid={parsed.errors.length > 0 || !!errorFor('routes')}
+            className={`ltr font-mono ${fieldCls(parsed.errors[0]?.msg ?? errorFor('routes'))}`}
           />
           <p className="text-xs text-muted">One IP or CIDR per line. Everything else stays on your main VPN.</p>
-          {issueFor('routes').map((m) => (
-            <p key={m} className="text-sm text-danger">
-              {m}
+          {parsed.errors.map((e) => (
+            <p key={`${e.line}:${e.value}`} className="text-sm text-danger">
+              Line {e.line}: <span className="ltr font-mono">{e.value}</span> — {e.msg}
             </p>
           ))}
+          <IssueList issues={issuesFor('routes')} />
         </div>
 
         <div className="space-y-2">
@@ -232,7 +258,7 @@ export function TunnelEditor({
               <span>
                 <span className="text-sm text-default">{title}</span>
                 {v === 'direct' && (
-                  <span className="ml-2">
+                  <span className="ms-2">
                     <Badge tone="accent">recommended</Badge>
                   </span>
                 )}
@@ -250,9 +276,15 @@ export function TunnelEditor({
           <Toggle on={autoConnect} onClick={() => setAutoConnect((v) => !v)} ariaLabel="Connect automatically" />
         </div>
 
+        <IssueList issues={otherIssues} />
         {error && <p className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{error}</p>}
 
-        <div className="flex justify-end gap-2 border-t border-line pt-4">
+        <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
+          {!canConnect && (
+            <p id={engineHintId} className="me-auto text-xs text-muted">
+              OpenVPN isn't installed yet — save now, connect once it is.
+            </p>
+          )}
           <button
             onClick={onClose}
             disabled={busy}
@@ -271,7 +303,9 @@ export function TunnelEditor({
           {(!editing || existing.state === 'disconnected' || existing.state === 'failed') && (
             <button
               onClick={() => save(true)}
-              disabled={!canSave}
+              disabled={!canSave || !canConnect}
+              title={canConnect ? undefined : 'Install OpenVPN first (see the Tunnels page)'}
+              aria-describedby={canConnect ? undefined : engineHintId}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >
               Save &amp; connect
@@ -280,5 +314,19 @@ export function TunnelEditor({
         </div>
       </div>
     </Modal>
+  )
+}
+
+// IssueList renders the daemon's issues for one field: errors in red,
+// warnings (the tunnel still saves) in amber.
+function IssueList({ issues }: { issues: ConfigIssue[] }) {
+  return (
+    <>
+      {issues.map((i) => (
+        <p key={i.msg} className={`text-sm ${i.severity === 'error' ? 'text-danger' : 'text-warning'}`}>
+          {i.msg}
+        </p>
+      ))}
+    </>
   )
 }
