@@ -154,14 +154,13 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
 	// The daemon's tunnels go down before the flush (beforePanic): each one
 	// going down re-applies the survivors' routes, refused while this runs.
-	// What yielded to them is forgotten first: it describes routes the flush
-	// removes, and the tunnel apply that follows a panic must not put any of
-	// it back.
-	perr := s.proto.PanicWith(r.Context(), domain.ActorUI, func(ctx context.Context) {
-		s.svc.ForgetYielded()
-		if s.beforePanic != nil {
-			s.beforePanic(ctx)
-		}
+	// What yielded to them is forgotten right before the flush, once the
+	// changes still on probation have committed and recorded theirs: it
+	// describes routes the flush removes, and the tunnel apply that follows
+	// a panic must not put any of it back.
+	perr := s.proto.PanicWith(r.Context(), domain.ActorUI, safety.PanicSteps{
+		Before:   s.beforePanic,
+		Flushing: s.svc.ForgetYielded,
 	})
 	// Restore the DNS baseline too: stop the wildcard learner and drop its
 	// resolver files (the protocol only owns routes/PF). A dangling resolver

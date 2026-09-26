@@ -333,7 +333,8 @@ func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.Managed
 
 // TunnelsForApply is DesiredTunnelsOnly for a tunnel apply. It also returns
 // what yields to the live tunnels, recorded by commit — for the apply's
-// safety.Options.OnCommit — for the next tunnel apply to put back.
+// safety.Options.OnCommit — for the next tunnel apply to put back. It is
+// built on the last record, so the apply sets safety.Options.BuiltOnRecord.
 func (s *Service) TunnelsForApply(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, func(), error) {
 	routes, rules, gw, y := s.tunnelsOnly(ctx, owned)
 	return routes, rules, gw, func() { s.saveYielded(y) }, nil

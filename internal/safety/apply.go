@@ -87,12 +87,27 @@ type Options struct {
 	// a live tunnel's routes with nothing to put them back. The journal
 	// still covers a crash mid-execution.
 	Unguarded bool
-	// OnCommit runs once the change commits — at once when unguarded or
-	// when there was nothing to change, else when its guard window or a
-	// confirm commits it — and never for a dry run, a refusal, a failure
-	// or a rollback. It runs on no lock of the protocol's. For what must
-	// only be recorded once a change really stands.
+	// OnCommit records what the change stands for, once it commits: at once
+	// when unguarded, else when its guard window or a confirm commits it —
+	// never for a dry run, a refusal, a failure or a rollback. Records land
+	// in the order changes settle: a change that goes ahead settles the one
+	// still on probation first, and one that changes nothing while another
+	// is on probation takes that one's place — its record lands if that one
+	// commits, and neither does if it rolls back (the routes are then back
+	// to what the record before them describes).
+	//
+	// It runs before the next apply can build (under the apply lock, or
+	// before its transaction reports settled), so it must be quick and must
+	// never apply or wait on the protocol. A panic in it is logged; the
+	// change stands.
 	OnCommit func()
+	// BuiltOnRecord says the build read what an earlier change recorded
+	// through OnCommit (a tunnel apply puts back what a full one made yield).
+	// Built while another change is on probation, whose record isn't in yet,
+	// such a set is built again once the apply has settled that change; one
+	// that changes nothing records nothing, as it was built from a record
+	// that change is about to replace.
+	BuiltOnRecord bool
 }
 
 // UseGateway points the guardrails and the watchdog at physGW, the physical
@@ -145,14 +160,102 @@ type pendingTx struct {
 	cancel    context.CancelFunc
 	done      chan struct{}
 	result    domain.TxResult
-	onCommit  func() // Options.OnCommit
+	// onCommit is Options.OnCommit, or the record of a later change that
+	// took its place; rec says whether it is still open to that. Both are
+	// recMu's.
+	onCommit func()
+	rec      recState
 }
 
-// committed runs a change's OnCommit.
-func committed(opts Options) {
-	if opts.OnCommit != nil {
-		opts.OnCommit()
+type recState int
+
+const (
+	recOpen       recState = iota // on probation: a record may still take its place
+	recCommitted                  // its record has run
+	recRolledBack                 // its record is dropped
+)
+
+// runRecord runs a change's record (Options.OnCommit); the caller holds
+// recMu. A panic in it is logged: the change stands whatever its record does.
+func (p *Protocol) runRecord(fn func()) {
+	if fn == nil {
+		return
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error("recovered panic recording a committed change", "panic", r)
+		}
+	}()
+	fn()
+}
+
+// recordNow records a change that committed at once.
+func (p *Protocol) recordNow(opts Options) {
+	p.recMu.Lock()
+	defer p.recMu.Unlock()
+	p.runRecord(opts.OnCommit)
+}
+
+// recordUnchanged records a change that changed nothing, built while the
+// transactions beside were on probation (see Options.OnCommit): it takes
+// the place of those still open, and is dropped if one rolled back — or if
+// it was built from a record one of them was about to replace.
+func (p *Protocol) recordUnchanged(opts Options, beside []*pendingTx) {
+	if opts.OnCommit == nil {
+		return
+	}
+	p.recMu.Lock()
+	defer p.recMu.Unlock()
+	if len(beside) > 0 && opts.BuiltOnRecord {
+		return
+	}
+	var open []*pendingTx
+	for _, pt := range beside {
+		switch pt.rec {
+		case recOpen:
+			open = append(open, pt)
+		case recRolledBack:
+			return
+		}
+	}
+	for _, pt := range open {
+		pt.onCommit = opts.OnCommit
+	}
+	if len(open) == 0 {
+		p.runRecord(opts.OnCommit)
+	}
+}
+
+// settleRecord closes pt's record as it resolves: runs it if it commits,
+// drops it otherwise.
+func (p *Protocol) settleRecord(pt *pendingTx, commit bool) {
+	p.recMu.Lock()
+	defer p.recMu.Unlock()
+	if pt.rec != recOpen {
+		return
+	}
+	fn := pt.onCommit
+	pt.onCommit = nil
+	if !commit {
+		pt.rec = recRolledBack
+		return
+	}
+	pt.rec = recCommitted
+	p.runRecord(fn)
+}
+
+// onProbation returns the policy transactions still on probation — those
+// whose records (Options.OnCommit) aren't in yet.
+func (p *Protocol) onProbation() []*pendingTx {
+	p.txmu.Lock()
+	defer p.txmu.Unlock()
+	var out []*pendingTx
+	for _, pt := range p.pending {
+		if pt.ownership {
+			out = append(out, pt)
+		}
+	}
+	return out
 }
 
 func (pt *pendingTx) decide(d decision) {
@@ -172,7 +275,8 @@ type Protocol struct {
 	platform  string
 	log       *slog.Logger
 
-	applyMu  applyLock // serializes applies; see lockApply
+	applyMu  applyLock  // serializes applies; see lockApply
+	recMu    sync.Mutex // orders the changes' records (Options.OnCommit)
 	txmu     sync.Mutex
 	pending  map[string]*pendingTx
 	resolved map[string]domain.TxResult
@@ -263,7 +367,7 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 	}
 	defer p.applyMu.Unlock()
 	ctx = context.WithoutCancel(ctx)
-	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts)
+	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts, p.onProbation(), nil)
 }
 
 // lockApply takes the apply lock unless a panic is in progress — checked
@@ -303,16 +407,31 @@ func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (R
 	}
 	defer p.applyMu.Unlock()
 	ctx = context.WithoutCancel(ctx) // see Apply
+	return p.applyBuilt(ctx, build, opts, p.onProbation())
+}
+
+// applyBuilt builds and applies; beside are the transactions on probation
+// as the build starts. The caller holds applyMu.
+func (p *Protocol) applyBuilt(ctx context.Context, build Build, opts Options, beside []*pendingTx) (Result, error) {
+	base := opts
 	owned := p.actualManaged(ctx)
 	desired, desiredRules, err := build(ctx, owned, &opts)
 	if err != nil {
 		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
-	return p.apply(ctx, owned, desired, desiredRules, opts)
+	var again func() (Result, error)
+	if len(beside) > 0 && opts.BuiltOnRecord {
+		// Built from a record the changes beside may be about to replace:
+		// once they're settled, build again from what they recorded.
+		again = func() (Result, error) { return p.applyBuilt(ctx, build, base, nil) }
+	}
+	return p.apply(ctx, owned, desired, desiredRules, opts, beside, again)
 }
 
 // apply is the body of Apply and ApplyBuilt; the caller holds applyMu.
-func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
+// beside are the transactions on probation when desired was built; again,
+// if set, builds and applies afresh once they're settled.
+func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options, beside []*pendingTx, again func() (Result, error)) (Result, error) {
 	actual := p.installed(ctx, owned, desired)
 	plan := routing.Reconcile(desired, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
@@ -332,12 +451,15 @@ func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRou
 	}
 
 	if len(plan.Ops) == 0 {
-		committed(opts)
+		p.recordUnchanged(opts, beside)
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 
 	if err := p.supersedePending(); err != nil {
 		return Result{Plan: plan, Diff: diff, Status: domain.TxFailed, Error: err.Error()}, err
+	}
+	if again != nil {
+		return again()
 	}
 	p.takeSnapshot(ctx, opts)
 
@@ -415,7 +537,7 @@ func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Pla
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
 	if len(plan.Ops) == 0 {
-		committed(opts)
+		p.recordUnchanged(opts, p.onProbation())
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 	if err := p.supersedePending(); err != nil {
@@ -508,7 +630,7 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 		p.resolved[txID] = domain.TxCommitted
 		p.txmu.Unlock()
 		p.audit(opts.Actor, "confirm", "committed", "unguarded", nil, false)
-		committed(opts)
+		p.recordNow(opts)
 		return Result{TxID: txID, Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
 	}
 
@@ -560,6 +682,7 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.log.Error("recovered panic resolving tx; forcing rollback", "tx", pt.id, "panic", r)
+			p.settleRecord(pt, false)
 			inverse := withoutTunnelLinks(pt.plan.Inverse)
 			_ = NewExecutor(p.prov).RunOps(context.Background(), inverse)
 			if pt.ownership {
@@ -578,10 +701,9 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		pt.result = domain.TxCommitted
 		p.clearPending(pt.id) // resolved cleanly → no crash-recovery needed
 		p.audit(actor, "confirm", "committed", "", nil, false)
-		if pt.onCommit != nil {
-			pt.onCommit()
-		}
+		p.settleRecord(pt, true) // before it reports settled: see Options.OnCommit
 	} else {
+		p.settleRecord(pt, false)
 		if left, rbErr := p.rollBack(pt); rbErr != nil {
 			// The kernel wasn't fully reverted. The ownership records follow
 			// what was; the journal KEEPS what wasn't, so Panic / startup
@@ -719,29 +841,43 @@ func (p *Protocol) Wait(txID string) (domain.TxResult, bool) {
 
 // Panic flushes all managed routes and clears ownership (spec §2.1). Idempotent.
 func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
-	return p.PanicWith(ctx, actor, nil)
+	return p.PanicWith(ctx, actor, PanicSteps{})
 }
 
-// PanicWith is Panic with a first step: before runs before the flush, while
-// every apply is refused — the daemon takes its tunnels down there, and a
-// tunnel going down re-applies the surviving tunnels' routes, which must not
-// land around the flush. Guards still armed are settled before the flush, so
-// none can roll back afterwards and re-add what it removed.
-func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
-	err := p.panicWith(ctx, actor, before)
+// PanicSteps are what a panic runs besides the flush.
+type PanicSteps struct {
+	// Before runs first, while every apply is refused: the daemon takes its
+	// tunnels down there, and a tunnel going down re-applies the surviving
+	// tunnels' routes, which must not land around the flush.
+	Before func(context.Context)
+	// Flushing runs under the apply lock right before the flush, once the
+	// guards still armed are settled and their records (Options.OnCommit)
+	// are in: for dropping what those record about the routes the flush
+	// removes. No change can record anything after it.
+	Flushing func()
+}
+
+// PanicWith is Panic with steps of the caller's around the flush (see
+// PanicSteps). Guards still armed are settled before the flush, so none can
+// roll back afterwards and re-add what it removed.
+func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, steps PanicSteps) error {
+	err := p.panicWith(ctx, actor, steps)
 	p.settled() // applies are accepted again
 	return err
 }
 
-func (p *Protocol) panicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
+func (p *Protocol) panicWith(ctx context.Context, actor domain.Actor, steps PanicSteps) error {
 	p.panicking.Add(1)
 	defer p.panicking.Add(-1)
-	if before != nil {
-		before(ctx)
+	if steps.Before != nil {
+		steps.Before(ctx)
 	}
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
 	p.settleForPanic()
+	if steps.Flushing != nil {
+		steps.Flushing()
+	}
 	// The flush runs to the end whether or not its caller still waits (see
 	// Apply): cut off half-way, what it failed to remove stays recorded.
 	err := Panic(context.WithoutCancel(ctx), p.prov, p.store)

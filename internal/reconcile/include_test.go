@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/routing"
@@ -116,7 +117,7 @@ func TestPanicForgetsWhatYielded(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.setTunnels()
-	if err := h.proto.PanicWith(ctx, domain.ActorUI, func(context.Context) { h.svc.ForgetYielded() }); err != nil {
+	if err := h.proto.PanicWith(ctx, domain.ActorUI, safety.PanicSteps{Flushing: h.svc.ForgetYielded}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.rec.ApplyTunnels(ctx); err != nil {
@@ -159,5 +160,84 @@ func TestOnlyACommittedApplyIsRecorded(t *testing.T) {
 	}
 	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 0 {
 		t.Errorf("a dry run's route was installed: %v", got)
+	}
+}
+
+// profileP1 saves an exclude profile with a route inside the tunnel's
+// network (it yields while the tunnel is up) and one outside it (so an
+// apply that enables or disables it has something to change).
+func (h *tunnelHarness) profileP1(t *testing.T, enabled bool) {
+	t.Helper()
+	if err := h.st.UpsertProfile(domain.Profile{ID: "p1", Name: "p1", Enabled: enabled, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.9.0/24"}, {Type: domain.RuleCIDR, Value: "10.80.0.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fullApplyOnProbation runs the auto-apply path and returns the transaction
+// it leaves on probation (the fake clock holds its guard window open).
+func (h *tunnelHarness) fullApplyOnProbation(t *testing.T) string {
+	t.Helper()
+	h.autoApply.Store(true)
+	defer h.autoApply.Store(false)
+	res, err := h.rec.Reconcile(context.Background())
+	if err != nil || res.Status != domain.TxPending {
+		t.Fatalf("full apply: %v, %s", err, res.Status)
+	}
+	return res.TxID
+}
+
+// A tunnel disconnecting while a full apply is still on probation: the
+// tunnel apply settles that apply first and is built from what it recorded,
+// so the route it made yield to the tunnel comes back.
+func TestTunnelApplyBesideAPendingApplyPutsBackWhatThatOneYielded(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.profileP1(t, true)
+	tx := h.fullApplyOnProbation(t)
+	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 0 {
+		t.Fatalf("the route didn't yield to the tunnel: %v", got)
+	}
+
+	h.setTunnels() // disconnected, inside the full apply's guard window
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := h.proto.Wait(tx); got != domain.TxCommitted {
+		t.Fatalf("the full apply: %s, want settled by the tunnel apply", got)
+	}
+	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 1 || got[0] != "en0" {
+		t.Errorf("the yielded route after the disconnect = %v, want it back via en0", got)
+	}
+}
+
+// ...and one that disables a profile whose route had yielded: the tunnel
+// apply doesn't put the disabled profile's route back.
+func TestTunnelApplyBesideAPendingApplyLeavesWhatThatOneDisabled(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.profileP1(t, true)
+	tx := h.fullApplyOnProbation(t)
+	h.clock.Advance(30 * time.Second)
+	if got, _ := h.proto.Wait(tx); got != domain.TxCommitted {
+		t.Fatalf("the enabling apply: %s", got)
+	}
+
+	h.profileP1(t, false)
+	h.fullApplyOnProbation(t)
+	h.setTunnels()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["10.70.9.0/24"]; len(got) != 0 {
+		t.Errorf("the disabled profile's route was installed: %v", got)
 	}
 }

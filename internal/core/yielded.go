@@ -37,8 +37,10 @@ func (s *Service) loadYielded() yielded {
 	return y
 }
 
-// ForgetYielded drops the record: a panic flushed what it describes, and
-// nothing may put it back.
+// ForgetYielded drops the record: a panic is about to flush what it
+// describes, and nothing may put it back. It runs right before the flush
+// (safety.PanicSteps.Flushing), once the changes the panic settles have
+// recorded theirs.
 func (s *Service) ForgetYielded() { s.saveYielded(yielded{}) }
 
 func (s *Service) saveYielded(y yielded) {

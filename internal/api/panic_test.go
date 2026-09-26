@@ -7,11 +7,14 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/core"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/provider/fake"
+	"github.com/Amirhat/riftroute/internal/reconcile"
+	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
@@ -155,5 +158,74 @@ func TestPanicTakesTunnelsDownBeforeTheFlush(t *testing.T) {
 	}
 	if n := prov.CountManaged(); n != 0 {
 		t.Fatalf("%d managed route(s) after the panic", n)
+	}
+}
+
+// A change still on probation when the panic hits is committed by it: what
+// it made yield to a tunnel is recorded then, and must be forgotten with the
+// flush — the tunnel apply that follows the panic puts none of it back.
+func TestPanicForgetsWhatAPendingChangeYielded(t *testing.T) {
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	prov := fake.New()
+	svc := core.New(prov, st, "test")
+	var mu sync.Mutex
+	live := []routing.TunnelInput{{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}}}
+	prov.SetTunnelIface("utun9", "10.99.0.2", true)
+	svc.SetTunnels(func() []routing.TunnelInput {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]routing.TunnelInput(nil), live...)
+	}, func() []domain.TunnelStatus { return nil })
+	proto := safety.NewProtocol(prov, st, safety.RealClock{},
+		func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	t.Cleanup(proto.ShutdownResolve)
+	srv := NewServer(svc, st, proto, uint32(0), "test", nil)
+	rec := reconcile.New(svc, proto, nil, 0, func() bool { return false })
+	ctx := context.Background()
+	if err := rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertProfile(domain.Profile{ID: "p1", Name: "p1", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.9.0/24"}, {Type: domain.RuleCIDR, Value: "10.80.0.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := srv.applyProfiles(ctx, applyReq{Yes: true}, nil); err != nil || res.Status != domain.TxPending {
+		t.Fatalf("apply: %v, %s", err, res.Status)
+	}
+	srv.SetBeforePanic(func(context.Context) { // the tunnels go down
+		mu.Lock()
+		live = nil
+		mu.Unlock()
+	})
+
+	h := srv.Handler()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, peerInfo{uid: 0})))
+	}))
+	t.Cleanup(ts.Close)
+	resp, err := http.Post(ts.URL+"/panic", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("panic status %d", resp.StatusCode)
+	}
+
+	if err := rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := prov.ListRoutes(ctx, domain.FamilyV4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range routes {
+		if r.DstCIDR == "10.70.9.0/24" {
+			t.Errorf("the panic was undone: %s is back via %s", r.DstCIDR, r.Iface)
+		}
 	}
 }

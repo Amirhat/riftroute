@@ -257,7 +257,7 @@ func TestPanicRefusesAppliesUntilItHasFlushed(t *testing.T) {
 	ctx := context.Background()
 	h.mustApply(t, desired("9.9.9.0/24"))
 	ran := false
-	err := h.p.PanicWith(ctx, domain.ActorUI, func(ctx context.Context) {
+	err := h.p.PanicWith(ctx, domain.ActorUI, safety.PanicSteps{Before: func(ctx context.Context) {
 		ran = true
 		if h.prov.CountManaged() == 0 {
 			t.Error("flushed before the step that comes first")
@@ -271,7 +271,7 @@ func TestPanicRefusesAppliesUntilItHasFlushed(t *testing.T) {
 		}, opts(false)); !errors.Is(err, safety.ErrPanicking) {
 			t.Errorf("built apply during a panic: %v, want ErrPanicking", err)
 		}
-	})
+	}})
 	if err != nil || !ran {
 		t.Fatalf("panic: %v (step ran: %v)", err, ran)
 	}
