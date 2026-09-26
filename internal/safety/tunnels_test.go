@@ -3,6 +3,7 @@ package safety_test
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -204,6 +205,25 @@ func TestRecoverPendingDoesNotReAddTunnelLinks(t *testing.T) {
 	}
 	if owned, _ := h.st.ListOwned(); len(owned) != 0 {
 		t.Errorf("owned = %+v", owned)
+	}
+}
+
+// …but the unresolved-gateway fail-safe still covers what the plan removes:
+// a gateway read failing for a moment (DHCP renewal) must not withdraw a
+// tunnel's server pin — existing routes are kept until it can be read.
+func TestVetChangesOnlyKeepsTheGatewayFailSafe(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.mustApply(t, []domain.ManagedRoute{pinRoute("198.51.100.7/32", "infra")})
+	o := opts(false)
+	o.VetChangesOnly = true
+	o.PhysGW = netip.Addr{}
+	res, err := h.p.Apply(ctx, nil, nil, o)
+	if !errors.Is(err, safety.ErrGuardrail) || len(res.Violations) != 1 || res.Violations[0].Rule != "gateway-unresolved" {
+		t.Fatalf("withdrawing with the gateway unreadable: %v %+v", err, res.Violations)
+	}
+	if h.prov.CountManaged() != 1 {
+		t.Fatal("the pin was withdrawn")
 	}
 }
 

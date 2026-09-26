@@ -25,12 +25,28 @@ func CheckGuardrails(ctx context.Context, prov provider.RouteProvider, desired [
 	return checkGuardrails(ctx, prov, desired, nil, physGW)
 }
 
-// checkGuardrails is CheckGuardrails vetting only the desired routes in
-// changed (by routing.RouteKey) — the ones an apply adds — when changed is
-// non-nil. A conflict still counts when either of its routes is vetted.
-func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []domain.ManagedRoute, changed map[string]bool, physGW netip.Addr) []Violation {
+// checkGuardrails is CheckGuardrails vetting only what plan changes, when
+// plan is non-nil (Options.VetChangesOnly): the desired routes it adds — a
+// conflict still counts when either of its routes is one — and, for the
+// unresolved-gateway fail-safe, any main-table route it adds or removes.
+func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []domain.ManagedRoute, plan *domain.Plan, physGW netip.Addr) []Violation {
 	var vs []Violation
-	vetted := func(d domain.ManagedRoute) bool { return changed == nil || changed[routing.RouteKey(d.Route)] }
+	vetted := func(domain.ManagedRoute) bool { return true }
+	changes := all // the routes rule 0 considers
+	if plan != nil {
+		added := map[string]bool{}
+		changes = nil
+		for _, op := range plan.Ops {
+			if op.Route == nil {
+				continue
+			}
+			changes = append(changes, *op.Route)
+			if op.Kind == domain.OpAddRoute {
+				added[routing.RouteKey(op.Route.Route)] = true
+			}
+		}
+		vetted = func(d domain.ManagedRoute) bool { return added[routing.RouteKey(d.Route)] }
+	}
 	var desired []domain.ManagedRoute
 	for _, d := range all {
 		if vetted(d) {
@@ -44,7 +60,7 @@ func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []dom
 	//    rather than proceed with the guard silently disabled. Isolated Model-B
 	//    table routes don't touch the on-link gateway path, so they're exempt.
 	if !physGW.IsValid() {
-		for _, d := range desired {
+		for _, d := range changes {
 			if d.Table == "" { // a main-table route
 				vs = append(vs, Violation{
 					Rule:   "gateway-unresolved",

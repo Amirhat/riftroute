@@ -73,7 +73,8 @@ type Options struct {
 	// and must not be refused over a route it doesn't touch: after a network
 	// move with auto-apply off, the exclude routes still point at the old
 	// gateway, and vetting them would leave the tunnel unable to install or
-	// withdraw anything.
+	// withdraw anything. The unresolved-gateway fail-safe still covers every
+	// main-table route the plan adds or removes.
 	VetChangesOnly bool
 }
 
@@ -273,16 +274,11 @@ func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRou
 	}
 
 	// Guardrails (§2.4) — refuse before touching anything.
-	var changed map[string]bool
+	var vet *domain.Plan
 	if opts.VetChangesOnly {
-		changed = map[string]bool{}
-		for _, op := range plan.Ops {
-			if op.Kind == domain.OpAddRoute {
-				changed[routing.RouteKey(op.Route.Route)] = true
-			}
-		}
+		vet = &plan
 	}
-	if vs := checkGuardrails(ctx, p.prov, desired, changed, opts.PhysGW); len(vs) > 0 {
+	if vs := checkGuardrails(ctx, p.prov, desired, vet, opts.PhysGW); len(vs) > 0 {
 		p.audit(opts.Actor, "apply", "refused", violationSummary(vs), &plan, false)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
