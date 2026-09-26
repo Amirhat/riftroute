@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -604,6 +605,24 @@ func (c *Client) UpdateInstall(ctx context.Context) (domain.UpdateStatus, error)
 // restarts itself to do so.
 func (c *Client) UpdateRollback(ctx context.Context) error {
 	return c.do(ctx, http.MethodPost, "/update/rollback", nil, nil)
+}
+
+// UpdateManifest returns the newest verified release manifest, as signed,
+// and its signature. The caller verifies them itself.
+func (c *Client) UpdateManifest(ctx context.Context) (raw, sig []byte, err error) {
+	var r struct {
+		Manifest  string `json:"manifest"`
+		Signature string `json:"signature"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/update/manifest", nil, &r); err != nil {
+		return nil, nil, err
+	}
+	raw, err1 := base64.StdEncoding.DecodeString(r.Manifest)
+	sig, err2 := base64.StdEncoding.DecodeString(r.Signature)
+	if err1 != nil || err2 != nil {
+		return nil, nil, fmt.Errorf("update manifest: bad encoding")
+	}
+	return raw, sig, nil
 }
 
 // Preferences returns the update mode and telemetry level.

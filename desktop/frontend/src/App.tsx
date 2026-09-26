@@ -12,6 +12,7 @@ import { Settings } from './views/Settings'
 import { Badge, Dot } from './components/ui'
 import { ConfirmModal } from './components/ConfirmModal'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { AppUpdateBanner, useAppUpdate } from './components/AppUpdate'
 import { onConnection, onMenu, onState } from './lib/events'
 import { api } from './lib/api'
 import { stateKey } from './lib/queries'
@@ -36,6 +37,7 @@ export default function App() {
   const [reachable, setReachable] = useState(true)
   const [version, setVersion] = useState('')
   const [confirmPanic, setConfirmPanic] = useState(false)
+  const appUpdate = useAppUpdate()
   // Set by View → Explain (⌘3); cleared once the lookup box has the cursor.
   const [focusLookup, setFocusLookup] = useState(false)
   const lookupFocused = useCallback(() => setFocusLookup(false), [])
@@ -116,6 +118,7 @@ export default function App() {
             </button>
           </div>
         </header>
+        <AppUpdateBanner st={appUpdate} />
         <main className="min-h-0 flex-1 overflow-auto p-5">
           <ErrorBoundary key={view}>
             <ViewRouter

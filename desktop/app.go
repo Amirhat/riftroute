@@ -27,6 +27,7 @@ type App struct {
 	ctx          context.Context
 	client       *apiclient.Client
 	cancelEvents context.CancelFunc
+	appUpd       *appUpdates
 }
 
 // NewApp constructs the App.
@@ -37,6 +38,7 @@ func (a *App) startup(ctx context.Context) {
 	// Resolve the socket per dial, not once: the daemon may be down now (so only
 	// the per-user fallback resolves) and come up later on the system socket.
 	a.client = apiclient.NewResolving(platform.ClientSocket)
+	a.initAppUpdates()
 
 	ec, cancel := context.WithCancel(ctx)
 	a.cancelEvents = cancel
@@ -72,6 +74,7 @@ func (a *App) streamEvents(ctx context.Context) {
 				var st domain.State
 				if json.Unmarshal(ev.Data, &st) == nil {
 					a.emit("rr:state", st)
+					a.considerAppUpdate(st.Update)
 				}
 				return
 			}

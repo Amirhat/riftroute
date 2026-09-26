@@ -297,6 +297,7 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 		u.set(func(s *domain.UpdateStatus) { s.State, s.Error = "error", err.Error() })
 		return
 	}
+	u.keepManifest(f)
 	d := u.decide(f, kind)
 	u.set(func(s *domain.UpdateStatus) {
 		s.State, s.Latest, s.Source = "idle", f.m.Version, f.source

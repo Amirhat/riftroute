@@ -14,6 +14,7 @@ type stubUpdater struct {
 	installErr  error
 	rolledBack  bool
 	checkedHand bool
+	raw, sig    []byte
 }
 
 func (s *stubUpdater) Status() domain.UpdateStatus { return s.st }
@@ -26,6 +27,9 @@ func (s *stubUpdater) InstallNow() (domain.UpdateStatus, error) {
 	return s.st, s.installErr
 }
 func (s *stubUpdater) RequestRollback() error { s.rolledBack = true; return nil }
+func (s *stubUpdater) Manifest() ([]byte, []byte, bool) {
+	return s.raw, s.sig, len(s.raw) > 0
+}
 
 func TestClientUpdateEndpoints(t *testing.T) {
 	c, srv, _ := serveTest(t)
@@ -52,6 +56,14 @@ func TestClientUpdateEndpoints(t *testing.T) {
 	}
 	if err := c.UpdateRollback(ctx); err != nil || !u.rolledBack {
 		t.Fatalf("rollback: %v %v", err, u.rolledBack)
+	}
+	// The release manifest, exactly as signed: none before the first check.
+	if _, _, err := c.UpdateManifest(ctx); !errors.As(err, &ae) || ae.StatusCode != http.StatusNotFound {
+		t.Fatalf("no manifest yet: %v", err)
+	}
+	u.raw, u.sig = []byte(`{"version":"0.2.7"}`+"\n"), []byte(`{"sig":"x"}`)
+	if raw, sig, err := c.UpdateManifest(ctx); err != nil || string(raw) != string(u.raw) || string(sig) != string(u.sig) {
+		t.Fatalf("manifest: %q %q %v", raw, sig, err)
 	}
 	// State carries nothing unless the daemon wires it (svc.SetUpdateStatus).
 }

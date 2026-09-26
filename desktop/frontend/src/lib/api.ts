@@ -54,6 +54,9 @@ import {
   CreateBugReport,
   SaveBugReport,
   OpenIssuePage,
+  GetAppUpdate,
+  InstallAppUpdate,
+  RestartApp,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -77,6 +80,7 @@ import type {
   SystemApp,
   SystemUser,
   UpdateStatus,
+  AppUpdateStatus,
   Preferences,
   BugReport,
 } from '../types'
@@ -152,6 +156,10 @@ export const api = {
   installUpdate: () => InstallUpdate() as unknown as Promise<UpdateStatus>,
   rollbackUpdate: () => RollbackUpdate() as Promise<void>,
   openReleaseNotes: (url: string) => OpenReleaseNotes(url) as Promise<void>,
+  // The app's own update: it follows the daemon to the same release.
+  appUpdate: () => GetAppUpdate() as unknown as Promise<AppUpdateStatus>,
+  installAppUpdate: () => InstallAppUpdate() as unknown as Promise<AppUpdateStatus>,
+  restartApp: () => RestartApp() as Promise<void>,
   // Daemon lifecycle (privileged ops prompt for admin via the OS).
   daemonInfo: () => GetDaemonInfo() as unknown as Promise<DaemonInfo>,
   installDaemon: () => InstallDaemon() as Promise<void>,

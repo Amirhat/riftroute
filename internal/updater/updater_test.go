@@ -476,3 +476,26 @@ func exitError(t *testing.T) error {
 	}
 	return fmt.Errorf("self-test failed: %w", err)
 }
+
+// A check keeps the manifest it verified, exactly as signed, for the desktop
+// app to install its own update from; it survives a restart.
+func TestCheckKeepsTheSignedManifest(t *testing.T) {
+	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
+	h := newHarness(t, f, "0.2.7")
+	if _, _, ok := h.u.Manifest(); ok {
+		t.Fatal("a manifest before any check")
+	}
+	h.check()
+	raw, sig, ok := h.u.Manifest()
+	wantRaw, wantSig := f.signed()
+	if !ok || string(raw) != string(wantRaw) || string(sig) != string(wantSig) {
+		t.Fatalf("kept %q %q", raw, sig)
+	}
+	u2, err := New(h.env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw2, _, ok := u2.Manifest(); !ok || string(raw2) != string(wantRaw) {
+		t.Fatal("not kept across a restart")
+	}
+}

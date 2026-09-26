@@ -289,8 +289,17 @@ riftroute update mode auto|notify|off
 `auto` (the default) installs at a quiet moment, `notify` tells you and waits,
 `off` never checks on its own. Update checks send nothing that identifies your
 install. Only the daemon installed as a service updates itself; `.deb` installs
-are updated through the package manager, and the desktop app tells you when a
-new version is out.
+are updated through the package manager.
+
+**The desktop app follows the daemon** (from 0.2.8): once the daemon runs a newer
+release, the app installs that same release — on its own in `auto`, when you
+click *Update the app* in Settings → Updates in `notify`, never in `off` — and
+asks you to restart it; nothing is closed for you. It checks the release's
+signature again itself, installs only the app whose hash the release signed,
+and keeps the previous one beside it (`.RiftRoute.app.prev`). It updates itself
+where you installed it (Applications, or an AppImage you can write to); an app
+somewhere you can't change, or from a package, is updated the way you
+installed it.
 
 Maintainers: tag → CI builds the release → on your machine
 `riftroute-release sign <tag>` → `riftroute-release publish <tag>` (GitHub) and

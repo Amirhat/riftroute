@@ -3,6 +3,7 @@
 import {safety} from '../models';
 import {apiclient} from '../models';
 import {domain} from '../models';
+import {appupdate} from '../models';
 import {main} from '../models';
 import {sysinfo} from '../models';
 
@@ -25,6 +26,8 @@ export function DeleteProfile(arg1:string):Promise<apiclient.ConfigResult>;
 export function Explain(arg1:string):Promise<domain.RouteExplain>;
 
 export function ExportConfigDialog():Promise<string>;
+
+export function GetAppUpdate():Promise<appupdate.Status>;
 
 export function GetAudit():Promise<Array<domain.AuditEvent>>;
 
@@ -58,6 +61,8 @@ export function GetSystemApps():Promise<Array<sysinfo.App>>;
 
 export function GetSystemUsers():Promise<Array<sysinfo.User>>;
 
+export function InstallAppUpdate():Promise<appupdate.Status>;
+
 export function InstallDaemon():Promise<void>;
 
 export function InstallUpdate():Promise<domain.UpdateStatus>;
@@ -75,6 +80,8 @@ export function PlanPreview():Promise<domain.Plan>;
 export function Reachable():Promise<boolean>;
 
 export function RefreshList(arg1:string):Promise<domain.List>;
+
+export function RestartApp():Promise<void>;
 
 export function RestartDaemon():Promise<void>;
 
