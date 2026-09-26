@@ -220,9 +220,9 @@ func run() error {
 	}
 	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
 	tunnels, err := tunnel.New(tunnel.Options{
-		Dir:      filepath.Join(filepath.Dir(dbPath), "tunnels"),
-		Launcher: launcher,
-		Ifaces:   prov.Interfaces,
+		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
+		Launcher:  launcher,
+		Ifaces:    prov.Interfaces,
 		Protected: svc.TunnelProtected,
 		Routes: func(ctx context.Context) ([]domain.Route, error) {
 			v4, err := prov.ListRoutes(ctx, domain.FamilyV4)
