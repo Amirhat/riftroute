@@ -304,6 +304,10 @@ func profilePrefixes(p domain.Profile, in DesiredInput) map[domain.Family][]neti
 // destinations matters, not where they go: they need no gateway or VPN.
 type Destinations struct {
 	exclude, include map[domain.Family][]netip.Prefix // aggregated
+	// A mode is unsure when one of its profiles has a domain rule with no
+	// addresses (in.Domains): what it routes isn't known, so nothing outside
+	// the rest can be judged unrouted.
+	excludeUnsure, includeUnsure bool
 }
 
 // ProfileDestinations reads the destinations from in's Profiles, Domains and
@@ -314,12 +318,17 @@ func ProfileDestinations(in DesiredInput) Destinations {
 		if !p.Enabled {
 			continue
 		}
-		into := d.exclude
+		into, unsure := d.exclude, &d.excludeUnsure
 		if p.Mode == domain.ModeInclude {
-			into = d.include
+			into, unsure = d.include, &d.includeUnsure
 		}
 		for fam, pfxs := range profilePrefixes(p, in) {
 			into[fam] = append(into[fam], pfxs...)
+		}
+		for _, r := range p.Rules {
+			if r.Type == domain.RuleDomain && len(in.Domains[r.Value]) == 0 {
+				*unsure = true
+			}
 		}
 	}
 	for _, m := range []map[domain.Family][]netip.Prefix{d.exclude, d.include} {
@@ -331,7 +340,8 @@ func ProfileDestinations(in DesiredInput) Destinations {
 }
 
 // HoldsRoute reports whether an exclude profile still routes r's whole
-// destination. A route it can't judge — in a table, or unparsable — holds.
+// destination. A route it can't judge — in a table, unparsable, or outside
+// what an unsure mode is known to route — holds.
 func (d Destinations) HoldsRoute(r domain.Route) bool {
 	if r.Table != "" {
 		return true
@@ -340,11 +350,12 @@ func (d Destinations) HoldsRoute(r domain.Route) bool {
 	if err != nil {
 		return true
 	}
-	return within(pfx.Masked(), d.exclude[r.Family])
+	return within(pfx.Masked(), d.exclude[r.Family]) || d.excludeUnsure
 }
 
 // HoldsRule reports whether an include profile still routes a destination
-// rule's whole network ("to <prefix>"). Other rules (an app's) hold.
+// rule's whole network ("to <prefix>"). Other rules (an app's) hold, and so
+// does one outside what an unsure mode is known to route.
 func (d Destinations) HoldsRule(r domain.PolicyRule) bool {
 	dst, ok := strings.CutPrefix(r.Selector, "to ")
 	if !ok {
@@ -354,7 +365,7 @@ func (d Destinations) HoldsRule(r domain.PolicyRule) bool {
 	if err != nil {
 		return true
 	}
-	return within(pfx.Masked(), d.include[r.Family])
+	return within(pfx.Masked(), d.include[r.Family]) || d.includeUnsure
 }
 
 // within reports whether pfx lies inside one of the aggregated prefixes: an

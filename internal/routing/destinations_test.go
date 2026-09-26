@@ -49,3 +49,23 @@ func TestDestinationsHoldWhatTheProfilesStillRoute(t *testing.T) {
 		}
 	}
 }
+
+// A domain rule with no addresses makes its mode unsure: nothing outside
+// what the mode is known to route is judged unrouted. The other mode is
+// still judged.
+func TestDestinationsDontJudgeAModeWithAnUnresolvedDomain(t *testing.T) {
+	d := ProfileDestinations(DesiredInput{
+		Profiles: []domain.Profile{
+			{ID: "ex", Enabled: true, Mode: domain.ModeExclude, Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "corp.example.com"}}},
+			{ID: "inc", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}},
+			{ID: "off", Enabled: false, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "gone.example.com"}}},
+		},
+		Domains: map[string][]string{},
+	})
+	if !d.HoldsRoute(domain.Route{DstCIDR: "10.70.1.5/32", Family: domain.FamilyV4}) {
+		t.Error("an exclude route was judged unrouted while an exclude domain rule is unresolved")
+	}
+	if d.HoldsRule(domain.PolicyRule{Selector: "to 192.0.2.0/24", Family: domain.FamilyV4}) {
+		t.Error("an include rule no include profile routes held: a disabled profile's unresolved domain made the mode unsure")
+	}
+}

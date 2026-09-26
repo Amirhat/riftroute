@@ -409,9 +409,17 @@ func (s *Service) OwnsTunnelRoutes(ctx context.Context) bool {
 // resolveDomains resolves the enabled profiles' domain rules via the TTL cache,
 // returning domain → resolved IP strings for the engine to expand.
 func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile) map[string][]string {
-	m := map[string][]string{}
+	m, _ := s.lookupDomains(ctx, profiles)
+	return m
+}
+
+// lookupDomains is resolveDomains, also reporting the rules whose own
+// lookup came back empty — never resolved yet (DNS not up after a start) or
+// resolving to nothing — whatever the DNS learner observed under them.
+func (s *Service) lookupDomains(ctx context.Context, profiles []domain.Profile) (m map[string][]string, unresolved map[string]bool) {
+	m, unresolved = map[string][]string{}, map[string]bool{}
 	if s.domains == nil {
-		return m
+		return m, unresolved
 	}
 	for _, p := range profiles {
 		if !p.Enabled {
@@ -426,6 +434,9 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 			// the map stays keyed by the raw rule value the engine looks up.
 			for _, a := range s.domains.Lookup(ctx, domain.DomainRuleHost(r.Value)) {
 				ss = append(ss, a.String())
+			}
+			if len(ss) == 0 {
+				unresolved[r.Value] = true
 			}
 			// …plus every subdomain address the DNS learner has observed.
 			if s.wildcardIPs != nil && strings.HasPrefix(r.Value, "*.") {
@@ -443,7 +454,7 @@ func (s *Service) resolveDomains(ctx context.Context, profiles []domain.Profile)
 			m[r.Value] = ss
 		}
 	}
-	return m
+	return m, unresolved
 }
 
 // DomainHosts returns the distinct domains referenced by enabled profiles (for

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/dns"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
@@ -366,5 +367,42 @@ func TestTunnelApplyPutsBackAPieceOfAProfilesRule(t *testing.T) {
 	}
 	if got := selectors(); strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("rules after the second tunnel went = %v, want the pieces from before it", got)
+	}
+}
+
+// A domain rule whose lookup comes back empty for a while — the cache is
+// empty after a restart and DNS isn't up yet — isn't judged unrouted: its
+// yielded route stays recorded, and comes back once the tunnel goes.
+func TestTunnelApplyKeepsADomainsYieldWhileItsLookupFails(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	fr := dns.NewFakeResolver()
+	fr.Set("corp.example.com", "10.70.1.5")
+	h.svc.SetResolver(dns.NewCache(fr, time.Minute))
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.st.UpsertProfile(domain.Profile{ID: "p", Name: "p", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "corp.example.com"}}}); err != nil {
+		t.Fatal(err)
+	}
+	tx := h.fullApplyOnProbation(t)
+	h.clock.Advance(30 * time.Second)
+	if got, _ := h.proto.Wait(tx); got != domain.TxCommitted {
+		t.Fatalf("the full apply: %s", got)
+	}
+	if got := h.kernel(t)["10.70.1.5/32"]; len(got) != 0 {
+		t.Fatalf("the domain's route didn't yield to the tunnel: %v", got)
+	}
+
+	h.svc.SetResolver(dns.NewCache(dns.NewFakeResolver(), time.Minute)) // restarted; DNS not up
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.SetResolver(dns.NewCache(fr, time.Minute)) // DNS is back
+	h.setTunnels()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["10.70.1.5/32"]; len(got) != 1 || got[0] != "en0" {
+		t.Errorf("the domain's route after the disconnect = %v, want it back via en0", got)
 	}
 }

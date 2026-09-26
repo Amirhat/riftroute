@@ -61,8 +61,13 @@ func (s *Service) saveYielded(y yielded) {
 // had yielded) records in the place of a change still on probation, and
 // its record is lost with that change if it rolls back. This only ever
 // takes put-backs away, so it never applies a change staged for the user.
-// Coverage, not equality: what yielded may be a piece of a profile's route,
+// Coverage, not equality: what yielded may be a piece of a profile's rule,
 // cut around a tunnel before it yielded to another.
+//
+// What can't be known isn't judged: when the profiles can't be read, or a
+// domain rule's lookup came back empty (DNS not up yet after a restart), an
+// item isn't taken away for lying outside what's known — it is put back as
+// before, and the record keeps it.
 func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
 	if (len(y.Routes) == 0 && len(y.Rules) == 0) || s.store == nil {
 		return y
@@ -71,8 +76,15 @@ func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
 	if err != nil {
 		return y
 	}
+	if _, err := s.store.ListLists(); err != nil {
+		return y
+	}
+	domains, unresolved := s.lookupDomains(ctx, profiles)
+	for v := range unresolved {
+		domains[v] = nil // what the learner saw under it doesn't make it known
+	}
 	d := routing.ProfileDestinations(routing.DesiredInput{
-		Profiles: profiles, Lists: s.listsMap(), Domains: s.resolveDomains(ctx, profiles),
+		Profiles: profiles, Lists: s.listsMap(), Domains: domains,
 	})
 	var out yielded
 	for _, r := range y.Routes {
