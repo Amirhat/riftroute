@@ -266,7 +266,8 @@ func TestTunnelApplyBesideAPendingApplyLeavesWhatThatOneDisabled(t *testing.T) {
 // had yielded — the apply changes nothing and reports committed — and an
 // unrelated change beside it then rolls back, taking the deletion's record
 // with it. The disconnect's tunnel apply still doesn't install the deleted
-// profile's route: only what a profile still routes is put back.
+// profile's route: only what a profile still routes is put back — even
+// while another profile has a domain rule that never resolves.
 func TestTunnelApplyNeverPutsBackADeletedProfilesRoute(t *testing.T) {
 	h := newTunnelHarness(t)
 	ctx := context.Background()
@@ -286,6 +287,10 @@ func TestTunnelApplyNeverPutsBackADeletedProfilesRoute(t *testing.T) {
 
 	if err := h.st.UpsertProfile(domain.Profile{ID: "q", Name: "q", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
 		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.81.0.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.st.UpsertProfile(domain.Profile{ID: "typo", Name: "typo", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "192.0.2.0/24"}, {Type: domain.RuleDomain, Value: "typo.exampel.com"}}}); err != nil {
 		t.Fatal(err)
 	}
 	txQ := h.fullApplyOnProbation(t)

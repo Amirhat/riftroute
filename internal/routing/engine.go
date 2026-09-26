@@ -304,30 +304,50 @@ func profilePrefixes(p domain.Profile, in DesiredInput) map[domain.Family][]neti
 // destinations matters, not where they go: they need no gateway or VPN.
 type Destinations struct {
 	exclude, include map[domain.Family][]netip.Prefix // aggregated
-	// A mode is unsure when one of its profiles has a domain rule with no
-	// addresses (in.Domains): what it routes isn't known, so nothing outside
-	// the rest can be judged unrouted.
-	excludeUnsure, includeUnsure bool
+	// unsure holds, per enabled profile, the families it may route more of
+	// than is known: a domain rule of its has no address of that family
+	// (in.Domains) — not resolved yet, or a partial answer. Its own items
+	// of those families can't be judged unrouted.
+	unsure map[string]map[domain.Family]bool
+	mode   map[string]domain.Mode // the enabled profiles
 }
 
 // ProfileDestinations reads the destinations from in's Profiles, Domains and
 // Lists.
 func ProfileDestinations(in DesiredInput) Destinations {
-	d := Destinations{exclude: map[domain.Family][]netip.Prefix{}, include: map[domain.Family][]netip.Prefix{}}
+	d := Destinations{
+		exclude: map[domain.Family][]netip.Prefix{}, include: map[domain.Family][]netip.Prefix{},
+		unsure: map[string]map[domain.Family]bool{}, mode: map[string]domain.Mode{},
+	}
 	for _, p := range in.Profiles {
 		if !p.Enabled {
 			continue
 		}
-		into, unsure := d.exclude, &d.excludeUnsure
+		d.mode[p.ID] = p.Mode
+		into := d.exclude
 		if p.Mode == domain.ModeInclude {
-			into, unsure = d.include, &d.includeUnsure
+			into = d.include
 		}
 		for fam, pfxs := range profilePrefixes(p, in) {
 			into[fam] = append(into[fam], pfxs...)
 		}
 		for _, r := range p.Rules {
-			if r.Type == domain.RuleDomain && len(in.Domains[r.Value]) == 0 {
-				*unsure = true
+			if r.Type != domain.RuleDomain {
+				continue
+			}
+			has := map[domain.Family]bool{}
+			for _, ip := range in.Domains[r.Value] {
+				if _, fam, ok := entryToPrefix(ip); ok {
+					has[fam] = true
+				}
+			}
+			for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+				if !has[fam] {
+					if d.unsure[p.ID] == nil {
+						d.unsure[p.ID] = map[domain.Family]bool{}
+					}
+					d.unsure[p.ID][fam] = true
+				}
 			}
 		}
 	}
@@ -339,10 +359,18 @@ func ProfileDestinations(in DesiredInput) Destinations {
 	return d
 }
 
+// unsureOf reports whether profile — an enabled include one, or exclude
+// (any other mode) — is unsure of fam. A deleted or disabled profile never
+// is.
+func (d Destinations) unsureOf(profile string, include bool, fam domain.Family) bool {
+	m, ok := d.mode[profile]
+	return ok && (m == domain.ModeInclude) == include && d.unsure[profile][fam]
+}
+
 // HoldsRoute reports whether an exclude profile still routes r's whole
-// destination. A route it can't judge — in a table, unparsable, or outside
-// what an unsure mode is known to route — holds.
-func (d Destinations) HoldsRoute(r domain.Route) bool {
+// destination. A route it can't judge holds: one in a table, an unparsable
+// one, and one whose own profile is unsure of its family.
+func (d Destinations) HoldsRoute(r domain.ManagedRoute) bool {
 	if r.Table != "" {
 		return true
 	}
@@ -350,13 +378,15 @@ func (d Destinations) HoldsRoute(r domain.Route) bool {
 	if err != nil {
 		return true
 	}
-	return within(pfx.Masked(), d.exclude[r.Family]) || d.excludeUnsure
+	return within(pfx.Masked(), d.exclude[r.Family]) || d.unsureOf(r.ProfileID, false, r.Family)
 }
 
 // HoldsRule reports whether an include profile still routes a destination
-// rule's whole network ("to <prefix>"). Other rules (an app's) hold, and so
-// does one outside what an unsure mode is known to route.
-func (d Destinations) HoldsRule(r domain.PolicyRule) bool {
+// rule's whole network ("to <prefix>"). A rule it can't judge holds: an
+// app's, an unparsable one, and one whose own profile is unsure of its
+// family — or, for a rule read from the kernel (no profile), one while any
+// include profile is: sent into the VPN, it can't leak.
+func (d Destinations) HoldsRule(r domain.ManagedRule) bool {
 	dst, ok := strings.CutPrefix(r.Selector, "to ")
 	if !ok {
 		return true
@@ -365,7 +395,18 @@ func (d Destinations) HoldsRule(r domain.PolicyRule) bool {
 	if err != nil {
 		return true
 	}
-	return within(pfx.Masked(), d.include[r.Family]) || d.includeUnsure
+	if within(pfx.Masked(), d.include[r.Family]) {
+		return true
+	}
+	if r.ProfileID != "" {
+		return d.unsureOf(r.ProfileID, true, r.Family)
+	}
+	for id := range d.mode {
+		if d.unsureOf(id, true, r.Family) {
+			return true
+		}
+	}
+	return false
 }
 
 // within reports whether pfx lies inside one of the aggregated prefixes: an

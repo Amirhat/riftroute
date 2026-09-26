@@ -64,10 +64,11 @@ func (s *Service) saveYielded(y yielded) {
 // Coverage, not equality: what yielded may be a piece of a profile's rule,
 // cut around a tunnel before it yielded to another.
 //
-// What can't be known isn't judged: when the profiles can't be read, or a
-// domain rule's lookup came back empty (DNS not up yet after a restart), an
-// item isn't taken away for lying outside what's known — it is put back as
-// before, and the record keeps it.
+// What can't be known isn't judged: when the profiles can't be read, an
+// item isn't taken away; nor is one of a profile whose domain rule has no
+// address of its family (DNS not up yet after a restart, a partial answer)
+// — that profile's own items only, so an unrelated profile's typo never
+// brings back a deleted one's route.
 func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
 	if (len(y.Routes) == 0 && len(y.Rules) == 0) || s.store == nil {
 		return y
@@ -88,12 +89,12 @@ func (s *Service) stillWanted(ctx context.Context, y yielded) yielded {
 	})
 	var out yielded
 	for _, r := range y.Routes {
-		if d.HoldsRoute(r.Route) {
+		if d.HoldsRoute(r) {
 			out.Routes = append(out.Routes, r)
 		}
 	}
 	for _, r := range y.Rules {
-		if d.HoldsRule(r.Rule.PolicyRule) {
+		if d.HoldsRule(r.Rule) {
 			out.Rules = append(out.Rules, r)
 		}
 	}
