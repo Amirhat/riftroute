@@ -1,0 +1,43 @@
+name: openvpn (macOS)
+
+# Builds RiftRoute's own openvpn for macOS (scripts/build-openvpn.sh) when the
+# script — which holds every pinned version and hash — or this workflow
+# changes. It is slow (OpenSSL from source), so it isn't part of every PR's CI;
+# the release workflow builds it for real (cached by the same script hash).
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-openvpn.sh
+      - .github/workflows/openvpn.yml
+  pull_request:
+    paths:
+      - scripts/build-openvpn.sh
+      - .github/workflows/openvpn.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build openvpn (arm64)
+        run: scripts/build-openvpn.sh arm64 build/openvpn/arm64
+      # The script already refuses a binary that links anything but macOS's
+      # own libraries; check again, independently of it.
+      - name: Check it links only macOS's own libraries
+        run: |
+          f=build/openvpn/arm64/openvpn
+          otool -L "$f"
+          if otool -L "$f" | awk '/^\t/ {print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)'; then
+            echo "::error::$f links a library outside /usr/lib and /System"; exit 1
+          fi
+          if otool -l "$f" | grep -q LC_RPATH; then
+            echo "::error::$f has an LC_RPATH"; exit 1
+          fi
+          codesign --verify --strict "$f"
+          env -i PATH=/usr/bin:/bin OPENSSL_CONF=/dev/null "$f" --version
+          ls build/openvpn/arm64/licenses
