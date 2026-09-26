@@ -169,6 +169,36 @@ func TestTunnelApplyTakesOverAnAppliedExcludeRoute(t *testing.T) {
 	}
 }
 
+// openvpn re-creates its tun under the same name (a reconnect): the kernel
+// dropped the tunnel's routes with the old one. The next tunnel apply (the
+// manager applies on CONNECTED) and a network-event reconcile must both put
+// them back.
+func TestTunnelRoutesComeBackAfterTheTunIsRecreated(t *testing.T) {
+	h := newTunnelHarness(t)
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"192.168.70.0/24"}})
+	ctx := context.Background()
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	h.prov.PurgeIface("utun9")
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["192.168.70.0/24"]; len(got) != 1 || got[0] != "utun9" {
+		t.Fatalf("tunnel apply: route = %v, want it back on utun9", got)
+	}
+
+	h.prov.PurgeIface("utun9")
+	h.autoApply.Store(true)
+	if _, err := h.rec.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["192.168.70.0/24"]; len(got) != 1 || got[0] != "utun9" {
+		t.Fatalf("reconcile: route = %v, want it back on utun9", got)
+	}
+}
+
 func directProfile(t *testing.T, st *store.Store, cidr string) {
 	t.Helper()
 	if err := st.UpsertProfile(domain.Profile{

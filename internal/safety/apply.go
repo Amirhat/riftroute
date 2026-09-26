@@ -196,7 +196,8 @@ func NewProtocol(prov provider.RouteProvider, st Store, clock Clock, newProber f
 // Plan builds the reconcile plan + diff for desired state without applying — the
 // dry-run preview (spec §2.2 step 4).
 func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute, desiredRules []domain.ManagedRule) (domain.Plan, domain.Diff) {
-	plan := routing.Reconcile(desiredRoutes, p.actualManaged(ctx), desiredRules, p.actualManagedRules(ctx), p.platform)
+	actual := p.installed(ctx, p.actualManaged(ctx), desiredRoutes)
+	plan := routing.Reconcile(desiredRoutes, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	return plan, diffFromPlan(plan)
 }
 
@@ -230,7 +231,8 @@ func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (R
 }
 
 // apply is the body of Apply and ApplyBuilt; the caller holds applyMu.
-func (p *Protocol) apply(ctx context.Context, actual, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
+func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
+	actual := p.installed(ctx, owned, desired)
 	plan := routing.Reconcile(desired, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
 
@@ -665,6 +667,15 @@ func (p *Protocol) actualManaged(ctx context.Context) []domain.ManagedRoute {
 		}
 	}
 	return providerManaged(ctx, p.prov)
+}
+
+// installed is the "actual" side of a reconcile: the owned routes, less the
+// tunnel routes desired still wants that the kernel dropped with their
+// interface — so the plan puts those back (routing.VerifyTunnelRoutes).
+func (p *Protocol) installed(ctx context.Context, owned, desired []domain.ManagedRoute) []domain.ManagedRoute {
+	return routing.VerifyTunnelRoutes(owned, desired, func(fam domain.Family) ([]domain.Route, error) {
+		return p.prov.ListRoutes(ctx, fam)
+	})
 }
 
 // actualManagedRules returns the policy rules RiftRoute owns. Rules are

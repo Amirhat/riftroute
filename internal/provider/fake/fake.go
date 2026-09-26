@@ -362,6 +362,23 @@ func (p *Provider) SetVPN(up bool) {
 	}
 }
 
+// PurgeIface drops every route through iface, as the kernel does when the
+// interface goes away (tests) — whoever owned them.
+func (p *Provider) PurgeIface(iface string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	keep := func(in []domain.Route) []domain.Route {
+		out := in[:0:0]
+		for _, r := range in {
+			if r.Iface != iface {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	p.routesV4, p.routesV6 = keep(p.routesV4), keep(p.routesV6)
+}
+
 // SetDNS replaces the resolvers DNSConfig reports (tests).
 func (p *Provider) SetDNS(servers ...string) {
 	p.mu.Lock()

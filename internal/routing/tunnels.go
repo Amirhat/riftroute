@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"sort"
+	"strings"
 
 	"github.com/Amirhat/riftroute/internal/domain"
 )
@@ -297,6 +298,79 @@ func TunnelRouteBlock(pfx netip.Prefix, in DesiredInput) string {
 		}
 	}
 	return ""
+}
+
+// VerifyTunnelRoutes returns owned as the kernel really holds it: a tunnel
+// route desired still wants but the kernel no longer has is dropped, so a
+// reconcile against the result puts it back. A tunnel's routes vanish with its
+// interface, and when openvpn re-creates its tun under the same name, desired
+// and the ownership map still agree — nothing else would re-add them, and
+// drift would read "in sync". Missing routes desired no longer wants stay, so
+// the plan's (idempotent) delete clears their records.
+//
+// read returns one family's kernel table. It runs once per family holding an
+// owned tunnel route; a failed read changes nothing.
+func VerifyTunnelRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error)) []domain.ManagedRoute {
+	wanted := indexRoutes(desired)
+	kernel := map[domain.Family]Installed{}
+	missing := func(o domain.ManagedRoute) bool {
+		if _, ok := wanted[RouteKey(o.Route)]; !ok || !strings.HasPrefix(o.ProfileID, TunnelProfilePrefix) {
+			return false
+		}
+		in, read1 := kernel[o.Family]
+		if !read1 {
+			rs, err := read(o.Family)
+			if err == nil {
+				in = IndexInstalled(rs)
+			}
+			kernel[o.Family] = in // nil after a failed read: trust the records
+		}
+		return in != nil && !in.Has(o.Route)
+	}
+	out := owned[:0:0]
+	for _, o := range owned {
+		if !missing(o) {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// Installed indexes a kernel table read, to tell which routes are really
+// there.
+type Installed map[string]bool
+
+// IndexInstalled indexes kernel routes. Clone entries don't count: they are
+// the kernel's cache, not routes anyone added.
+func IndexInstalled(kernel []domain.Route) Installed {
+	in := Installed{}
+	for _, k := range kernel {
+		if k.Cloned {
+			continue
+		}
+		in[maskedDstKey(k)+"|dev "+k.Iface] = true
+		if k.Gateway != "" {
+			in[maskedDstKey(k)+"|via "+k.Gateway] = true
+		}
+	}
+	return in
+}
+
+// Has reports whether the kernel holds r: its destination through its
+// gateway — or, for an on-link route, on its interface.
+func (in Installed) Has(r domain.Route) bool {
+	if r.Gateway != "" {
+		return in[maskedDstKey(r)+"|via "+r.Gateway]
+	}
+	return in[maskedDstKey(r)+"|dev "+r.Iface]
+}
+
+// maskedDstKey is dstKey with the destination masked, as kernels list it.
+func maskedDstKey(r domain.Route) string {
+	if pfx, err := netip.ParsePrefix(r.DstCIDR); err == nil {
+		r.DstCIDR = pfx.Masked().String()
+	}
+	return dstKey(r)
 }
 
 // prefixKey is dstKey for a main-table prefix.

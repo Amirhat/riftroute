@@ -39,6 +39,45 @@ func TestApplyBuiltBuildsFromTheOwnedSet(t *testing.T) {
 	}
 }
 
+func onLink(dst, iface, tunnel string) domain.ManagedRoute {
+	return domain.ManagedRoute{
+		Route:     domain.Route{DstCIDR: dst, Iface: iface, Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute},
+		ProfileID: "tunnel:" + tunnel,
+	}
+}
+
+// A tunnel's routes vanish with its interface. When openvpn re-creates its
+// tun under the same name, desired and the ownership map still agree, so a
+// diff of the two plans nothing: the apply must check the kernel and put the
+// missing routes back — and clear the records of missing ones no longer wanted.
+func TestApplyReAddsTunnelRoutesTheKernelDropped(t *testing.T) {
+	h := newSimHarness(t)
+	ctx := context.Background()
+	infra := []domain.ManagedRoute{onLink("192.168.70.0/24", "utun6", "infra"), onLink("192.168.72.0/24", "utun6", "infra")}
+	h.applyAndCommit(t, infra, "192.168.1.1")
+	h.k.purge(domain.FamilyV4, "", "192.168.70.0/24") // the tun went away…
+	h.k.purge(domain.FamilyV4, "", "192.168.72.0/24") // …and came back empty
+
+	h.applyAndCommit(t, infra, "192.168.1.1")
+	h.wantRoute(t, "", "192.168.70.0/24", "", "utun6")
+	h.wantRoute(t, "", "192.168.72.0/24", "", "utun6")
+
+	// The tunnel drops one route while the kernel already lost it: the
+	// stale ownership record goes too.
+	h.k.purge(domain.FamilyV4, "", "192.168.72.0/24")
+	h.applyAndCommit(t, infra[:1], "192.168.1.1")
+	owned, err := h.st.ListOwned()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owned) != 1 || owned[0].DstCIDR != "192.168.70.0/24" {
+		t.Fatalf("owned = %+v", owned)
+	}
+	if plan, _ := h.p.Plan(ctx, infra[:1], nil); len(plan.Ops) != 0 {
+		t.Fatalf("in sync, but the preview plans %+v", plan.Ops)
+	}
+}
+
 // mustApply runs a non-interactive apply that must go through.
 func (h *harness) mustApply(t *testing.T, d []domain.ManagedRoute) {
 	t.Helper()

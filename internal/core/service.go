@@ -535,6 +535,11 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 		d.Reason = err.Error()
 		return d
 	}
+	// Tunnel routes the kernel dropped with their interface count as missing
+	// (as the Apply Protocol will see them), not as "in sync".
+	actualRoutes = routing.VerifyTunnelRoutes(actualRoutes, dRoutes, func(fam domain.Family) ([]domain.Route, error) {
+		return s.prov.ListRoutes(ctx, fam)
+	})
 	plan := routing.Reconcile(dRoutes, actualRoutes, dRules, s.actualManagedRules(ctx), s.Platform())
 	for _, op := range plan.Ops {
 		switch op.Kind {

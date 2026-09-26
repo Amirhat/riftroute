@@ -57,6 +57,28 @@ func TestTunnelStatusReportsEveryRouteLeftOut(t *testing.T) {
 	}
 }
 
+// Drift reads the kernel for the tunnels' routes: one the ownership map holds
+// but the kernel dropped (with its interface) is pending, not "in sync".
+func TestDriftSeesTunnelRoutesTheKernelDropped(t *testing.T) {
+	svc := newSvc(t)
+	withTunnels(svc, routing.TunnelInput{Name: "infra", Iface: "utun6", Routes: []string{"192.168.70.0/24"}})
+	ctx := context.Background()
+	desired, _, _, err := svc.DesiredManaged(ctx)
+	if err != nil || len(desired) != 1 {
+		t.Fatalf("desired = %+v, %v", desired, err)
+	}
+	if err := svc.Store().AddOwned(desired[0]); err != nil { // owned, but not in the (fake) kernel
+		t.Fatal(err)
+	}
+	st, err := svc.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Drift.Pending || st.Drift.Adds != 1 {
+		t.Fatalf("drift = %+v, want the missing route pending", st.Drift)
+	}
+}
+
 // A tunnel route containing the resolver in use would send every name lookup
 // into the tunnel, and one containing the watchdog's canary would make the
 // check guarding every change probe through it: both are left out. A resolver
