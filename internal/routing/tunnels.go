@@ -28,6 +28,13 @@ type TunnelInput struct {
 	// Bypass are the tunnel's own server addresses, pinned to the physical
 	// gateway so its connection doesn't ride another VPN (via: direct).
 	Bypass []netip.Addr
+	// Servers are every address the tunnel's connection may go to — its
+	// resolved remotes, pinned or not (via: default pins none). A route
+	// containing one that no more specific route holds off the tunnel would
+	// carry openvpn's own packets into the tunnel: it could never reconnect,
+	// and the listed networks would blackhole — so that route is left out.
+	// Bypass addresses count as servers whether or not they're listed here.
+	Servers []netip.Addr
 }
 
 // TunnelPlan is what the managed tunnels contribute on the current network.
@@ -71,7 +78,8 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 		return ts[i].Name < ts[j].Name
 	})
 
-	taken := map[string]claim{} // family|dst → who routes it
+	taken := map[string]claim{}   // family|dst → who routes it
+	held := map[netip.Addr]bool{} // servers a host route keeps out of the tunnels
 	for _, t := range ts {
 		tag := TunnelProfilePrefix + t.Name
 		for _, a := range t.Bypass {
@@ -84,11 +92,17 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			if _, occupied := in.Occupied[host.String()]; occupied {
 				continue // someone else already pins the server; follow their route
 			}
+			held[a] = true
 			if _, dup := taken[prefixKey(host)]; dup {
 				continue // another tunnel pins the same server
 			}
 			taken[prefixKey(host)] = claim{tunnel: t.Name, pin: true}
 			tp.add(domain.Route{DstCIDR: host.String(), Gateway: gw.String(), Iface: iface, Family: fam}, tag, in)
+		}
+		for _, a := range servers(t) {
+			if _, occupied := in.Occupied[netip.PrefixFrom(a, a.BitLen()).String()]; occupied {
+				held[a] = true
+			}
 		}
 	}
 
@@ -110,6 +124,11 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			}
 			if c, ok := taken[prefixKey(pfx)]; why == "" && ok {
 				why = c.reason(t.Name)
+			}
+			for _, a := range servers(t) {
+				if why == "" && pfx.Contains(a) && !held[a] {
+					why = fmt.Sprintf("contains the tunnel's own server %s — its connection would loop back into the tunnel", a)
+				}
 			}
 			if why != "" {
 				tp.Blocked[t.Name] = append(tp.Blocked[t.Name], domain.TunnelBlocked{Route: v, Reason: why})
@@ -139,6 +158,11 @@ func (c claim) reason(tunnel string) string {
 		return fmt.Sprintf("it's tunnel %s's server, pinned to your physical gateway", c.tunnel)
 	}
 	return fmt.Sprintf("already routed into tunnel %s", c.tunnel)
+}
+
+// servers are the addresses a tunnel's connection may go to.
+func servers(t TunnelInput) []netip.Addr {
+	return append(append([]netip.Addr(nil), t.Bypass...), t.Servers...)
 }
 
 func (tp *TunnelPlan) add(rt domain.Route, tag string, in DesiredInput) {
@@ -244,8 +268,9 @@ func outsideTunnels(prefixes, nets []netip.Prefix) []netip.Prefix {
 //   - another owner routes that exact destination: the kernel keeps a single
 //     route per destination, so the add would silently not happen.
 //
-// PlanTunnels adds what depends on the other tunnels (a destination claimed
-// twice, a v6 route into a v4-only tunnel).
+// PlanTunnels adds what depends on the tunnels themselves: a destination
+// claimed twice, a v6 route into a v4-only tunnel, a route that would carry
+// the tunnel's own connection into it.
 func TunnelRouteBlock(pfx netip.Prefix, in DesiredInput) string {
 	gw := in.GatewayV4
 	if pfx.Addr().Is6() {

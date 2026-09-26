@@ -153,3 +153,55 @@ func TestExcludeProfileYieldsOnlyToLiveTunnelNetworks(t *testing.T) {
 		t.Errorf("blocked = %+v", bs)
 	}
 }
+
+// A route that contains the tunnel's own server with nothing holding the
+// server off the tunnel (via: default pins nothing; a pin can be lost) sends
+// openvpn's packets into its own tunnel: it can never reconnect, and the
+// listed networks blackhole. The route is left out, the rest still installs.
+func TestTunnelRouteContainingItsOwnServerNeedsAPin(t *testing.T) {
+	server := netip.MustParseAddr("198.51.100.7")
+	tunnelRoutes := func(in DesiredInput) string {
+		t.Helper()
+		desired, _, err := BuildDesired(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, d := range desired {
+			if d.Gateway == "" {
+				out = append(out, d.DstCIDR)
+			}
+		}
+		return strings.Join(out, ",")
+	}
+
+	// via: direct, but the pin can't be made (no physical gateway for it).
+	in := testInput()
+	in.GatewayV4 = netip.Addr{}
+	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"198.51.100.0/24", "192.168.70.0/24"}, Bypass: []netip.Addr{server}}}
+	if got := tunnelRoutes(in); got != "192.168.70.0/24" {
+		t.Errorf("unpinned: tunnel routes = %s, want only 192.168.70.0/24", got)
+	}
+	if bs := PlanTunnels(in).Blocked["infra"]; len(bs) != 1 || !strings.Contains(bs[0].Reason, "own server 198.51.100.7") {
+		t.Errorf("unpinned: blocked = %+v", bs)
+	}
+
+	// via: default — the manager reports the servers without pinning them.
+	in = testInput()
+	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"198.51.100.0/24", "192.168.70.0/24"}, Servers: []netip.Addr{server}}}
+	if got := tunnelRoutes(in); got != "192.168.70.0/24" {
+		t.Errorf("via default: tunnel routes = %s, want only 192.168.70.0/24", got)
+	}
+
+	// Pinned (via: direct), or someone else's host route holds the server:
+	// the more specific route keeps the connection out of the tunnel.
+	in.Tunnels[0].Bypass = []netip.Addr{server}
+	if got := tunnelRoutes(in); got != "192.168.70.0/24,198.51.100.0/24" {
+		t.Errorf("pinned: tunnel routes = %s", got)
+	}
+	in.Tunnels[0].Bypass = nil
+	in.Occupied = map[string]string{"198.51.100.7/32": "en0"}
+	if got := tunnelRoutes(in); got != "192.168.70.0/24,198.51.100.0/24" {
+		t.Errorf("held by another route: tunnel routes = %s", got)
+	}
+}
