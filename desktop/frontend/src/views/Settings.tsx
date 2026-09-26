@@ -8,6 +8,7 @@ import { KILL_SWITCH_SHORT, KillSwitchConfirmMessage } from '../components/KillS
 import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
 import { BuildNotes } from '../components/BuildNotes'
+import { AppUpdateSection, useAppUpdate } from '../components/AppUpdate'
 import { fmtBuildMeta, fmtUptime, friendly } from '../lib/format'
 import type { Preferences, TelemetryLevel, UpdateMode, UpdateStatus } from '../types'
 
@@ -408,6 +409,7 @@ function UpdateCard({ prefs, live }: { prefs?: Preferences; live?: UpdateStatus 
   const [err, setErr] = useState<string | null>(null)
   const [askRollback, setAskRollback] = useState(false)
   const st = newestStatus(live, checked)
+  const appUpdate = useAppUpdate()
 
   async function run(kind: 'check' | 'install' | 'rollback') {
     setBusy(kind)
@@ -457,6 +459,7 @@ function UpdateCard({ prefs, live }: { prefs?: Preferences; live?: UpdateStatus 
           <p className="text-xs text-muted">This install isn’t updated automatically — update it the way you installed it.</p>
         )}
         {err && <p className="text-danger">{err}</p>}
+        <AppUpdateSection st={appUpdate} />
         {(available || st?.can_roll_back || (st?.notes_url && st.latest && st.latest !== st.current)) && (
           <div className="flex flex-wrap items-center gap-2 pt-1">
             {available && st.self_updatable && (

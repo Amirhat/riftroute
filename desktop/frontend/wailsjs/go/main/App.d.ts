@@ -3,6 +3,7 @@
 import {safety} from '../models';
 import {apiclient} from '../models';
 import {domain} from '../models';
+import {appupdate} from '../models';
 import {main} from '../models';
 import {sysinfo} from '../models';
 
@@ -31,6 +32,8 @@ export function DisconnectTunnel(arg1:string):Promise<domain.TunnelStatus>;
 export function Explain(arg1:string):Promise<domain.RouteExplain>;
 
 export function ExportConfigDialog():Promise<string>;
+
+export function GetAppUpdate():Promise<appupdate.Status>;
 
 export function GetAudit():Promise<Array<domain.AuditEvent>>;
 
@@ -68,6 +71,8 @@ export function GetTunnelEngine():Promise<domain.TunnelEngine>;
 
 export function GetTunnels():Promise<Array<domain.TunnelStatus>>;
 
+export function InstallAppUpdate():Promise<appupdate.Status>;
+
 export function InstallDaemon():Promise<void>;
 
 export function InstallUpdate():Promise<domain.UpdateStatus>;
@@ -87,6 +92,8 @@ export function PlanPreview():Promise<domain.Plan>;
 export function Reachable():Promise<boolean>;
 
 export function RefreshList(arg1:string):Promise<domain.List>;
+
+export function RestartApp():Promise<void>;
 
 export function RestartDaemon():Promise<void>;
 

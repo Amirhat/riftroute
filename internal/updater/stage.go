@@ -22,9 +22,10 @@ import (
 // staged is a verified, self-tested daemon waiting to be installed — with
 // the openvpn from the same release, where one ships (macOS).
 type staged struct {
-	version string
-	path    string
-	sum     string // sha256 of the binary at staging time, re-checked at swap
+	version  string
+	path     string
+	sum      string // sha256 of the binary at staging time, re-checked at swap
+	raw, sig []byte // its release manifest as signed (kept at the swap)
 	// openvpn is the release's openvpn ("" when this platform ships none or
 	// the release doesn't include it: the installed one is left alone).
 	openvpn    string

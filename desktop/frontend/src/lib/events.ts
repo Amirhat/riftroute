@@ -2,7 +2,7 @@
 // side holds the SSE stream and re-emits (spec §3.5). We read them off
 // window.runtime so the app degrades gracefully when run outside the webview
 // (e.g. a plain browser during UI development) instead of throwing.
-import type { State } from '../types'
+import type { AppUpdateStatus, State } from '../types'
 
 type Unsub = () => void
 const noop: Unsub = () => {}
@@ -29,4 +29,9 @@ export function onConnection(cb: (reachable: boolean) => void): Unsub {
 /** Subscribe to native-menu actions bridged from the Go side. */
 export function onMenu(cb: (action: string) => void): Unsub {
   return runtime()?.EventsOn('rr:menu', (a) => cb(String(a))) ?? noop
+}
+
+/** Subscribe to the app's own update status as it changes. */
+export function onAppUpdate(cb: (s: AppUpdateStatus) => void): Unsub {
+  return runtime()?.EventsOn('rr:app-update', (s) => cb(s as AppUpdateStatus)) ?? noop
 }

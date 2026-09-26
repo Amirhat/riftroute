@@ -107,6 +107,26 @@ func showUpdate(cmd *cobra.Command, st domain.UpdateStatus) error {
 	return nil
 }
 
+// ago says how long ago, the way a person would: "just now", "5 minutes
+// ago", "3 hours ago", "2 days ago".
+func ago(d time.Duration) string {
+	plural := func(n int, unit string) string {
+		if n == 1 {
+			return "1 " + unit + " ago"
+		}
+		return fmt.Sprintf("%d %ss ago", n, unit)
+	}
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return plural(int(d/time.Minute), "minute")
+	case d < 48*time.Hour:
+		return plural(int(d/time.Hour), "hour")
+	}
+	return plural(int(d/(24*time.Hour)), "day")
+}
+
 func printUpdate(out io.Writer, st domain.UpdateStatus, now time.Time) {
 	fmt.Fprintf(out, "RiftRoute %s — updates: %s\n", st.Current, st.Mode)
 	if !st.LastCheck.IsZero() {
@@ -115,9 +135,9 @@ func printUpdate(out io.Writer, st domain.UpdateStatus, now time.Time) {
 			src = " (from " + map[string]string{"server": "the update server", "github": "GitHub"}[st.Source] + ")"
 		}
 		if st.Latest != "" {
-			fmt.Fprintf(out, "latest: %s%s, checked %s ago\n", st.Latest, src, now.Sub(st.LastCheck).Round(time.Minute))
+			fmt.Fprintf(out, "latest: %s%s, checked %s\n", st.Latest, src, ago(now.Sub(st.LastCheck)))
 		} else {
-			fmt.Fprintf(out, "checked %s ago\n", now.Sub(st.LastCheck).Round(time.Minute))
+			fmt.Fprintf(out, "checked %s\n", ago(now.Sub(st.LastCheck)))
 		}
 	}
 	switch {

@@ -60,6 +60,9 @@ import {
   ConnectTunnel,
   DisconnectTunnel,
   OpenTunnelProfileDialog,
+  GetAppUpdate,
+  InstallAppUpdate,
+  RestartApp,
 } from '../../wailsjs/go/main/App'
 import type {
   State,
@@ -83,6 +86,7 @@ import type {
   SystemApp,
   SystemUser,
   UpdateStatus,
+  AppUpdateStatus,
   Preferences,
   BugReport,
   TunnelStatus,
@@ -172,6 +176,10 @@ export const api = {
   connectTunnel: (name: string) => ConnectTunnel(name) as unknown as Promise<TunnelStatus>,
   disconnectTunnel: (name: string) => DisconnectTunnel(name) as unknown as Promise<TunnelStatus>,
   openTunnelProfile: () => OpenTunnelProfileDialog() as unknown as Promise<TunnelProfileFile>,
+  // The app's own update: it follows the daemon to the same release.
+  appUpdate: () => GetAppUpdate() as unknown as Promise<AppUpdateStatus>,
+  installAppUpdate: () => InstallAppUpdate() as unknown as Promise<AppUpdateStatus>,
+  restartApp: () => RestartApp() as Promise<void>,
   // Daemon lifecycle (privileged ops prompt for admin via the OS).
   daemonInfo: () => GetDaemonInfo() as unknown as Promise<DaemonInfo>,
   installDaemon: () => InstallDaemon() as Promise<void>,

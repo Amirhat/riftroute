@@ -479,3 +479,12 @@ export interface TunnelInstall {
   note?: string
   url?: string
 }
+
+// The desktop app's own update (it follows the daemon to the same release).
+export interface AppUpdateStatus {
+  state: 'idle' | 'available' | 'downloading' | 'installing' | 'ready' | 'error' | 'unsupported'
+  current: string
+  target?: string
+  why?: string
+  error?: string
+}

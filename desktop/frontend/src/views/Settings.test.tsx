@@ -11,7 +11,16 @@ vi.mock('../lib/queries', () => ({
   useBuildNotesQuery: () => ({ data: [] }),
 }))
 vi.mock('../lib/api', () => ({
-  api: { setPreferences: vi.fn(), checkUpdate: vi.fn(), installUpdate: vi.fn(), rollbackUpdate: vi.fn(), openReleaseNotes: vi.fn() },
+  api: {
+    setPreferences: vi.fn(),
+    checkUpdate: vi.fn(),
+    installUpdate: vi.fn(),
+    rollbackUpdate: vi.fn(),
+    openReleaseNotes: vi.fn(),
+    appUpdate: vi.fn().mockResolvedValue({ state: 'idle', current: '0.2.8' }),
+    installAppUpdate: vi.fn(),
+    restartApp: vi.fn(),
+  },
 }))
 vi.mock('../lib/useDaemon', () => ({ useDaemon: () => ({ info: null }) }))
 vi.mock('../components/SplitDNSEditor', () => ({ SplitDNSEditor: () => null }))

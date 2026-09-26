@@ -85,4 +85,7 @@ type UpdateStatus struct {
 	CanRollBack bool `json:"can_roll_back"`
 	// SelfUpdatable is false for package-managed or non-service installs.
 	SelfUpdatable bool `json:"self_updatable"`
+	// Probation: the daemon was just updated to Current and hasn't confirmed
+	// it came up healthy yet (it rolls back on its own if it doesn't).
+	Probation bool `json:"probation,omitempty"`
 }

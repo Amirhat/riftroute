@@ -34,6 +34,8 @@ type serverResponse struct {
 // fetched is a verified manifest and what may hold it back.
 type fetched struct {
 	m      update.Manifest
+	raw    []byte // the manifest exactly as signed, and its signature
+	sig    []byte
 	advice *update.Advice // nil: none known (GitHub, past its grace)
 	source string         // "server" | "github"
 	hold   string         // non-empty: hold back, and why (GitHub, within its grace)
@@ -44,23 +46,23 @@ type fetched struct {
 // obeys the server's last advice on that version; one the server never
 // advised on waits out fallbackGrace. Nothing unverified is ever used.
 func (u *Updater) fetch(ctx context.Context) (fetched, error) {
-	m, adv, err := u.fromServer(ctx)
+	m, adv, raw, sig, err := u.fromServer(ctx)
 	if err == nil {
 		_, _ = updateState(u.env.StateDir, func(ps *persisted) {
 			ps.LastAdvice.Version, ps.LastAdvice.RolloutPercent, ps.LastAdvice.Halt, ps.LastAdvice.At =
 				m.Version, adv.RolloutPercent, adv.Halt, u.env.Now()
 		})
-		return fetched{m: m, advice: &adv, source: "server"}, nil
+		return fetched{m: m, raw: raw, sig: sig, advice: &adv, source: "server"}, nil
 	}
 	u.env.Log.Info("update server unavailable; trying GitHub", "err", err)
-	m2, err2 := u.fromGitHub(ctx)
+	m2, raw2, sig2, err2 := u.fromGitHub(ctx)
 	if err2 != nil {
 		if errors.Is(err, errNotFound) && errors.Is(err2, errNotFound) {
 			return fetched{}, errNoRelease
 		}
 		return fetched{}, fmt.Errorf("update server: %v; GitHub: %v", err, err2)
 	}
-	f := fetched{m: m2, source: "github"}
+	f := fetched{m: m2, raw: raw2, sig: sig2, source: "github"}
 	ps, _ := loadPersisted(u.env.StateDir)
 	switch {
 	case ps.LastAdvice.Version == m2.Version:
@@ -72,34 +74,35 @@ func (u *Updater) fetch(ctx context.Context) (fetched, error) {
 	return f, nil
 }
 
-func (u *Updater) fromServer(ctx context.Context) (update.Manifest, update.Advice, error) {
+func (u *Updater) fromServer(ctx context.Context) (m update.Manifest, adv update.Advice, raw, sig []byte, err error) {
 	b, err := u.get(ctx, u.env.ServerURL+u.env.Channel, 1<<20)
 	if err != nil {
-		return update.Manifest{}, update.Advice{}, err
+		return m, adv, nil, nil, err
 	}
 	var r serverResponse
 	if err := json.Unmarshal(b, &r); err != nil {
-		return update.Manifest{}, update.Advice{}, fmt.Errorf("server response: %w", err)
+		return m, adv, nil, nil, fmt.Errorf("server response: %w", err)
 	}
 	raw, err1 := base64.StdEncoding.DecodeString(r.Manifest)
 	sig, err2 := base64.StdEncoding.DecodeString(r.Signature)
 	if err1 != nil || err2 != nil {
-		return update.Manifest{}, update.Advice{}, errors.New("server response: bad encoding")
+		return m, adv, nil, nil, errors.New("server response: bad encoding")
 	}
-	m, err := u.verify(raw, sig)
-	return m, r.Advice, err
+	m, err = u.verify(raw, sig)
+	return m, r.Advice, raw, sig, err
 }
 
-func (u *Updater) fromGitHub(ctx context.Context) (update.Manifest, error) {
+func (u *Updater) fromGitHub(ctx context.Context) (update.Manifest, []byte, []byte, error) {
 	raw, err := u.get(ctx, u.env.FallbackURL+"manifest.json", 1<<20)
 	if err != nil {
-		return update.Manifest{}, err
+		return update.Manifest{}, nil, nil, err
 	}
 	sig, err := u.get(ctx, u.env.FallbackURL+"manifest.json.sig", 64<<10)
 	if err != nil {
-		return update.Manifest{}, err
+		return update.Manifest{}, nil, nil, err
 	}
-	return u.verify(raw, sig)
+	m, err := u.verify(raw, sig)
+	return m, raw, sig, err
 }
 
 func (u *Updater) verify(raw, sig []byte) (update.Manifest, error) {

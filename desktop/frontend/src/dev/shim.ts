@@ -113,6 +113,12 @@ const App = {
   CheckUpdate: () => req('POST', '/update/check'),
   InstallUpdate: () => req('POST', '/update/install'),
   RollbackUpdate: () => req('POST', '/update/rollback'),
+  // Browser dev mode has no app bundle to replace.
+  GetAppUpdate: async () => ({ state: 'unsupported', current: 'dev', why: 'the app runs in a browser (dev mode)' }),
+  InstallAppUpdate: async () => {
+    throw new Error('no app update in dev mode')
+  },
+  RestartApp: async () => {},
   OpenReleaseNotes: (url: string) => {
     window.open(url, '_blank', 'noopener')
     return Promise.resolve()
