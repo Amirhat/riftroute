@@ -4,6 +4,20 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] — 2026-09-26
+
+### Fixed
+- **A route whose gateway changes is no longer lost.** When the network
+  changed (Wi-Fi → Ethernet, a new router) or the VPN's gateway did, an
+  exclude route — or Linux include mode's tunnel default — could disappear
+  while RiftRoute still showed everything in sync. It is now replaced in
+  place, and rolled back the same way.
+- **View → Explain (⌘3)** opens the route lookup on the Routing Table instead
+  of a blank page.
+- Tinted colors render: error and warning boxes, badges and the sidebar's
+  selected item had lost their tint (thanks @ssenerg).
+- Release builds no longer call themselves "-dirty".
+
 ## [0.2.6] — 2026-09-26
 
 Automatic, signed updates. From this version on, the daemon keeps itself up to

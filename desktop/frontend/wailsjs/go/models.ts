@@ -1039,6 +1039,7 @@ export namespace domain {
 	    error?: string;
 	    staged?: string;
 	    rolled_back_from?: string;
+	    rolled_back_by?: string;
 	    // Go type: time
 	    installed_at: any;
 	    can_roll_back: boolean;
@@ -1062,6 +1063,7 @@ export namespace domain {
 	        this.error = source["error"];
 	        this.staged = source["staged"];
 	        this.rolled_back_from = source["rolled_back_from"];
+	        this.rolled_back_by = source["rolled_back_by"];
 	        this.installed_at = this.convertValues(source["installed_at"], null);
 	        this.can_roll_back = source["can_roll_back"];
 	        this.self_updatable = source["self_updatable"];
