@@ -139,6 +139,12 @@ User-Agent is just `riftroute`. The server keeps no access log.
   nothing: the next start (the old daemon) puts the previous openvpn back if
   it was already replaced, and clears the marker without skipping the
   release. A user's rollback restores openvpn the same way as a health one.
+- An update applied by an older updater (0.2.x knew only the daemon) leaves
+  macOS without the openvpn its new release ships. When a check finds the
+  running version is the latest and openvpn is missing, the daemon fetches
+  its own signed release, takes only openvpn from it (same hash, size and
+  self-test checks) and installs it. A release that ships none, or a broken
+  one, is tried once.
 - Only the daemon binary — and on macOS the openvpn that ships beside it,
   from the same release — is replaced. The CLI inside the app bundle (or
   wherever it was installed) and the desktop app are not touched.

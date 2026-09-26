@@ -310,6 +310,9 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 	})
 	u.env.Log.Info("update check", "latest", f.m.Version, "source", f.source, "action", d.Action, "reason", d.Reason)
 	signal()
+	if f.m.Version == u.env.Current {
+		u.repairOpenVPN(ctx, f.m)
+	}
 	if d.Action != update.ActionInstall {
 		// Whatever was staged is no longer wanted (a halt, a rollout cut
 		// back, the mode changed): never install it.

@@ -28,6 +28,9 @@ type persisted struct {
 	// daemon, for a rollback to undo: openvpnReplaced, openvpnAdded, or ""
 	// (not touched).
 	OpenVPNSwap string `json:"openvpn_swap,omitempty"`
+	// OpenVPNRepair is the release whose own openvpn couldn't be installed
+	// for good (it ships none, or a broken one): not tried again for it.
+	OpenVPNRepair string `json:"openvpn_repair,omitempty"`
 	// LastAdvice is the update server's last word on the newest release it
 	// served; a GitHub copy of that release obeys it too.
 	LastAdvice struct {
