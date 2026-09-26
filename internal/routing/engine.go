@@ -53,6 +53,12 @@ type DesiredInput struct {
 	// same destination can't be added beside it (the kernel keeps one), and
 	// claiming it would mean deleting the other owner's route on teardown.
 	Occupied map[string]string
+	// DNSServers are the resolvers in use, and Anchors the addresses the
+	// connectivity watchdog probes. A tunnel route containing one is left
+	// out: every name lookup, or the check guarding every change, would
+	// otherwise ride the tunnel.
+	DNSServers []netip.Addr
+	Anchors    []netip.Addr
 
 	Platform      string // "darwin" | "linux" | "fake"
 	PolicyRouting bool   // whether Model B (include mode) is available

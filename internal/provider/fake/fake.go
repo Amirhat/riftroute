@@ -362,6 +362,13 @@ func (p *Provider) SetVPN(up bool) {
 	}
 }
 
+// SetDNS replaces the resolvers DNSConfig reports (tests).
+func (p *Provider) SetDNS(servers ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dns.Servers = append([]string(nil), servers...)
+}
+
 // SetTunnelIface adds (up) or removes a tunnel interface holding addr — the
 // fake tunnel launcher's stand-in for openvpn opening and closing its utun.
 func (p *Provider) SetTunnelIface(name, addr string, up bool) {

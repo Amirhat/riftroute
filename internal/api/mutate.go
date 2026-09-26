@@ -38,11 +38,6 @@ func (s *Server) mutationEnabled(w http.ResponseWriter) bool {
 }
 
 func (s *Server) buildOptions(req applyReq, physGW netip.Addr) safety.Options {
-	anchors := []string{}
-	if physGW.IsValid() {
-		anchors = append(anchors, physGW.String())
-	}
-	anchors = append(anchors, "1.1.1.1")
 	ct := 15 * time.Second
 	if req.ConfirmTimeoutSec > 0 {
 		ct = time.Duration(req.ConfirmTimeoutSec) * time.Second
@@ -50,7 +45,7 @@ func (s *Server) buildOptions(req applyReq, physGW netip.Addr) safety.Options {
 	return safety.Options{
 		DryRun:         req.DryRun,
 		Interactive:    !req.Yes && !req.DryRun,
-		Anchors:        anchors,
+		Anchors:        safety.DefaultAnchors(physGW),
 		K:              3,
 		ProbeInterval:  time.Second,
 		ConfirmTimeout: ct,

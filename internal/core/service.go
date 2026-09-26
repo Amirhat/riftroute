@@ -21,6 +21,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/lists"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/routing"
+	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
 )
 
@@ -94,9 +95,11 @@ func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 }
 
 // networkInput is the network side of desired state: the physical gateways,
-// the tunnels, and — only when there are tunnels, since it costs a kernel
-// read — the destinations someone else routes. owned is what RiftRoute owns
-// (its own routes aren't someone else's); nil reads the ownership map.
+// the tunnels, and — only when there are tunnels, since it costs kernel and
+// resolver reads — what a tunnel route must leave alone: the destinations
+// someone else routes, the resolvers in use, the watchdog's anchors. owned is
+// what RiftRoute owns (its own routes aren't someone else's); nil reads the
+// ownership map.
 func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInput, owned []domain.ManagedRoute) routing.DesiredInput {
 	in := routing.DesiredInput{Platform: s.Platform(), Tunnels: tunnels, Now: s.now()}
 	if gw4, if4, err := s.prov.DefaultGateway(ctx, domain.FamilyV4); err == nil {
@@ -108,8 +111,41 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 			owned = s.actualManagedRoutes(ctx)
 		}
 		in.Occupied = s.occupied(ctx, owned)
+		in.DNSServers = s.systemResolvers(ctx)
+		for _, a := range safety.DefaultAnchors(in.GatewayV4) {
+			if addr, err := netip.ParseAddr(a); err == nil {
+				in.Anchors = append(in.Anchors, addr)
+			}
+		}
 	}
 	return in
+}
+
+// systemResolvers are the DNS resolvers in use, less the ones the user
+// pointed a domain at (split DNS): those often sit behind a tunnel on purpose
+// — the tunnel's internal zone resolving through its own server.
+func (s *Service) systemResolvers(ctx context.Context) []netip.Addr {
+	cfg, err := s.prov.DNSConfig(ctx)
+	if err != nil {
+		return nil
+	}
+	perDomain := map[netip.Addr]bool{}
+	if s.store != nil {
+		if rs, err := s.store.LoadSplitDNS(); err == nil {
+			for _, r := range rs {
+				if a, err := netip.ParseAddr(r.Resolver); err == nil {
+					perDomain[a.Unmap()] = true
+				}
+			}
+		}
+	}
+	var out []netip.Addr
+	for _, v := range cfg.Servers {
+		if a, err := netip.ParseAddr(v); err == nil && !perDomain[a.Unmap()] {
+			out = append(out, a.Unmap().WithZone(""))
+		}
+	}
+	return out
 }
 
 // occupied maps the main-table destinations someone other than RiftRoute

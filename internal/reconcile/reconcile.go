@@ -77,15 +77,9 @@ func (r *Reconciler) ApplyTunnels(ctx context.Context) error {
 
 // apply runs one guarded, non-interactive apply.
 func (r *Reconciler) apply(ctx context.Context, desired []domain.ManagedRoute, rules []domain.ManagedRule, physGW netip.Addr) (safety.Result, error) {
-	anchors := []string{}
-	if physGW.IsValid() {
-		anchors = append(anchors, physGW.String())
-	}
-	anchors = append(anchors, "1.1.1.1")
-
 	return r.proto.Apply(ctx, desired, rules, safety.Options{
 		Interactive:   false, // auto-apply: skip manual confirm, keep the guard
-		Anchors:       anchors,
+		Anchors:       safety.DefaultAnchors(physGW),
 		K:             3,
 		ProbeInterval: time.Second,
 		GuardWindow:   30 * time.Second,

@@ -266,7 +266,11 @@ func outsideTunnels(prefixes, nets []netip.Prefix) []netip.Prefix {
 //   - it contains the physical gateway: it would cut the path to the router
 //     (and the guardrails refuse the WHOLE apply over one);
 //   - another owner routes that exact destination: the kernel keeps a single
-//     route per destination, so the add would silently not happen.
+//     route per destination, so the add would silently not happen;
+//   - it contains a DNS resolver in use: every name lookup would go into the
+//     tunnel (e.g. 10.0.0.0/8 while the main VPN's resolver is 10.255.255.1);
+//   - it contains a connectivity anchor: the watchdog guarding every change
+//     would probe through the tunnel.
 //
 // PlanTunnels adds what depends on the tunnels themselves: a destination
 // claimed twice, a v6 route into a v4-only tunnel, a route that would carry
@@ -281,6 +285,16 @@ func TunnelRouteBlock(pfx netip.Prefix, in DesiredInput) string {
 	}
 	if iface, ok := in.Occupied[pfx.Masked().String()]; ok {
 		return fmt.Sprintf("already routed via %s by something else (another VPN or the system)", iface)
+	}
+	for _, a := range in.DNSServers {
+		if pfx.Contains(a) {
+			return fmt.Sprintf("contains your DNS server %s — every name lookup would go into the tunnel", a)
+		}
+	}
+	for _, a := range in.Anchors {
+		if pfx.Contains(a) {
+			return fmt.Sprintf("contains %s, which RiftRoute probes to check a change kept you online", a)
+		}
 	}
 	return ""
 }
