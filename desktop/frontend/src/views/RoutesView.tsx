@@ -129,7 +129,7 @@ export function RoutesView({
       />
       <ManualRoutes onPending={setPending} onApplied={refresh} />
       {opError && (
-        <Card className="flex items-center justify-between border-danger/40 p-3 text-sm text-danger">
+        <Card tone="danger" className="flex items-center justify-between p-3 text-sm text-danger">
           <span>{opError}</span>
           <button onClick={() => setOpError(null)} aria-label="Dismiss" className="text-muted hover:text-default">
             ✕
