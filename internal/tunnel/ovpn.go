@@ -87,7 +87,7 @@ var directives = map[string]policy{
 	"connect-timeout": keep, "server-poll-timeout": keep, "remote-random": keep,
 	"remote-random-hostname": keep, "explicit-exit-notify": keep,
 	"persist-key": keep, "persist-tun": keep, "persist-remote-ip": keep, "persist-local-ip": keep,
-	"topology": keep, "tun-ipv6": keep, "push-peer-info": keep, "fast-io": keep,
+	"topology": keep, "tun-ipv6": keep, "fast-io": keep,
 	// TLS / crypto
 	"remote-cert-tls": keep, "ns-cert-type": keep, "remote-cert-eku": keep, "remote-cert-ku": keep,
 	"verify-x509-name": keep, "tls-version-min": keep, "tls-version-max": keep,
@@ -116,6 +116,9 @@ var directives = map[string]policy{
 	// RiftRoute runs openvpn itself.
 	"user": ignore, "group": ignore, "auth-retry": ignore, "setenv": ignore, "setenv-safe": ignore,
 	"ignore-unknown-option": ignore, "echo": ignore,
+	// Sends the machine's MAC address and OS details to the server; without
+	// it openvpn still sends the version and cipher support it must.
+	"push-peer-info": ignore,
 	// key material: accepted only inline (a path would be read by root)
 	"ca": inline, "cert": inline, "key": inline, "tls-auth": inline, "tls-crypt": inline,
 	"tls-crypt-v2": inline, "pkcs12": inline, "extra-certs": inline, "crl-verify": inline,

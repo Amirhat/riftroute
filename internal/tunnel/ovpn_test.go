@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -366,6 +367,21 @@ func TestParseCapsRemotes(t *testing.T) {
 	}
 	if _, err := Parse("client\nremote 192.0.2.1\n<connection>\nremote 192.0.2.2\n</connection>\n"); err == nil {
 		t.Fatal("<connection> blocks stay refused")
+	}
+}
+
+// push-peer-info would send the machine's MAC address and platform details
+// to the server; RiftRoute drops it like other directives it overrides.
+func TestPushPeerInfoIsDropped(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\npush-peer-info\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(p.Ignored, "push-peer-info") {
+		t.Errorf("ignored = %v, want push-peer-info reported", p.Ignored)
+	}
+	if out := p.Render(RenderOptions{Management: "/m"}); strings.Contains(out, "push-peer-info") {
+		t.Errorf("push-peer-info reached openvpn:\n%s", out)
 	}
 }
 
