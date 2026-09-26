@@ -178,6 +178,62 @@ func TestNetnsWatchdogRollback(t *testing.T) {
 	}
 }
 
+// A bypass whose next hop moves to another network (Wi-Fi → Ethernet) must
+// end up via the new gateway on the real kernel — both while the old route is
+// still there and after the kernel dropped it with its interface. Adding
+// first would hit "File exists" and the delete of the old route would then
+// remove the only one.
+func TestNetnsNextHopChange(t *testing.T) {
+	if out, err := exec.Command("ip", "link", "add", "dummy1", "type", "dummy").CombinedOutput(); err != nil {
+		t.Fatalf("add dummy1: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("ip", "link", "del", "dummy1").Run() })
+	for _, args := range [][]string{{"addr", "add", "10.1.0.1/24", "dev", "dummy1"}, {"link", "set", "dummy1", "up"}} {
+		if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
+			t.Fatalf("ip %v: %v: %s", args, err, out)
+		}
+	}
+	moved := func(cidr string) []domain.ManagedRoute {
+		return []domain.ManagedRoute{{
+			Route:     domain.Route{DstCIDR: cidr, Gateway: "10.1.0.2", Iface: "dummy1", Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute},
+			ProfileID: "p1",
+		}}
+	}
+	movedOpts := opts(true)
+	movedOpts.PhysGW = netip.MustParseAddr("10.1.0.1")
+
+	for _, purged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("purged=%v", purged), func(t *testing.T) {
+			p, prov, _, _ := newProtocol(t)
+			ctx := context.Background()
+			t.Cleanup(func() { _ = p.Panic(ctx, domain.ActorCLI) })
+			res, err := p.Apply(ctx, bypass("9.9.9.0/24"), nil, opts(true))
+			if err != nil {
+				t.Fatalf("apply: %v", err)
+			}
+			if _, err := p.Confirm(res.TxID); err != nil {
+				t.Fatal(err)
+			}
+			if purged {
+				if out, err := exec.Command("ip", "route", "del", "9.9.9.0/24").CombinedOutput(); err != nil {
+					t.Fatalf("purge: %v: %s", err, out)
+				}
+			}
+			res, err = p.Apply(ctx, moved("9.9.9.0/24"), nil, movedOpts)
+			if err != nil || res.Status != domain.TxPending {
+				t.Fatalf("apply the move: status=%s err=%v violations=%v", res.Status, err, res.Violations)
+			}
+			if _, err := p.Confirm(res.TxID); err != nil {
+				t.Fatal(err)
+			}
+			dec, err := prov.LookupRoute(ctx, netip.MustParseAddr("9.9.9.1"))
+			if err != nil || dec.Iface != "dummy1" || dec.Gateway != "10.1.0.2" {
+				t.Fatalf("9.9.9.1 should go via 10.1.0.2 dev dummy1, got %+v (err %v)", dec, err)
+			}
+		})
+	}
+}
+
 // Model B (include mode) on real kernel state: an `ip rule` selects a
 // destination into a dedicated table whose default egresses the tunnel; panic
 // flushes both the rule and the table.
