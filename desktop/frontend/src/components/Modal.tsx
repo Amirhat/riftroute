@@ -71,7 +71,7 @@ export function Modal({
       first.focus()
     }
     function onKey(e: KeyboardEvent) {
-      if (!el || open[open.length - 1] !== el) return
+      if (!el || open[open.length - 1] !== el || e.isComposing) return
       if (e.key === 'Escape') {
         if (close.current && !e.defaultPrevented) {
           e.preventDefault()
