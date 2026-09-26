@@ -128,19 +128,23 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
           </div>
         </Card>
       ) : (
-        tunnels.map((t) => (
-          <TunnelCard
-            key={t.name}
-            t={t}
-            busy={busy === t.name}
-            canConnect={canConnect}
-            whyNotId={engineProblemId}
-            onConnect={() => run(t.name, () => api.connectTunnel(t.name))}
-            onDisconnect={() => run(t.name, () => api.disconnectTunnel(t.name))}
-            onEdit={() => setEditor({ mode: 'edit', tunnel: t })}
-            onDelete={() => setDeleting(t)}
-          />
-        ))
+        tunnels.map((t) =>
+          t.unreadable ? (
+            <UnreadableCard key={t.name} t={t} busy={busy === t.name} onDelete={() => setDeleting(t)} />
+          ) : (
+            <TunnelCard
+              key={t.name}
+              t={t}
+              busy={busy === t.name}
+              canConnect={canConnect}
+              whyNotId={engineProblemId}
+              onConnect={() => run(t.name, () => api.connectTunnel(t.name))}
+              onDisconnect={() => run(t.name, () => api.disconnectTunnel(t.name))}
+              onEdit={() => setEditor({ mode: 'edit', tunnel: t })}
+              onDelete={() => setDeleting(t)}
+            />
+          ),
+        )
       )}
 
       {editor && (
@@ -166,7 +170,11 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
         open={!!deleting}
         danger
         title={`Delete tunnel ${deleting?.name ?? ''}`}
-        message="Disconnects it, removes its routes, and deletes its saved profile and password."
+        message={
+          deleting?.unreadable
+            ? 'Deletes its saved definition, which RiftRoute can’t read, with its profile and password. You can add it again afterwards.'
+            : 'Disconnects it, removes its routes, and deletes its saved profile and password.'
+        }
         confirmLabel="Delete"
         onConfirm={() => {
           const t = deleting
@@ -359,6 +367,43 @@ function InstallSteps({
         </button>
       )}
     </>
+  )
+}
+
+// UnreadableCard is a tunnel whose saved definition the daemon can't read.
+// Its other fields are placeholders (via "direct", no routes or servers), so
+// none are shown as if they were its settings; it can't connect or be
+// edited — only deleted, and added again.
+function UnreadableCard({ t, busy, onDelete }: { t: TunnelStatus; busy: boolean; onDelete: () => void }) {
+  return (
+    <Card tone="danger">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-semibold text-default">{t.name}</h2>
+          <Badge tone="danger">
+            <Dot tone="danger" />
+            can't be read
+          </Badge>
+        </div>
+        <button
+          onClick={onDelete}
+          disabled={busy}
+          aria-label={`Delete ${t.name}`}
+          className="rounded-lg border border-danger/40 px-3 py-1.5 text-sm text-danger hover:bg-danger/10 disabled:opacity-50"
+        >
+          Delete
+        </button>
+      </div>
+      <div className="space-y-2 p-4 text-sm">
+        <p className="rounded-lg bg-danger/10 px-3 py-2 text-danger">
+          {t.last_error || "Its saved definition can't be read; delete it and add it again."}
+        </p>
+        <p className="text-muted">
+          RiftRoute can't connect or edit this tunnel. Delete it, then add it again from its{' '}
+          <span className="font-mono">.ovpn</span> profile.
+        </p>
+      </div>
+    </Card>
   )
 }
 

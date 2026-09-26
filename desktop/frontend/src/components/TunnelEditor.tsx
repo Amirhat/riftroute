@@ -51,7 +51,8 @@ export function TunnelEditor({
   const [username, setUsername] = useState(existing?.username ?? '')
   const [password, setPassword] = useState('')
   const [routesText, setRoutesText] = useState((existing?.routes ?? []).join('\n'))
-  const [via, setVia] = useState<TunnelVia>(existing?.via ?? 'direct')
+  // || not ??: a via of "" (a definition saved before it existed) is direct.
+  const [via, setVia] = useState<TunnelVia>(existing?.via || 'direct')
   const [autoConnect, setAutoConnect] = useState(existing?.auto_connect ?? false)
   const [issues, setIssues] = useState<ConfigIssue[]>([])
   const [error, setError] = useState<string | null>(null)

@@ -377,6 +377,63 @@ describe('Tunnels view — routes left out', () => {
   })
 })
 
+describe('Tunnels view — a definition the daemon can’t read', () => {
+  const broken: TunnelStatus = {
+    name: 'office',
+    type: 'openvpn',
+    via: 'direct', // a placeholder, not its setting
+    routes: [],
+    auto_connect: false,
+    has_password: false,
+    needs_auth: false,
+    servers: [],
+    unreadable: true,
+    state: 'failed',
+    last_error: "its saved definition can't be read (unexpected end of JSON input); delete it and add it again",
+    bytes_in: 0,
+    bytes_out: 0,
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/usr/sbin/openvpn', version: '2.6.14' })
+  })
+
+  it('shows why, offers only Delete, and deletes after the app’s own dialog', async () => {
+    withTunnels([broken, connected])
+    mockApi.deleteTunnel.mockResolvedValue(undefined)
+    renderView()
+    expect(await screen.findByText(/its saved definition can't be read \(unexpected end of JSON input\)/)).toBeInTheDocument()
+    expect(screen.getByText("can't be read")).toBeInTheDocument()
+    // Nothing that would act on (or pass for) its settings.
+    expect(screen.queryByRole('button', { name: 'Connect office' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit office' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Disconnect office/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('directly')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Nothing yet — edit the tunnel/)).not.toBeInTheDocument()
+    // The readable tunnel beside it is unaffected.
+    expect(screen.getByRole('button', { name: 'Edit infra' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete office' }))
+    expect(screen.getByText('Delete tunnel office')).toBeInTheDocument()
+    expect(screen.getByText(/which RiftRoute can’t read/)).toBeInTheDocument()
+    expect(mockApi.deleteTunnel).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await waitFor(() => expect(mockApi.deleteTunnel).toHaveBeenCalledWith('office'))
+  })
+
+  it('edits a tunnel saved without a via as direct', async () => {
+    withTunnels([{ ...connected, state: 'disconnected', via: '' as TunnelStatus['via'] }])
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...connected, state: 'disconnected' } })
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit infra' }))
+    expect(screen.getByRole('radio', { name: /Directly/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /Through the main VPN/ })).not.toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalledWith(expect.objectContaining({ via: 'direct' })))
+  })
+})
+
 // On macOS openvpn ships with RiftRoute: a missing one comes back with the
 // daemon's update check (its repair), which the page offers as the fix.
 describe('Tunnels view — macOS openvpn', () => {

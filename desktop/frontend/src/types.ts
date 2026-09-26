@@ -399,6 +399,10 @@ export interface TunnelStatus {
   // Routes left out on this network, and why (contains its router, or
   // another VPN/the system already routes that exact destination).
   blocked?: TunnelBlocked[] | null
+  // The daemon can't read this tunnel's saved definition: it can only be
+  // deleted (and added again). last_error says why; the other fields are
+  // placeholders (via "direct", no routes or servers).
+  unreadable?: boolean
   state: TunnelState
   detail?: string
   iface?: string
