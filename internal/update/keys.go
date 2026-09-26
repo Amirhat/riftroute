@@ -12,9 +12,11 @@ import (
 // Up to two entries: the current key and, during a rotation, the next one —
 // a release that adds the next key ships before the old key retires.
 //
-// Empty until the first key is generated: with no trusted key nothing can be
-// verified, so nothing is installed automatically.
-var TrustedKeys = map[string]ed25519.PublicKey{}
+// Key history (never reuse an ID):
+//   - rr-17019dba6c8f775a — first release key, generated 2026-09-26.
+var TrustedKeys = map[string]ed25519.PublicKey{
+	"rr-17019dba6c8f775a": mustKey("VveM5vbcIOT4MrsnEH84U8KKlPnupfnBTagJRsw6x/w="),
+}
 
 // mustKey decodes a base64 public key (a malformed entry is a build-time bug).
 func mustKey(b64 string) ed25519.PublicKey {
@@ -24,5 +26,3 @@ func mustKey(b64 string) ed25519.PublicKey {
 	}
 	return ed25519.PublicKey(b)
 }
-
-var _ = mustKey // used once the first key is pasted in

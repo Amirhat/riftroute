@@ -148,3 +148,16 @@ func TestDecide(t *testing.T) {
 		}
 	}
 }
+
+// A mistyped entry in keys.go (wrong ID for its key) would silently make
+// every release unverifiable; catch it at test time.
+func TestTrustedKeysMatchTheirIDs(t *testing.T) {
+	if len(TrustedKeys) == 0 || len(TrustedKeys) > 2 {
+		t.Fatalf("want 1–2 trusted keys, have %d", len(TrustedKeys))
+	}
+	for id, pub := range TrustedKeys {
+		if KeyID(pub) != id {
+			t.Errorf("%s holds a key whose ID is %s", id, KeyID(pub))
+		}
+	}
+}
