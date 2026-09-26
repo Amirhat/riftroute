@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/netip"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/core"
@@ -41,57 +40,78 @@ func New(svc *core.Service, proto *safety.Protocol, log *slog.Logger, debounce t
 // SetTestHook installs a callback fired after each reconcile (tests only).
 func (r *Reconciler) SetTestHook(fn func(safety.Result, error)) { r.onReconcile = fn }
 
-// Reconcile derives desired state and runs the auto-apply path once.
+// Reconcile derives desired state and runs the auto-apply path once. Desired
+// state is derived under the apply lock, so a tunnel transition landing
+// meanwhile is never undone by a set computed before it.
+//
+// With auto-apply off, only the tunnels RiftRoute runs follow the network:
+// they are the user's explicit choice, and their server pins must move with
+// the physical gateway or their connections ride the wrong path.
 func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 	if r.enabled != nil && !r.enabled() {
-		return safety.Result{}, nil
+		if !r.svc.TunnelsActive(ctx) {
+			return safety.Result{}, nil
+		}
+		res, err := r.applyTunnels(ctx)
+		if r.onReconcile != nil {
+			r.onReconcile(res, err)
+		}
+		return res, err
 	}
-	desired, rules, physGW, err := r.svc.DesiredManaged(ctx)
-	if err != nil {
+	var buildErr error
+	res, err := r.proto.ApplyBuilt(ctx, func([]domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		desired, rules, _, err := r.svc.DesiredManaged(ctx)
+		buildErr = err
+		return desired, rules, err
+	}, r.options(ctx))
+	if buildErr != nil {
 		// Fail-safe: cannot resolve gateway/desired → keep existing routes.
-		r.log.Warn("auto-apply skipped: cannot derive desired state", "err", err)
-		return safety.Result{}, err
+		r.log.Warn("auto-apply skipped: cannot derive desired state", "err", buildErr)
+		return safety.Result{}, buildErr
 	}
-	res, aerr := r.apply(ctx, desired, rules, physGW)
 	if r.onReconcile != nil {
-		r.onReconcile(res, aerr)
+		r.onReconcile(res, err)
 	}
-	return res, aerr
+	return res, err
 }
 
 // ApplyTunnels installs the managed tunnels' current routes and leaves every
 // other managed route as it is. It is NOT gated by auto-apply — connecting or
 // disconnecting a tunnel is the user's explicit action — but it runs the same
-// guarded, non-interactive path.
+// guarded, non-interactive path, deriving the set under the apply lock from
+// what RiftRoute owns at that moment.
 func (r *Reconciler) ApplyTunnels(ctx context.Context) error {
-	desired, rules, physGW, err := r.svc.DesiredTunnelsOnly(ctx)
-	if err != nil {
-		return err
-	}
-	res, err := r.apply(ctx, desired, rules, physGW)
+	res, err := r.applyTunnels(ctx)
 	if err == nil && res.Status == domain.TxFailed {
 		err = errors.New(res.Error)
 	}
 	return err
 }
 
-// apply runs one guarded, non-interactive apply.
-func (r *Reconciler) apply(ctx context.Context, desired []domain.ManagedRoute, rules []domain.ManagedRule, physGW netip.Addr) (safety.Result, error) {
-	anchors := []string{}
-	if physGW.IsValid() {
-		anchors = append(anchors, physGW.String())
-	}
-	anchors = append(anchors, "1.1.1.1")
+// applyTunnels is ApplyTunnels' apply. The guardrails vet what it changes:
+// the other owned routes it carries over untouched may be stale (auto-apply
+// off after a network move) and must not stop a tunnel installing or
+// withdrawing its own.
+func (r *Reconciler) applyTunnels(ctx context.Context) (safety.Result, error) {
+	opts := r.options(ctx)
+	opts.VetChangesOnly = true
+	return r.proto.ApplyBuilt(ctx, func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		return r.svc.DesiredTunnelsOnly(ctx, owned)
+	}, opts)
+}
 
-	return r.proto.Apply(ctx, desired, rules, safety.Options{
+// options are a guarded, non-interactive apply's.
+func (r *Reconciler) options(ctx context.Context) safety.Options {
+	physGW := r.svc.PhysicalGateway(ctx)
+	return safety.Options{
 		Interactive:   false, // auto-apply: skip manual confirm, keep the guard
-		Anchors:       anchors,
+		Anchors:       safety.DefaultAnchors(physGW),
 		K:             3,
 		ProbeInterval: time.Second,
 		GuardWindow:   30 * time.Second,
 		Actor:         domain.ActorDaemon,
 		PhysGW:        physGW,
-	})
+	}
 }
 
 // Run consumes network events, debounces them, and reconciles. It blocks until

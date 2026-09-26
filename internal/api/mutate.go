@@ -38,11 +38,6 @@ func (s *Server) mutationEnabled(w http.ResponseWriter) bool {
 }
 
 func (s *Server) buildOptions(req applyReq, physGW netip.Addr) safety.Options {
-	anchors := []string{}
-	if physGW.IsValid() {
-		anchors = append(anchors, physGW.String())
-	}
-	anchors = append(anchors, "1.1.1.1")
 	ct := 15 * time.Second
 	if req.ConfirmTimeoutSec > 0 {
 		ct = time.Duration(req.ConfirmTimeoutSec) * time.Second
@@ -50,7 +45,7 @@ func (s *Server) buildOptions(req applyReq, physGW netip.Addr) safety.Options {
 	return safety.Options{
 		DryRun:         req.DryRun,
 		Interactive:    !req.Yes && !req.DryRun,
-		Anchors:        anchors,
+		Anchors:        safety.DefaultAnchors(physGW),
 		K:              3,
 		ProbeInterval:  time.Second,
 		ConfirmTimeout: ct,
@@ -138,7 +133,9 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	// Detached from the request: a client giving up (uninstall's timeout)
 	// must not cut the removal off half-way.
 	ksErr := s.disableKillSwitch(context.WithoutCancel(r.Context()))
-	if err := s.proto.Panic(r.Context(), domain.ActorUI); err != nil {
+	// The daemon's tunnels go down before the flush (beforePanic): each one
+	// going down re-applies the survivors' routes, refused while this runs.
+	if err := s.proto.PanicWith(r.Context(), domain.ActorUI, s.beforePanic); err != nil {
 		writeErr(w, http.StatusInternalServerError, errors.Join(err, ksErr))
 		return
 	}

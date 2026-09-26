@@ -11,17 +11,23 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // AddRoute installs a managed route via route(8). Idempotent: an already-present
 // route is treated as success. Inputs are strictly validated before exec (no
 // shell; arg-array only) per spec §12.
+//
+// "File exists" means SOME route holds the destination — possibly another
+// owner's, which the caller then records as ours (ownership can still be
+// over-claimed here). DelRoute's check keeps that from deleting their route
+// while it differs from our record; one identical to ours can't be told apart.
 func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	args, err := macRouteArgs("add", mr)
 	if err != nil {
 		return err
 	}
-	out, err := runCombined(ctx, "route", args...)
+	out, err := p.route(ctx, args...)
 	if err != nil {
 		if strings.Contains(out, "File exists") {
 			return nil // already present → idempotent
@@ -31,14 +37,31 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	return nil
 }
 
-// DelRoute removes a managed route via route(8). Idempotent: a missing route is
+// DelRoute removes a route via route(8). Idempotent: a missing route is
 // treated as success.
+//
+// route(8) deletes by destination alone — it ignores the gateway. So a managed
+// delete (a route recorded as RiftRoute's, ProfileID set) first reads the
+// kernel's route for that destination, and deletes only while it is still
+// ours: the same gateway, or for an on-link route the same interface. A
+// tunnel's routes go with its utun, and the main VPN or the user may then
+// route the same destination; withdrawing the tunnel must leave theirs alone.
+// A user's edit of a route RiftRoute doesn't own acts on the route they chose.
 func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 	args, err := macRouteArgs("delete", mr)
 	if err != nil {
 		return err
 	}
-	out, err := runCombined(ctx, "route", args...)
+	if mr.ProfileID != "" {
+		ours, err := p.stillOurs(ctx, mr.Route)
+		if err != nil {
+			return fmt.Errorf("route delete %s: can't tell whether the route is still RiftRoute's: %w", mr.DstCIDR, err)
+		}
+		if !ours {
+			return nil // gone, or someone else's now → nothing of ours to delete
+		}
+	}
+	out, err := p.route(ctx, args...)
 	if err != nil {
 		if strings.Contains(out, "not in table") || strings.Contains(out, "No such") {
 			return nil // already gone → idempotent
@@ -46,6 +69,49 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 		return fmt.Errorf("route delete %s: %w: %s", mr.DstCIDR, err, strings.TrimSpace(out))
 	}
 	return nil
+}
+
+// stillOurs reports whether the kernel's route for r's destination is r: the
+// same gateway or, on-link, the same interface. Clone entries don't count.
+func (p *Provider) stillOurs(ctx context.Context, r domain.Route) (bool, error) {
+	dst, err := netip.ParsePrefix(r.DstCIDR)
+	if err != nil {
+		return false, err
+	}
+	fam := domain.FamilyV4
+	if dst.Addr().Is6() {
+		fam = domain.FamilyV6
+	}
+	list := p.ListRoutes
+	if p.listRoutes != nil {
+		list = p.listRoutes
+	}
+	kernel, err := list(ctx, fam)
+	if err != nil {
+		return false, err
+	}
+	for _, k := range kernel {
+		kp, err := netip.ParsePrefix(k.DstCIDR)
+		if err != nil || k.Cloned || kp.Masked() != dst.Masked() {
+			continue
+		}
+		if r.Gateway != "" {
+			if k.Gateway != "" && routing.SameGateway(k.Gateway, r.Gateway) {
+				return true, nil
+			}
+		} else if k.Iface == r.Iface {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// route runs route(8) with args.
+func (p *Provider) route(ctx context.Context, args ...string) (string, error) {
+	if p.runRoute != nil {
+		return p.runRoute(ctx, args...)
+	}
+	return runCombined(ctx, "route", args...)
 }
 
 // FlushOwned removes RiftRoute-owned kernel state on macOS. Routes carry no proto

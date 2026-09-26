@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -21,6 +22,7 @@ var (
 	ErrGuardrail       = errors.New("change refused by a guardrail")
 	ErrApplyInProgress = errors.New("another apply is pending; try again")
 	ErrNoSuchTx        = errors.New("no such transaction")
+	ErrPanicking       = errors.New("a panic is flushing every managed route; try again")
 )
 
 // snapshotRetention caps stored pre-apply snapshots (newest kept).
@@ -65,6 +67,15 @@ type Options struct {
 	// including the very change a restore is meant to undo. nil = read the
 	// store at snapshot time (correct for applies that don't touch profiles).
 	SnapshotProfiles []domain.Profile
+	// VetChangesOnly has the guardrails vet only the routes the plan adds
+	// (or re-points), not owned routes carried over as they are. For an
+	// apply that changes one part of the owned set — a tunnel transition —
+	// and must not be refused over a route it doesn't touch: after a network
+	// move with auto-apply off, the exclude routes still point at the old
+	// gateway, and vetting them would leave the tunnel unable to install or
+	// withdraw anything. The unresolved-gateway fail-safe still covers every
+	// main-table route the plan adds or removes.
+	VetChangesOnly bool
 }
 
 func (o Options) window() time.Duration {
@@ -135,6 +146,8 @@ type Protocol struct {
 	resolved map[string]domain.TxResult
 	idseq    int
 	lastTx   time.Time // start of the most recent transaction (txmu)
+
+	panicking atomic.Int32 // panics in progress: every apply is refused
 }
 
 // TryQuiesce takes the apply lock if the daemon is quiet — nothing being
@@ -196,7 +209,8 @@ func NewProtocol(prov provider.RouteProvider, st Store, clock Clock, newProber f
 // Plan builds the reconcile plan + diff for desired state without applying — the
 // dry-run preview (spec §2.2 step 4).
 func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute, desiredRules []domain.ManagedRule) (domain.Plan, domain.Diff) {
-	plan := routing.Reconcile(desiredRoutes, p.actualManaged(ctx), desiredRules, p.actualManagedRules(ctx), p.platform)
+	actual := p.installed(ctx, p.actualManaged(ctx), desiredRoutes)
+	plan := routing.Reconcile(desiredRoutes, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	return plan, diffFromPlan(plan)
 }
 
@@ -204,10 +218,55 @@ func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute
 // success it executes atomically, arms the watchdog + commit-confirm, and
 // returns a pending transaction (resolved later via Confirm/timeout/watchdog).
 func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
-	p.applyMu.Lock()
+	if !p.lockApply() {
+		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	}
 	defer p.applyMu.Unlock()
+	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts)
+}
 
-	plan := routing.Reconcile(desired, p.actualManaged(ctx), desiredRules, p.actualManagedRules(ctx), p.platform)
+// lockApply takes the apply lock unless a panic is in progress — checked
+// before waiting (a panic's first step may itself be waiting on an apply)
+// and again after (an apply queued behind the panic's flush must not undo
+// it).
+func (p *Protocol) lockApply() bool {
+	if p.panicking.Load() > 0 {
+		return false
+	}
+	p.applyMu.Lock()
+	if p.panicking.Load() > 0 {
+		p.applyMu.Unlock()
+		return false
+	}
+	return true
+}
+
+// Build derives the desired routes and rules from owned — the routes
+// RiftRoute owns right now (the ownership map).
+type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error)
+
+// ApplyBuilt runs the Apply Protocol like Apply, but derives desired state
+// under the apply lock: no other apply can land between the reads it is
+// built from and the change, so it can't undo a change made moments before
+// (a tunnel transition and an auto-apply racing would otherwise each revert
+// the other). A build error aborts before anything is touched.
+func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
+	if !p.lockApply() {
+		return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	}
+	defer p.applyMu.Unlock()
+	owned := p.actualManaged(ctx)
+	desired, desiredRules, err := build(owned)
+	if err != nil {
+		return Result{Status: domain.TxFailed, Error: err.Error()}, err
+	}
+	return p.apply(ctx, owned, desired, desiredRules, opts)
+}
+
+// apply is the body of Apply and ApplyBuilt; the caller holds applyMu.
+func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
+	actual := p.installed(ctx, owned, desired)
+	plan := routing.Reconcile(desired, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
 
 	if opts.DryRun {
@@ -215,7 +274,11 @@ func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, des
 	}
 
 	// Guardrails (§2.4) — refuse before touching anything.
-	if vs := CheckGuardrails(ctx, p.prov, desired, opts.PhysGW); len(vs) > 0 {
+	var vet *domain.Plan
+	if opts.VetChangesOnly {
+		vet = &plan
+	}
+	if vs := checkGuardrails(ctx, p.prov, desired, vet, opts.PhysGW); len(vs) > 0 {
 		p.audit(opts.Actor, "apply", "refused", violationSummary(vs), &plan, false)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
@@ -288,7 +351,9 @@ func (p *Protocol) takeSnapshot(ctx context.Context, opts Options) {
 // and crash-repair must leave the results alone; the journaled inverse is
 // what protects the change until it's confirmed.
 func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Plan, opts Options) (Result, error) {
-	p.applyMu.Lock()
+	if !p.lockApply() {
+		return Result{Plan: plan, Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+	}
 	defer p.applyMu.Unlock()
 
 	diff := diffFromPlan(plan)
@@ -530,8 +595,23 @@ func (p *Protocol) Wait(txID string) (domain.TxResult, bool) {
 
 // Panic flushes all managed routes and clears ownership (spec §2.1). Idempotent.
 func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
+	return p.PanicWith(ctx, actor, nil)
+}
+
+// PanicWith is Panic with a first step: before runs before the flush, while
+// every apply is refused — the daemon takes its tunnels down there, and a
+// tunnel going down re-applies the surviving tunnels' routes, which must not
+// land around the flush. Guards still armed are settled before the flush, so
+// none can roll back afterwards and re-add what it removed.
+func (p *Protocol) PanicWith(ctx context.Context, actor domain.Actor, before func(context.Context)) error {
+	p.panicking.Add(1)
+	defer p.panicking.Add(-1)
+	if before != nil {
+		before(ctx)
+	}
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
+	p.settleForPanic()
 	err := Panic(ctx, p.prov, p.store)
 	result := "panicked"
 	if err != nil {
@@ -539,6 +619,25 @@ func (p *Protocol) Panic(ctx context.Context, actor domain.Actor) error {
 	}
 	p.audit(actor, "panic", result, errString(err), nil, true)
 	return err
+}
+
+// settleForPanic commits the policy transactions still on probation: the
+// flush is about to remove every managed route, and a guard firing afterwards
+// would replay an inverse that re-adds some. Plan-level edits of routes
+// RiftRoute doesn't own aren't flushed, so they keep their guard.
+func (p *Protocol) settleForPanic() {
+	p.txmu.Lock()
+	var settle []*pendingTx
+	for _, pt := range p.pending {
+		if pt.ownership {
+			settle = append(settle, pt)
+		}
+	}
+	p.txmu.Unlock()
+	for _, pt := range settle {
+		pt.decide(decCommit)
+		<-pt.done
+	}
 }
 
 // ReconcileOwnership repairs partial state after a crash (spec §2.5): it makes
@@ -604,7 +703,8 @@ func (p *Protocol) ShutdownResolve() {
 // the daemon last stopped (crash/power loss/SIGKILL). We can't know it was safe,
 // so we replay its inverse to revert to the pre-change state and clear it. This
 // is the only crash recovery that works on macOS, where kernel routes carry no
-// owner tag to reattribute. Run it on startup BEFORE ReconcileOwnership.
+// owner tag to reattribute. Run it on startup BEFORE ReconcileOwnership. A
+// tunnel's on-link routes are never re-added (see withoutTunnelLinks).
 func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	if p.store == nil {
 		return 0, nil
@@ -620,7 +720,7 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	exec := NewExecutor(p.prov)
 	n := 0
 	for id, plan := range pend {
-		_ = exec.RunOps(ctx, plan.Inverse) // best-effort revert to baseline
+		_ = exec.RunOps(ctx, withoutTunnelLinks(plan.Inverse)) // best-effort revert to baseline
 		if !strings.HasPrefix(id, routeOpTxPrefix) {
 			p.applyOwnership(plan, true) // undo any ownership records it wrote
 		}
@@ -632,6 +732,66 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// DropTunnelRoutes forgets the routes a previous run's tunnels left: at
+// startup no tunnel is running, so every one is stale. Run it after
+// RecoverPending and before ReconcileOwnership, which would otherwise re-add
+// them — an on-link route by interface name, into whatever interface has that
+// name now (after a reboot, the tunnel's utun5 may be another VPN's).
+//
+// An on-link route's record is only dropped: the route went with its
+// interface (or goes when the orphaned openvpn is stopped), and deleting it by
+// name could hit the new owner's. A server pin goes via the physical gateway
+// and outlives its tunnel, so it is withdrawn from the kernel too; one that
+// won't delete keeps its record, for the tunnels' startup resync to withdraw
+// through the Apply Protocol. A tunnel re-pins when it connects.
+func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
+	if p.store == nil {
+		return 0, nil
+	}
+	p.applyMu.Lock()
+	defer p.applyMu.Unlock()
+	owned, err := p.store.ListOwned()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, o := range owned {
+		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+			continue
+		}
+		if o.Gateway != "" {
+			if err := p.prov.DelRoute(ctx, o); err != nil {
+				p.log.Warn("could not withdraw a previous run's tunnel pin; retrying later", "route", o.DstCIDR, "err", err)
+				continue
+			}
+		}
+		if err := p.store.DelOwned(o); err == nil {
+			n++
+		}
+	}
+	if n > 0 {
+		p.audit(domain.ActorDaemon, "recover", "dropped_tunnel_routes",
+			fmt.Sprintf("startup: forgot %d route(s) left by the previous run's tunnels", n), nil, false)
+	}
+	return n, nil
+}
+
+// withoutTunnelLinks drops the re-adds of tunnel on-link routes from a crash
+// recovery replay: no tunnel runs at startup, and such a route would go into
+// whatever interface has the recorded name now. (DropTunnelRoutes then drops
+// their records.)
+func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
+	out := ops[:0:0]
+	for _, op := range ops {
+		if op.Kind == domain.OpAddRoute && op.Route != nil && op.Route.Gateway == "" &&
+			strings.HasPrefix(op.Route.ProfileID, routing.TunnelProfilePrefix) {
+			continue
+		}
+		out = append(out, op)
+	}
+	return out
+}
+
 // --- internals ---
 
 func (p *Protocol) actualManaged(ctx context.Context) []domain.ManagedRoute {
@@ -641,6 +801,15 @@ func (p *Protocol) actualManaged(ctx context.Context) []domain.ManagedRoute {
 		}
 	}
 	return providerManaged(ctx, p.prov)
+}
+
+// installed is the "actual" side of a reconcile: the owned routes, less the
+// tunnel routes desired still wants that the kernel dropped with their
+// interface — so the plan puts those back (routing.VerifyTunnelRoutes).
+func (p *Protocol) installed(ctx context.Context, owned, desired []domain.ManagedRoute) []domain.ManagedRoute {
+	return routing.VerifyTunnelRoutes(owned, desired, func(fam domain.Family) ([]domain.Route, error) {
+		return p.prov.ListRoutes(ctx, fam)
+	})
 }
 
 // actualManagedRules returns the policy rules RiftRoute owns. Rules are

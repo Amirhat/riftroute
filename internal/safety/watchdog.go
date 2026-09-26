@@ -2,8 +2,24 @@ package safety
 
 import (
 	"context"
+	"net/netip"
 	"time"
 )
+
+// CanaryAnchor is the internet canary the daemon's applies probe beside the
+// physical gateway.
+const CanaryAnchor = "1.1.1.1"
+
+// DefaultAnchors are the connectivity anchors of a daemon or UI apply: the
+// physical gateway (when resolved) and the canary. Tunnel routes are kept
+// from capturing them (core), so what the watchdog probes stays off tunnels.
+func DefaultAnchors(physGW netip.Addr) []string {
+	anchors := []string{}
+	if physGW.IsValid() {
+		anchors = append(anchors, physGW.String())
+	}
+	return append(anchors, CanaryAnchor)
+}
 
 // Watchdog is the connectivity deadman switch (spec §2.1/§2.5). Armed before a
 // change with a precomputed recovery action, it probes the anchors ~once per

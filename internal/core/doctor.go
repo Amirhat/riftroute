@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // Doctor runs the diagnostics battery (spec §7.9): a readable pass/warn/fail
@@ -62,20 +63,18 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 				add("tunnel-engine", domain.CheckPass, strings.TrimSpace("OpenVPN "+e.Version+" at "+e.Path), "")
 			}
 		}
+		expected, installed := s.tunnelRoutesInstalled(ctx)
 		for _, t := range ts {
 			name := "tunnel:" + t.Name
 			switch {
 			case t.State == domain.TunnelFailed:
 				add(name, domain.CheckFail, t.LastError, "fix the login or profile, then `riftroute tunnel up "+t.Name+"`")
-			case len(t.Blocked) > 0:
-				var bs []string
-				for _, b := range t.Blocked {
-					bs = append(bs, b.Route+" ("+b.Reason+")")
-				}
-				add(name, domain.CheckWarn, "not installed on this network: "+strings.Join(bs, "; "),
-					"narrow those routes, or ignore this while on this network")
 			case t.State == domain.TunnelConnected:
-				add(name, domain.CheckPass, fmt.Sprintf("connected on %s; %d route(s) through it", t.Iface, len(t.Routes)), "")
+				status, detail, fix := connectedTunnelCheck(t, expected[t.Name], installed)
+				add(name, status, detail, fix)
+			case len(t.Blocked) > 0:
+				add(name, domain.CheckWarn, "not installed on this network: "+blockedList(t.Blocked),
+					"narrow those routes, or ignore this while on this network")
 			default:
 				add(name, domain.CheckPass, string(t.State), "")
 			}
@@ -138,6 +137,71 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 	}
 	r.OK = r.Fail == 0
 	return r
+}
+
+// tunnelRoutesInstalled returns each tunnel's routes as a tunnel apply would
+// install them now (by tunnel name), and the kernel's table to check them
+// against.
+func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, routing.Installed) {
+	expected := map[string][]domain.ManagedRoute{}
+	if desired, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
+		for _, d := range desired {
+			if name, ok := strings.CutPrefix(d.ProfileID, routing.TunnelProfilePrefix); ok {
+				expected[name] = append(expected[name], d)
+			}
+		}
+	}
+	var kernel []domain.Route
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, _ := s.prov.ListRoutes(ctx, fam)
+		kernel = append(kernel, rs...)
+	}
+	return expected, routing.IndexInstalled(kernel)
+}
+
+// connectedTunnelCheck judges a connected tunnel by what the kernel holds:
+// no interface means nothing of it is installed; routes missing from the
+// table (an apply refused or still retrying, routes gone with a re-created
+// tun) or left out on this network are reported; the count is what really
+// goes through it.
+func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute, installed routing.Installed) (domain.CheckStatus, string, string) {
+	if t.Iface == "" {
+		return domain.CheckFail, "connected, but RiftRoute found no interface for it — none of its routes are installed",
+			"reconnect it: `riftroute tunnel down " + t.Name + "`, then `riftroute tunnel up " + t.Name + "`"
+	}
+	through := 0
+	var missing []string
+	for _, r := range expected {
+		switch {
+		case !installed.Has(r.Route) && r.Gateway != "":
+			missing = append(missing, r.DstCIDR+" (its server's pin)")
+		case !installed.Has(r.Route):
+			missing = append(missing, r.DstCIDR)
+		case r.Gateway == "":
+			through++
+		}
+	}
+	status, detail := domain.CheckPass, fmt.Sprintf("connected on %s; %d route(s) through it", t.Iface, through)
+	var fixes []string
+	if len(missing) > 0 {
+		status = domain.CheckWarn
+		detail += "; missing from the routing table: " + strings.Join(missing, ", ")
+		fixes = append(fixes, "RiftRoute re-adds them when it next applies; if they stay missing, confirm or roll back any change awaiting confirmation, then reconnect the tunnel")
+	}
+	if len(t.Blocked) > 0 {
+		status = domain.CheckWarn
+		detail += "; not installed on this network: " + blockedList(t.Blocked)
+		fixes = append(fixes, "narrow the routes left out, or ignore them while on this network")
+	}
+	return status, detail, strings.Join(fixes, "; ")
+}
+
+func blockedList(bs []domain.TunnelBlocked) string {
+	var out []string
+	for _, b := range bs {
+		out = append(out, b.Route+" ("+b.Reason+")")
+	}
+	return strings.Join(out, "; ")
 }
 
 // Leaks detects IPv6 and DNS leaks against the current state (spec §7.6).
