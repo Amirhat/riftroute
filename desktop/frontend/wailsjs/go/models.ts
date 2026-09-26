@@ -1421,6 +1421,7 @@ export namespace main {
 	    servers: string[];
 	    needs_auth: boolean;
 	    ignored: string[];
+	    files: string[];
 	    username: string;
 	    password: string;
 	    error: string;
@@ -1437,6 +1438,7 @@ export namespace main {
 	        this.servers = source["servers"];
 	        this.needs_auth = source["needs_auth"];
 	        this.ignored = source["ignored"];
+	        this.files = source["files"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.error = source["error"];
