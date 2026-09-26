@@ -68,7 +68,9 @@ func (s *Service) SetTunnels(inputs func() []routing.TunnelInput, status func() 
 
 // TunnelStatuses returns the tunnels' status, marking the routes left out on
 // the current network and why (see routing.PlanTunnels). Tunnels that aren't
-// running are checked too, so their status says what would be left out.
+// running are checked too, so their status says what would be left out. A
+// live tunnel's routes that an installed include-mode app rule still
+// captures are marked too (routing.AppRuleCaptures).
 func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 	if s.tunnelStatus == nil {
 		return nil
@@ -88,8 +90,10 @@ func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 		}
 	}
 	plan := routing.PlanTunnels(s.networkInput(ctx, tunnels, nil))
+	captured := routing.AppRuleCaptures(plan, s.actualManagedRules(ctx))
 	for i := range ts {
 		ts[i].Blocked = append(ts[i].Blocked, plan.Blocked[ts[i].Name]...)
+		ts[i].Captured = append(ts[i].Captured, captured[ts[i].Name]...)
 	}
 	return ts
 }
@@ -308,9 +312,11 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 // routes even with auto-apply off — but it must not apply unrelated profile
 // changes that are staged and waiting for the user.
 //
-// The other owned routes are carried over as they are, placed beside the
-// tunnels as a full reconcile would: a route inside a live tunnel's networks
-// yields to it, so the set never routes one destination two ways.
+// The other owned routes and the installed rules are carried over as they
+// are, placed beside the tunnels as a full reconcile would: a route or an
+// include rule's destination inside a live tunnel's networks yields to it, so
+// the set never routes one destination two ways. (What yielded comes back
+// with the next full apply — auto-apply's on the interface change.)
 //
 // Like DesiredManaged it also returns the v4 physical gateway the set was
 // built against (zero if none), for the guardrails and the watchdog.
@@ -325,7 +331,8 @@ func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.Managed
 			others = append(others, o)
 		}
 	}
-	return routing.PlanTunnels(in).Beside(others), s.actualManagedRules(ctx), in.GatewayV4, nil
+	tp := routing.PlanTunnels(in)
+	return tp.Beside(others), tp.RulesBeside(s.actualManagedRules(ctx)), in.GatewayV4, nil
 }
 
 // TunnelsActive reports whether a tunnel is running, or has routes recorded

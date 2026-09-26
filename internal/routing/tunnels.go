@@ -261,6 +261,134 @@ func outsideTunnels(prefixes, nets []netip.Prefix) []netip.Prefix {
 	return out
 }
 
+// aroundTunnels is outsideTunnels for include mode. An include rule is a
+// policy rule (Linux) or a PF route-to rule (macOS), matched before the
+// routing table the tunnels' routes are in: one merely containing a tunnel's
+// network still captures its traffic, where an exclude route would lose to
+// the tunnel's more specific route. So a prefix inside a live tunnel's
+// networks is dropped, and one containing some is split around them.
+func aroundTunnels(prefixes, nets []netip.Prefix) []netip.Prefix {
+	if len(nets) == 0 {
+		return prefixes
+	}
+	var out []netip.Prefix
+	for _, p := range prefixes {
+		out = append(out, subtractNets(p.Masked(), nets)...)
+	}
+	return out
+}
+
+// subtractNets returns the part of p outside every one of nets, as prefixes.
+func subtractNets(p netip.Prefix, nets []netip.Prefix) []netip.Prefix {
+	for _, n := range nets {
+		switch {
+		case n.Addr().Is4() != p.Addr().Is4():
+		case n.Bits() <= p.Bits() && n.Contains(p.Addr()):
+			return nil // p lies inside n
+		case p.Bits() < n.Bits() && p.Contains(n.Addr()):
+			lo, hi := halves(p)
+			return append(subtractNets(lo, nets), subtractNets(hi, nets)...)
+		}
+	}
+	return []netip.Prefix{p}
+}
+
+// halves splits p into its two halves.
+func halves(p netip.Prefix) (netip.Prefix, netip.Prefix) {
+	bits := p.Bits() + 1
+	raw := p.Masked().Addr().AsSlice()
+	lo := netip.PrefixFrom(p.Masked().Addr(), bits)
+	raw[p.Bits()/8] |= 0x80 >> (p.Bits() % 8)
+	hi, _ := netip.AddrFromSlice(raw)
+	return lo, netip.PrefixFrom(hi, bits)
+}
+
+// RulesBeside returns the rules RiftRoute's include profiles installed,
+// placed beside the tunnels as BuildDesired would place them: a destination
+// rule yields to live tunnels' networks (aroundTunnels) — the tunnel-only
+// apply's counterpart of Beside. An app's selector can't be split; it is kept
+// as it is (see AppRuleCaptures).
+func (tp TunnelPlan) RulesBeside(rules []domain.ManagedRule) []domain.ManagedRule {
+	if len(tp.nets) == 0 {
+		return rules
+	}
+	var out []domain.ManagedRule
+	seen := map[string]bool{}
+	add := func(r domain.ManagedRule) {
+		if k := RuleKey(r.PolicyRule); !seen[k] {
+			seen[k] = true
+			out = append(out, r)
+		}
+	}
+	for _, r := range rules {
+		pfx, ok := ruleDestination(r.PolicyRule)
+		if !ok {
+			add(r)
+			continue
+		}
+		parts := aroundTunnels([]netip.Prefix{pfx}, tp.nets)
+		if len(parts) == 1 && parts[0] == pfx.Masked() {
+			add(r) // untouched, as the kernel spells it
+			continue
+		}
+		for _, p := range parts {
+			nr := r
+			nr.Selector = "to " + p.String()
+			add(nr)
+		}
+	}
+	return out
+}
+
+// ruleDestination is the destination a rule selects by, when that is all
+// it selects by.
+func ruleDestination(r domain.PolicyRule) (netip.Prefix, bool) {
+	dst, ok := strings.CutPrefix(r.Selector, "to ")
+	if !ok || strings.ContainsRune(dst, ' ') {
+		return netip.Prefix{}, false
+	}
+	pfx, _, ok := entryToPrefix(dst)
+	return pfx, ok
+}
+
+// AppRuleCaptures reports, by tunnel name, the live tunnels' destinations that
+// include-mode app rules still capture: such a rule selects an app's (or a
+// user's) traffic whatever its destination, before the routing table the
+// tunnel's routes are in — and unlike a destination rule, it can't yield
+// around them. rules are the policy rules RiftRoute installed.
+func AppRuleCaptures(tp TunnelPlan, rules []domain.ManagedRule) map[string][]domain.TunnelBlocked {
+	var apps []domain.PolicyRule
+	for _, r := range rules {
+		if _, ok := ruleDestination(r.PolicyRule); !ok {
+			apps = append(apps, r.PolicyRule)
+		}
+	}
+	if len(apps) == 0 {
+		return nil
+	}
+	out := map[string][]domain.TunnelBlocked{}
+	for _, t := range tp.Routes {
+		name, ok := strings.CutPrefix(t.ProfileID, TunnelProfilePrefix)
+		if !ok || t.Gateway != "" {
+			continue // a pin goes via the physical gateway, not into the tunnel
+		}
+		for _, a := range apps {
+			if a.Family != t.Family {
+				continue
+			}
+			into := "your VPN (table " + a.Table + ")"
+			if a.RouteToIface != "" {
+				into = a.RouteToIface
+			}
+			out[name] = append(out[name], domain.TunnelBlocked{
+				Route:  t.DstCIDR,
+				Reason: fmt.Sprintf("the include-mode app rule %q sends that traffic into %s, to this network too", a.Selector, into),
+			})
+		}
+	}
+	return out
+}
+
 // TunnelRouteBlock says why a tunnel destination can't be installed on the
 // current network, or "" if it can. Such a route is left out — reported by
 // core.Service.TunnelStatuses — rather than failing the whole apply:

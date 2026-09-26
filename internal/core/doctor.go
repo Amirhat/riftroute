@@ -193,6 +193,11 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 		detail += "; not installed on this network: " + blockedList(t.Blocked)
 		fixes = append(fixes, "narrow the routes left out, or ignore them while on this network")
 	}
+	if len(t.Captured) > 0 {
+		status = domain.CheckWarn
+		detail += "; some traffic to it goes elsewhere: " + blockedList(t.Captured)
+		fixes = append(fixes, "use destination rules instead of app rules in the include profile, or disable it while the tunnel is up")
+	}
 	return status, detail, strings.Join(fixes, "; ")
 }
 
