@@ -158,6 +158,6 @@ func (p *execProcess) push(l string) {
 }
 
 // reAuthToken matches a session token the server pushes (a credential).
-var reAuthToken = regexp.MustCompile(`auth-token[^,'"]*`)
+var reAuthToken = regexp.MustCompile(`(?i)auth[-_]token[^,'"]*("[^"]*")?`)
 
 func redactLine(s string) string { return reAuthToken.ReplaceAllString(s, "auth-token [redacted]") }
