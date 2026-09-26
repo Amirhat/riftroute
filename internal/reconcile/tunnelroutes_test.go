@@ -21,7 +21,7 @@ import (
 // tunnelHarness drives the reconciler with fixed tunnel inputs — what the
 // tunnel manager's Inputs would report — over the fake provider.
 type tunnelHarness struct {
-	prov      *fake.Provider
+	prov      *hookProvider
 	st        *store.Store
 	svc       *core.Service
 	proto     *safety.Protocol
@@ -32,9 +32,60 @@ type tunnelHarness struct {
 	inputs []routing.TunnelInput
 }
 
+// hookProvider is the fake provider with one-shot hooks on its reads, so a
+// test can land a change in the middle of another apply.
+type hookProvider struct {
+	*fake.Provider
+	mu                sync.Mutex
+	onRules, onIfaces func()
+}
+
+func (p *hookProvider) take(fn *func()) func() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	f := *fn
+	*fn = nil
+	return f
+}
+
+func (p *hookProvider) ListRules(ctx context.Context, fam domain.Family) ([]domain.PolicyRule, error) {
+	if f := p.take(&p.onRules); f != nil {
+		f()
+	}
+	return p.Provider.ListRules(ctx, fam)
+}
+
+func (p *hookProvider) Interfaces(ctx context.Context) ([]domain.Iface, error) {
+	if f := p.take(&p.onIfaces); f != nil {
+		f()
+	}
+	return p.Provider.Interfaces(ctx)
+}
+
+func (p *hookProvider) hook(at *func(), fn func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	*at = fn
+}
+
+// landing runs change concurrently and waits for it to finish — or to be
+// held back by the apply lock, which is what a correct apply does to it.
+func landing(change func()) (hook func(), wait func()) {
+	done := make(chan struct{})
+	return func() {
+			go func() { defer close(done); change() }()
+			select {
+			case <-done:
+			case <-time.After(300 * time.Millisecond):
+			}
+		}, func() {
+			<-done
+		}
+}
+
 func newTunnelHarness(t *testing.T) *tunnelHarness {
 	t.Helper()
-	h := &tunnelHarness{prov: fake.New()}
+	h := &tunnelHarness{prov: &hookProvider{Provider: fake.New()}}
 	st, err := store.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -115,5 +166,67 @@ func TestTunnelApplyTakesOverAnAppliedExcludeRoute(t *testing.T) {
 	}
 	if got := k["9.9.9.0/24"]; len(got) != 1 || got[0] != "en0" {
 		t.Errorf("an unrelated exclude route changed: %v", got)
+	}
+}
+
+func directProfile(t *testing.T, st *store.Store, cidr string) {
+	t.Helper()
+	if err := st.UpsertProfile(domain.Profile{
+		ID: "p1", Name: "direct", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: cidr}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An auto-apply landing while a tunnel apply reads what RiftRoute owns must
+// not be undone by it: the tunnel apply derives its desired set under the
+// apply lock.
+func TestTunnelApplyDoesNotUndoAConcurrentAutoApply(t *testing.T) {
+	h := newTunnelHarness(t)
+	h.autoApply.Store(true)
+	directProfile(t, h.st, "9.9.9.0/24")
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"192.168.70.0/24"}})
+	ctx := context.Background()
+
+	hook, wait := landing(func() { _, _ = h.rec.Reconcile(ctx) })
+	h.prov.hook(&h.prov.onRules, hook)
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wait()
+	k := h.kernel(t)
+	if len(k["9.9.9.0/24"]) != 1 {
+		t.Errorf("the tunnel apply undid the auto-apply that landed during it: %v", k)
+	}
+	if got := k["192.168.70.0/24"]; len(got) != 1 || got[0] != "utun9" {
+		t.Errorf("tunnel route = %v", got)
+	}
+}
+
+// …and the reverse: a tunnel apply landing while an auto-apply derives its
+// desired set must not be undone by it.
+func TestAutoApplyDoesNotUndoAConcurrentTunnelApply(t *testing.T) {
+	h := newTunnelHarness(t)
+	h.autoApply.Store(true)
+	directProfile(t, h.st, "9.9.9.0/24")
+	h.setTunnels(routing.TunnelInput{Name: "infra", Routes: []string{"192.168.70.0/24"}}) // connecting
+	ctx := context.Background()
+
+	hook, wait := landing(func() {
+		h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"192.168.70.0/24"}}) // connected
+		_ = h.rec.ApplyTunnels(ctx)
+	})
+	h.prov.hook(&h.prov.onIfaces, hook)
+	if _, err := h.rec.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	wait()
+	k := h.kernel(t)
+	if got := k["192.168.70.0/24"]; len(got) != 1 || got[0] != "utun9" {
+		t.Errorf("the auto-apply undid the tunnel apply that landed during it: %v", k)
+	}
+	if len(k["9.9.9.0/24"]) != 1 {
+		t.Errorf("profile route = %v", k["9.9.9.0/24"])
 	}
 }

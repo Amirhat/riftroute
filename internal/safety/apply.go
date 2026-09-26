@@ -206,8 +206,32 @@ func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute
 func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
 	p.applyMu.Lock()
 	defer p.applyMu.Unlock()
+	return p.apply(ctx, p.actualManaged(ctx), desired, desiredRules, opts)
+}
 
-	plan := routing.Reconcile(desired, p.actualManaged(ctx), desiredRules, p.actualManagedRules(ctx), p.platform)
+// Build derives the desired routes and rules from owned — the routes
+// RiftRoute owns right now (the ownership map).
+type Build func(owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error)
+
+// ApplyBuilt runs the Apply Protocol like Apply, but derives desired state
+// under the apply lock: no other apply can land between the reads it is
+// built from and the change, so it can't undo a change made moments before
+// (a tunnel transition and an auto-apply racing would otherwise each revert
+// the other). A build error aborts before anything is touched.
+func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
+	p.applyMu.Lock()
+	defer p.applyMu.Unlock()
+	owned := p.actualManaged(ctx)
+	desired, desiredRules, err := build(owned)
+	if err != nil {
+		return Result{Status: domain.TxFailed, Error: err.Error()}, err
+	}
+	return p.apply(ctx, owned, desired, desiredRules, opts)
+}
+
+// apply is the body of Apply and ApplyBuilt; the caller holds applyMu.
+func (p *Protocol) apply(ctx context.Context, actual, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
+	plan := routing.Reconcile(desired, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
 
 	if opts.DryRun {

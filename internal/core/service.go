@@ -276,24 +276,38 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 	return routes, rules, in.GatewayV4, err
 }
 
-// DesiredTunnelsOnly is the desired set for a tunnel transition: what
-// RiftRoute owns today with only the tunnels' routes recomputed. Connecting a
-// tunnel is an explicit action that must install its routes even with
-// auto-apply off — but it must not apply unrelated profile changes that are
-// staged and waiting for the user.
+// DesiredTunnelsOnly is the desired set for a tunnel transition: owned —
+// what RiftRoute owns right now, as the Apply Protocol hands it over under
+// its lock (safety.Protocol.ApplyBuilt) — with only the tunnels' routes
+// recomputed. Connecting a tunnel is an explicit action that must install its
+// routes even with auto-apply off — but it must not apply unrelated profile
+// changes that are staged and waiting for the user.
 //
 // The other owned routes are carried over as they are, placed beside the
 // tunnels as a full reconcile would: a route inside a live tunnel's networks
 // yields to it, so the set never routes one destination two ways.
-func (s *Service) DesiredTunnelsOnly(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
-	in := s.networkInput(ctx, s.tunnels(), nil)
+func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+	if owned == nil {
+		owned = []domain.ManagedRoute{} // owns nothing: don't let networkInput read the map again
+	}
+	in := s.networkInput(ctx, s.tunnels(), owned)
 	var others []domain.ManagedRoute
-	for _, o := range s.actualManagedRoutes(ctx) {
+	for _, o := range owned {
 		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
 			others = append(others, o)
 		}
 	}
-	return routing.PlanTunnels(in).Beside(others), s.actualManagedRules(ctx), in.GatewayV4, nil
+	return routing.PlanTunnels(in).Beside(others), s.actualManagedRules(ctx), nil
+}
+
+// PhysicalGateway is the resolved v4 physical gateway (zero if none) — what
+// an apply's guardrails and watchdog anchor on.
+func (s *Service) PhysicalGateway(ctx context.Context) netip.Addr {
+	gw, _, err := s.prov.DefaultGateway(ctx, domain.FamilyV4)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return gw
 }
 
 // OwnsTunnelRoutes reports whether RiftRoute has routes recorded for a
