@@ -86,19 +86,23 @@ func TestDestinationsDontJudgeWhatAProfileCantKnow(t *testing.T) {
 	})
 }
 
-// A rule read from the kernel is the first enabled include profile's that
-// routes its whole network; none's if no enabled include profile does.
+// A rule read from the kernel is the enabled include profile's that routes
+// its whole network most tightly; none's if no enabled include profile does.
 func TestIncludeOwnerIsTheProfileThatRoutesTheRule(t *testing.T) {
 	d := ProfileDestinations(DesiredInput{Profiles: []domain.Profile{
 		{ID: "ex", Enabled: true, Mode: domain.ModeExclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}},
+		{ID: "wide", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}},
 		{ID: "a", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.70.8.0/24"}, {Type: domain.RuleCIDR, Value: "10.70.9.0/24"}}},
-		{ID: "b", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}},
+		{ID: "dns", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleDomain, Value: "corp.example.com"}}},
+		{ID: "wide2", Enabled: true, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.0.0.0/8"}}},
 		{ID: "off", Enabled: false, Mode: domain.ModeInclude, Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "172.16.0.0/12"}}},
-	}})
+	}, Domains: map[string][]string{"corp.example.com": {"10.1.2.3"}}})
 	for _, c := range []struct{ sel, want string }{
-		{"to 10.70.8.0/23", "a"}, // its two networks, aggregated
+		{"to 10.70.8.0/23", "a"}, // its two networks, aggregated, inside wide's /8
 		{"to 10.70.9.128/25", "a"},
-		{"to 10.64.0.0/14", "b"},
+		{"to 10.1.2.3/32", "dns"},   // a domain's address inside wide's /8
+		{"to 10.64.0.0/14", "wide"}, // a tie with wide2: the first
+		{"to 10.0.0.0/8", "wide"},
 		{"to 172.16.0.0/12", ""}, // a disabled profile's
 		{"to 192.0.2.0/24", ""},
 		{"fwmark " + ModelBMark, ""},

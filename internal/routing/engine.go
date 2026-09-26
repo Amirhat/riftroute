@@ -409,20 +409,24 @@ func (d Destinations) HoldsRule(r domain.ManagedRule) bool {
 	return within(pfx, d.include[r.Family]) || d.unsureOf(r.ProfileID, true, r.Family)
 }
 
-// IncludeOwner is the first enabled include profile that routes a
-// destination rule's whole network — whose rule one read from the kernel
-// is — or "" if none does.
+// IncludeOwner is the enabled include profile that routes a destination
+// rule's whole network most tightly — whose rule one read from the kernel
+// is: a domain's /32 inside another profile's /8 is the domain's — or ""
+// if none does. A tie goes to the first in profile order.
 func (d Destinations) IncludeOwner(r domain.PolicyRule) string {
 	pfx, ok := ruleNet(r)
 	if !ok {
 		return ""
 	}
+	owner, tightest := "", -1
 	for _, p := range d.includes {
-		if within(pfx, p.nets[r.Family]) {
-			return p.id
+		for _, a := range p.nets[r.Family] {
+			if a.Bits() <= pfx.Bits() && a.Contains(pfx.Addr()) && a.Bits() > tightest {
+				owner, tightest = p.id, a.Bits()
+			}
 		}
 	}
-	return ""
+	return owner
 }
 
 // ruleNet is a destination rule's network ("to <prefix>"), masked.
