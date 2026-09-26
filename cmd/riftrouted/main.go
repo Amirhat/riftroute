@@ -547,6 +547,10 @@ func run() error {
 	// armed watchdog and strand the user).
 	poller := netmon.NewPoller(prov, pollInterval)
 	rec = reconcile.New(svc, proto, logger, 500*time.Millisecond, autoApplyOn.Load)
+	// A transaction on probation settling is when a tunnel apply it refused
+	// can go through, and when a rollback may have withdrawn routes the
+	// tunnels still want: re-apply them then.
+	proto.SetOnSettled(tunnels.Kick)
 	go supervise(ctx, logger, "poller", poller.Run)
 	go supervise(ctx, logger, "reconciler", func(c context.Context) { rec.Run(c, poller.Events()) })
 	go supervise(ctx, logger, "domain-reresolve", func(c context.Context) { domainReresolveLoop(c, svc, rec, logger) })
@@ -639,9 +643,9 @@ func run() error {
 		"build", buildinfo.Short(build), "uid", allowUID)
 	serveErr := srv.Serve(ctx, ln)
 
-	// Tunnels first: each withdraws its routes through the protocol on the way
-	// down, which ShutdownResolve then commits. A restart the daemon does on
-	// its own (an update, a rollback) brings the connected ones back.
+	// Tunnels first: their routes are withdrawn on the way down (tunnel
+	// applies commit at once). A restart the daemon does on its own (an
+	// update, a rollback) brings the connected ones back.
 	if restartCode.Load() != 0 {
 		tunnels.RememberForRestart()
 	}

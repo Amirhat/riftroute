@@ -1087,6 +1087,7 @@ export namespace domain {
 	    servers: string[];
 	    ignored?: string[];
 	    blocked?: TunnelBlocked[];
+	    captured?: TunnelBlocked[];
 	    unreadable?: boolean;
 	    state: string;
 	    detail?: string;
@@ -1116,6 +1117,7 @@ export namespace domain {
 	        this.servers = source["servers"];
 	        this.ignored = source["ignored"];
 	        this.blocked = this.convertValues(source["blocked"], TunnelBlocked);
+	        this.captured = this.convertValues(source["captured"], TunnelBlocked);
 	        this.unreadable = source["unreadable"];
 	        this.state = source["state"];
 	        this.detail = source["detail"];
