@@ -1,8 +1,25 @@
 import type { ReactNode } from 'react'
 import type { Owner } from '../types'
 
-export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-xl border border-line bg-surface ${className}`}>{children}</div>
+// A tone swaps the card's own border and background rather than stacking
+// classes on top of them: which of two same-property utilities wins depends
+// on Tailwind's stylesheet order, not on the className.
+const cardTones = {
+  default: 'border-line bg-surface',
+  danger: 'border-danger/40 bg-danger/5',
+  warning: 'border-warning/40 bg-warning/5',
+}
+
+export function Card({
+  children,
+  className = '',
+  tone = 'default',
+}: {
+  children: ReactNode
+  className?: string
+  tone?: keyof typeof cardTones
+}) {
+  return <div className={`rounded-xl border ${cardTones[tone]} ${className}`}>{children}</div>
 }
 
 export function CardHeader({ title, hint }: { title: string; hint?: ReactNode }) {

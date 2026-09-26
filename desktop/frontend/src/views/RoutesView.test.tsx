@@ -118,6 +118,24 @@ describe('RoutesView', () => {
     expect(mockApi.explain).toHaveBeenCalledWith('netflix.com')
   })
 
+  it('puts the cursor in the lookup box when asked (View → Explain)', async () => {
+    const onLookupFocused = vi.fn()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <RoutesView focusLookup onLookupFocused={onLookupFocused} />
+      </QueryClientProvider>,
+    )
+    await waitFor(() => expect(screen.getByLabelText('Lookup target')).toHaveFocus())
+    expect(onLookupFocused).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves the focus alone by default', async () => {
+    renderView()
+    await screen.findByText(/showing 2 of 2 routes/)
+    expect(screen.getByLabelText('Lookup target')).not.toHaveFocus()
+  })
+
   it('lists manual routes and adds a new one through the manual profile', async () => {
     mockApi.saveProfile.mockResolvedValue({ result: { applied: true } })
     renderView()

@@ -72,8 +72,8 @@ export function History() {
 
   return (
     <div className="space-y-4">
-      {error && <Card className="border-danger/40 p-3 text-sm text-danger">{error}</Card>}
-      {notice && <Card className="border-warning/40 bg-warning/5 p-3 text-sm text-warning">{notice}</Card>}
+      {error && <Card tone="danger" className="p-3 text-sm text-danger">{error}</Card>}
+      {notice && <Card tone="warning" className="p-3 text-sm text-warning">{notice}</Card>}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">

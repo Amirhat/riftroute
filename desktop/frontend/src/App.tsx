@@ -15,6 +15,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { onConnection, onMenu, onState } from './lib/events'
 import { api } from './lib/api'
 import { stateKey } from './lib/queries'
+import { menuNav } from './lib/menu'
 
 type Theme = 'dark' | 'light'
 
@@ -35,6 +36,9 @@ export default function App() {
   const [reachable, setReachable] = useState(true)
   const [version, setVersion] = useState('')
   const [confirmPanic, setConfirmPanic] = useState(false)
+  // Set by View → Explain (⌘3); cleared once the lookup box has the cursor.
+  const [focusLookup, setFocusLookup] = useState(false)
+  const lookupFocused = useCallback(() => setFocusLookup(false), [])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -70,7 +74,13 @@ export default function App() {
     const offMenu = onMenu((action) => {
       if (action === 'toggle-theme') toggleTheme()
       else if (action === 'refresh') qc.invalidateQueries()
-      else if (action.startsWith('nav:')) setView(action.slice(4) as View)
+      else {
+        const nav = menuNav(action)
+        if (nav) {
+          setView(nav.view)
+          if (nav.focusLookup) setFocusLookup(true)
+        }
+      }
     })
     return () => {
       offState()
@@ -108,7 +118,13 @@ export default function App() {
         </header>
         <main className="min-h-0 flex-1 overflow-auto p-5">
           <ErrorBoundary key={view}>
-            <ViewRouter view={view} theme={theme} onToggleTheme={toggleTheme} />
+            <ViewRouter
+              view={view}
+              theme={theme}
+              onToggleTheme={toggleTheme}
+              focusLookup={focusLookup}
+              onLookupFocused={lookupFocused}
+            />
           </ErrorBoundary>
         </main>
       </div>
@@ -136,16 +152,20 @@ function ViewRouter({
   view,
   theme,
   onToggleTheme,
+  focusLookup,
+  onLookupFocused,
 }: {
   view: View
   theme: Theme
   onToggleTheme: () => void
+  focusLookup: boolean
+  onLookupFocused: () => void
 }) {
   switch (view) {
     case 'dashboard':
       return <Dashboard />
     case 'routes':
-      return <RoutesView />
+      return <RoutesView focusLookup={focusLookup} onLookupFocused={onLookupFocused} />
     case 'profiles':
       return <Profiles />
     case 'flows':

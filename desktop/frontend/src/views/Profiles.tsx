@@ -133,7 +133,7 @@ export function Profiles() {
       </div>
 
       {hasDrift && (
-        <Card className="flex items-center justify-between border-warning/40 bg-warning/5 p-4">
+        <Card tone="warning" className="flex items-center justify-between p-4">
           <div className="text-sm">
             <span className="font-semibold text-warning">Pending changes</span>
             <span className="ml-2 text-muted">
@@ -155,9 +155,9 @@ export function Profiles() {
         </Card>
       )}
 
-      {error && <Card className="border-danger/40 p-3 text-sm text-danger">{error}</Card>}
+      {error && <Card tone="danger" className="p-3 text-sm text-danger">{error}</Card>}
       {notice && (
-        <Card className="flex items-center justify-between border-warning/40 bg-warning/5 p-3 text-sm">
+        <Card tone="warning" className="flex items-center justify-between p-3 text-sm">
           <span className="text-warning">{notice}</span>
           <button onClick={() => setNotice(null)} aria-label="Dismiss" className="text-muted hover:text-default">
             ✕

@@ -34,6 +34,14 @@ date — and can't be handed anything the maintainer didn't sign.
 **This version itself is installed the usual way** (it's the first with the
 updater); later versions arrive on their own.
 
+### Fixed
+- **Tinted colors in the app.** Faded backgrounds and borders — error and
+  warning boxes, the sidebar's selected item, owner and state badges, hover
+  highlights — rendered with no color at all: the theme colors were plain CSS
+  variables, which Tailwind can't make translucent, so those classes produced
+  no CSS. Theme colors are now RGB channels, and every tint shows in both the
+  light and dark themes.
+
 ## [0.2.5] — 2026-09-24
 
 Fixes the app getting stuck "offline" after you stop and start the daemon, and
