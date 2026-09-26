@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -25,6 +24,10 @@ type TunnelProfileFile struct {
 	Servers   []string `json:"servers"`
 	NeedsAuth bool     `json:"needs_auth"`
 	Ignored   []string `json:"ignored"`
+	// Files are the files the profile refers to that were read and inlined
+	// (only ever from the profile's own folder), so the editor can show
+	// everything the import pulled in.
+	Files []string `json:"files"`
 	// Username/Password come from an auth-user-pass file or inline block.
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -45,21 +48,29 @@ func (a *App) OpenTunnelProfileDialog() (TunnelProfileFile, error) {
 	if err != nil || path == "" {
 		return TunnelProfileFile{}, err
 	}
-	data, err := os.ReadFile(path)
+	return loadTunnelProfile(path)
+}
+
+// loadTunnelProfile reads and inlines the profile at path for the editor.
+func loadTunnelProfile(path string) (TunnelProfileFile, error) {
+	text, err := tunnel.ReadProfileFile(path)
 	if err != nil {
-		return TunnelProfileFile{}, fmt.Errorf("could not read %s: %w", filepath.Base(path), err)
+		return TunnelProfileFile{}, fmt.Errorf("could not read the profile: %w", err)
 	}
-	out := TunnelProfileFile{Path: path, Name: filepath.Base(path), Servers: []string{}, Ignored: []string{}}
-	text, creds, err := tunnel.InlineFiles(string(data), filepath.Dir(path), os.ReadFile)
+	out := TunnelProfileFile{Path: path, Name: filepath.Base(path), Servers: []string{}, Ignored: []string{}, Files: []string{}}
+	res, err := tunnel.InlineFiles(text, filepath.Dir(path))
 	if err != nil {
 		out.Error = err.Error()
 		return out, nil
 	}
-	out.Config = text
-	if creds != nil {
-		out.Username, out.Password = creds.Username, creds.Password
+	out.Config = res.Config
+	if res.Files != nil {
+		out.Files = res.Files
 	}
-	p, err := tunnel.Parse(text)
+	if res.Creds != nil {
+		out.Username, out.Password = res.Creds.Username, res.Creds.Password
+	}
+	p, err := tunnel.Parse(res.Config)
 	if err != nil {
 		out.Error = err.Error()
 		return out, nil

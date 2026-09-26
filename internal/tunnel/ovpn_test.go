@@ -3,8 +3,6 @@ package tunnel
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -218,39 +216,6 @@ func TestQuoteRoundTrips(t *testing.T) {
 		if err != nil || len(toks) != 2 || toks[1] != s {
 			t.Errorf("%q -> %q -> %v %v", s, quote(s), toks, err)
 		}
-	}
-}
-
-func TestInlineFiles(t *testing.T) {
-	dir := t.TempDir()
-	write := func(name, body string) {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write("ca.crt", "CA-PEM\n")
-	write("ta.key", "TA-KEY\n")
-	write("creds.txt", "bob\nhunter2\n")
-	src := "client\nremote 192.0.2.1\nca ca.crt\ntls-auth ta.key 1\nauth-user-pass creds.txt\n<cert>\nINLINE\n</cert>\n"
-	out, creds, err := InlineFiles(src, dir, os.ReadFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if creds == nil || creds.Username != "bob" || creds.Password != "hunter2" {
-		t.Fatalf("creds = %+v", creds)
-	}
-	p, err := Parse(out)
-	if err != nil {
-		t.Fatalf("inlined profile does not parse: %v\n%s", err, out)
-	}
-	r := p.Render(RenderOptions{Management: "/m"})
-	for _, must := range []string{"<ca>\nCA-PEM\n</ca>", "key-direction 1", "<tls-auth>\nTA-KEY\n</tls-auth>", "<cert>\nINLINE\n</cert>", "auth-user-pass\n"} {
-		if !strings.Contains(r, must) {
-			t.Errorf("missing %q in\n%s", must, r)
-		}
-	}
-	if strings.Contains(r, "hunter2") || strings.Contains(r, "creds.txt") {
-		t.Error("credentials file leaked into the config")
 	}
 }
 

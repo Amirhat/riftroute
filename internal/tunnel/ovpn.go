@@ -163,7 +163,8 @@ func allFingerprints(args []string) bool {
 }
 
 const (
-	maxProfileBytes = 256 << 10
+	// maxProfileBytes caps a profile, with its files inlined.
+	maxProfileBytes = 512 << 10
 	// maxRemotes bounds the servers a profile lists (each may be resolved and
 	// pinned to the physical gateway).
 	maxRemotes = 32
