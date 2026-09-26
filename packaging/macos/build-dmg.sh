@@ -8,6 +8,11 @@
 #   AC_NOTARY_PROFILE   notarytool keychain profile name, OR
 #   AC_APPLE_ID / AC_TEAM_ID / AC_PASSWORD  (app-specific password)
 #
+# Tunnels' openvpn (scripts/build-openvpn.sh universal) is bundled from
+# OPENVPN_BIN (default build/openvpn/universal/openvpn). Without it the .dmg
+# still builds and tunnels say they need a release that includes it;
+# REQUIRE_OPENVPN=1 makes a missing one an error.
+#
 # Usage: VERSION=1.2.3 packaging/macos/build-dmg.sh
 # Requires the app already built at desktop/build/bin/RiftRoute.app (make desktop).
 set -euo pipefail
@@ -44,6 +49,28 @@ build_universal() {
 build_universal "${ROOT}/cmd/riftroute"  "${BINDIR}/riftroute"
 build_universal "${ROOT}/cmd/riftrouted" "${BINDIR}/riftrouted"
 
+# Tunnels' openvpn goes next to riftrouted: the app's Install button runs
+# `riftroute daemon install` from here, which installs it root-owned beside the
+# daemon. The daemon never runs any other openvpn (never Homebrew's).
+OPENVPN_BIN="${OPENVPN_BIN:-${ROOT}/build/openvpn/universal/openvpn}"
+rm -f "${BINDIR}/openvpn"
+rm -rf "${APP}/Contents/Resources/licenses"
+if [ -f "$OPENVPN_BIN" ]; then
+  echo "bundling openvpn from ${OPENVPN_BIN}"
+  lipo "$OPENVPN_BIN" -verify_arch arm64 x86_64 || {
+    echo "${OPENVPN_BIN} must be universal (arm64 + x86_64)" >&2; exit 1; }
+  cp "$OPENVPN_BIN" "${BINDIR}/openvpn"
+  chmod 755 "${BINDIR}/openvpn"
+  if [ -d "$(dirname "$OPENVPN_BIN")/licenses" ]; then
+    cp -R "$(dirname "$OPENVPN_BIN")/licenses" "${APP}/Contents/Resources/licenses"
+  fi
+elif [ -n "${REQUIRE_OPENVPN:-}" ]; then
+  echo "missing ${OPENVPN_BIN} — build it with scripts/build-openvpn.sh universal" >&2
+  exit 1
+else
+  echo "no openvpn at ${OPENVPN_BIN}: the app ships without it; tunnels won't be available on macOS" >&2
+fi
+
 # Re-sign AFTER bundling — adding files under Contents/ invalidates the signature
 # Wails applied at build time. A VALID signature is REQUIRED even without a
 # Developer ID: an app with a broken signature is reported by macOS as "damaged
@@ -53,10 +80,21 @@ if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
   echo "signing app with Developer ID…"
   codesign --force --options runtime --timestamp --sign "${MAC_SIGN_IDENTITY}" \
     "${BINDIR}/riftrouted" "${BINDIR}/riftroute"
+  if [ -f "${BINDIR}/openvpn" ]; then
+    codesign --force --options runtime --timestamp --identifier com.riftroute.openvpn \
+      --sign "${MAC_SIGN_IDENTITY}" "${BINDIR}/openvpn"
+  fi
   codesign --force --options runtime --timestamp --deep --sign "${MAC_SIGN_IDENTITY}" "$APP"
 else
   echo "no Developer ID — ad-hoc signing (valid signature so macOS won't call it 'damaged')"
+  if [ -f "${BINDIR}/openvpn" ]; then
+    codesign --force --identifier com.riftroute.openvpn --sign - "${BINDIR}/openvpn"
+  fi
   codesign --force --deep --sign - "$APP"
+fi
+if [ -f "${BINDIR}/openvpn" ]; then
+  codesign --verify --strict --verbose=2 "${BINDIR}/openvpn" || {
+    echo "openvpn signature verification failed" >&2; exit 1; }
 fi
 codesign --verify --deep --strict --verbose=2 "$APP" || {
   echo "code signature verification failed" >&2; exit 1; }

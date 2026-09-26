@@ -33,7 +33,16 @@ class Riftroute < Formula
 
   def install
     bin.install "riftroute"
-    bin.install "riftrouted"
+    if OS.mac? && File.exist?("openvpn")
+      # Tunnels' openvpn stays beside the daemon, off PATH: `riftroute daemon
+      # install` copies both into /Library/PrivilegedHelperTools, root-owned.
+      # The daemon never runs an openvpn from this (user-writable) prefix.
+      libexec.install "riftrouted", "openvpn"
+      bin.install_symlink libexec/"riftrouted"
+      pkgshare.install "licenses" if File.directory?("licenses")
+    else
+      bin.install "riftrouted"
+    end
   end
 
   def caveats
@@ -42,6 +51,10 @@ class Riftroute < Formula
       start it as a service deliberately:
 
         sudo riftroute daemon install   # writes the launchd/systemd unit
+
+      On macOS this also installs the openvpn that ships with RiftRoute (for
+      tunnels) beside the daemon. On Linux tunnels use your distribution's
+      openvpn package.
 
       RiftRoute never mutates routes without the Apply Protocol's guardrails.
     EOS
