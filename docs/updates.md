@@ -96,43 +96,57 @@ User-Agent is just `riftroute`. The server keeps no access log.
   returns with the verdict, the download and self-test carry on, and clients
   follow along through `GET /update` / State.
 - **auto:** download → verify SHA-256 and size against the signed entry →
-  unpack the daemon into a root-only staging dir of its own
-  (`update-staging/<version>/`) → **self-test the new binary**: its
+  unpack the daemon — and on macOS the `openvpn` that ships beside it in the
+  tarball (a plain file of at most 20 MB) — into a root-only staging dir of
+  its own (`update-staging/<version>/`) → **self-test the new binary**: its
   `-version` must be the signed version, and `riftrouted -selftest` — run
   with the service's own arguments, pointed at a *copy* of the database —
-  must migrate that copy and initialise the provider → wait for the **idle
-  gate** → look once more (a halt or a newer release since staging stops it;
-  the staged file's hash is re-checked) → swap.
+  must migrate that copy and initialise the provider; the staged openvpn's
+  `--version` must run (in the environment the daemon runs it with) → wait
+  for the **idle gate** → look once more (a halt or a newer release since
+  staging stops it; every staged file's hash is re-checked) → swap.
 - A release is **skipped** only when it is itself broken (its self-test runs
-  and fails, its tarball lacks a proper `riftrouted`, its version doesn't
-  match). A cancelled, interrupted or I/O-failed attempt is retried later.
+  and fails, its tarball lacks a proper `riftrouted` or has a malformed
+  `openvpn`, its openvpn doesn't run, its version doesn't match). A
+  cancelled, interrupted or I/O-failed attempt is retried later.
 - **Idle gate:** the daemon takes its apply lock only if nothing is being
   applied, nothing awaits confirmation, and no change started in the last 10
   minutes — and keeps it from the swap until it exits, so no change can
   start in between. User rollbacks wait for the same quiet moment.
-- **Swap:** back up the database, keep the current binary as `riftrouted.prev`,
-  atomically rename the new one into place, write an "update pending" marker,
-  exit; launchd/systemd restart the daemon (KeepAlive / Restart=always).
+- **Swap:** back up the database, keep the current binary as `riftrouted.prev`
+  (and on macOS the installed openvpn as `riftroute-openvpn.prev`, recording
+  whether the update replaces it, adds the first one, or — a release without
+  openvpn — leaves it alone), write an "update pending" marker, atomically
+  rename the new openvpn and then the new daemon into place, exit;
+  launchd/systemd restart the daemon (KeepAlive / Restart=always). The
+  daemon's rename comes last: it is the commit point.
 - **Health gate + offline rollback:** before opening its database, the new
   daemon reads the marker. It must answer `GET /healthz` on its socket
   (checked from 20 s after start) within 5 minutes; a start that doesn't
   counts as failed. After **three failed starts** that early code restores
-  `riftrouted.prev` — and the pre-update database only if the previous
+  `riftrouted.prev` and the pre-update database only if the previous
   version can't read the new one (a breaking migration raised
-  `schema_min_reader` past it) — records who rolled back and from what, and
-  exits so the service manager starts the old binary. No network needed. A
+  `schema_min_reader` past it), records who rolled back and from what, and
+  exits so the service manager starts the old binary. On macOS the openvpn
+  goes back first, to what was there before the update (restored from
+  `riftroute-openvpn.prev`, removed if the update added it, untouched if the
+  update didn't carry one) — safe to repeat if a crash interrupts the
+  rollback, which runs again until the daemon is restored. No network needed. A
   rolled-back version is not offered again until a newer one appears. If the
   rollback itself can't be done, that is recorded and shown, and the current
   binary starts (no restart loop).
-- A crash between writing the marker and replacing the binary changed
-  nothing; the next start clears the marker without skipping the release.
-- Only the daemon binary is replaced. The CLI inside the app bundle (or
+- A crash between writing the marker and replacing the daemon changed
+  nothing: the next start (the old daemon) puts the previous openvpn back if
+  it was already replaced, and clears the marker without skipping the
+  release. A user's rollback restores openvpn the same way as a health one.
+- Only the daemon binary — and on macOS the openvpn that ships beside it,
+  from the same release — is replaced. The CLI inside the app bundle (or
   wherever it was installed) and the desktop app are not touched.
-- `daemon install` / `uninstall` clear the previous binary, the database
+- `daemon install` / `uninstall` clear the previous binaries, the database
   backup and any pending marker.
-- **macOS:** the release tarball's daemon is ad-hoc signed; if the installed
-  one came from a Developer-ID-signed build, macOS may show its "background
-  item" notice once after the first automatic update.
+- **macOS:** the release tarball's daemon and openvpn are ad-hoc signed; if
+  the installed ones came from a Developer-ID-signed build, macOS may show
+  its "background item" notice once after the first automatic update.
 
 ## Where auto-install is NOT used
 
