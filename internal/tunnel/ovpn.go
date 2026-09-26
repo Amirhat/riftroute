@@ -371,6 +371,25 @@ type RenderOptions struct {
 	Remotes []Remote
 	// Management is the unix socket openvpn listens on for the daemon.
 	Management string
+	// IPv6 lets the server give the tunnel an IPv6 address. Set it only when
+	// the tunnel carries an IPv6 route (see RoutesNeedIPv6): a pushed
+	// ifconfig-ipv6 is a connected route into the tunnel, sized by the server.
+	IPv6 bool
+}
+
+// RoutesNeedIPv6 reports whether any of a tunnel's routes is IPv6 — whether
+// its rendered config should let the server set an IPv6 address.
+func RoutesNeedIPv6(routes []string) bool {
+	for _, r := range routes {
+		a, err := netip.ParseAddr(r)
+		if pfx, perr := netip.ParsePrefix(r); perr == nil {
+			a, err = pfx.Addr(), nil
+		}
+		if err == nil && a.Is6() && !a.Is4In6() {
+			return true
+		}
+	}
+	return false
 }
 
 // Render produces the config handed to openvpn: the allowed directives, then
@@ -408,6 +427,21 @@ func (p *Profile) Render(o RenderOptions) string {
 		}
 	}
 	b.WriteString(p.cipherCompat())
+	// What the server can still push. route-nopull drops pushed routes,
+	// redirect-gateway/-private and DNS settings, and route-noexec keeps
+	// openvpn from installing any route it was given; the pull-filters restate
+	// the ones that matter most. Neither stops the server from setting the
+	// tunnel's own addresses, which the kernel turns into routes of its own:
+	//   - topology subnet + `ifconfig <ip> <netmask>`: a connected route for
+	//     the whole subnet into the tunnel (a 128.0.0.0 mask is half the
+	//     Internet);
+	//   - net30/p2p `ifconfig <ip> <peer>`: a host route to the peer, which
+	//     can be any address (the LAN router, a DNS server);
+	//   - `ifconfig-ipv6 <ip>/<bits>`: a connected route for that prefix.
+	// IPv4 addressing can't be refused (the tunnel needs an address), so the
+	// daemon checks the interface's prefix once openvpn reports CONNECTED.
+	// IPv6 addressing, and pushed IPv6 routes for good measure, are refused
+	// outright unless the tunnel carries an IPv6 route (o.IPv6).
 	b.WriteString(`# --- RiftRoute ---
 route-nopull
 route-noexec
@@ -417,7 +451,11 @@ pull-filter ignore "dhcp-option"
 pull-filter ignore "dns"
 pull-filter ignore "block-outside-dns"
 pull-filter ignore "register-dns"
-script-security 1
+`)
+	if !o.IPv6 {
+		b.WriteString("pull-filter ignore \"ifconfig-ipv6\"\npull-filter ignore \"route-ipv6\"\n")
+	}
+	b.WriteString(`script-security 1
 persist-tun
 auth-nocache
 auth-retry none

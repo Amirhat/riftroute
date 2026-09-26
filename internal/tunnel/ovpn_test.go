@@ -368,3 +368,45 @@ func TestParseCapsRemotes(t *testing.T) {
 		t.Fatal("<connection> blocks stay refused")
 	}
 }
+
+// route-nopull doesn't stop a server from setting the tunnel's addresses: a
+// pushed ifconfig-ipv6 is a connected route, sized by the server. Unless the
+// tunnel carries an IPv6 route, the server gets to set no IPv6 at all.
+func TestRenderRefusesPushedIPv6UnlessRouted(t *testing.T) {
+	p, err := Parse("client\nremote 192.0.2.1\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters := []string{"pull-filter ignore \"ifconfig-ipv6\"\n", "pull-filter ignore \"route-ipv6\"\n"}
+	out := p.Render(RenderOptions{Management: "/m"})
+	for _, f := range filters {
+		if !strings.Contains(out, f) {
+			t.Errorf("v4-only tunnel lacks %q:\n%s", f, out)
+		}
+	}
+	out = p.Render(RenderOptions{Management: "/m", IPv6: true})
+	for _, f := range filters {
+		if strings.Contains(out, f) {
+			t.Errorf("IPv6 tunnel still has %q", f)
+		}
+	}
+}
+
+func TestRoutesNeedIPv6(t *testing.T) {
+	for routes, want := range map[string]bool{
+		"":                          false,
+		"10.0.0.0/8,192.0.2.7":      false,
+		"10.0.0.0/8,2001:db8::/32":  true,
+		"2001:db8::7":               true,
+		"::ffff:10.0.0.0/104":       false, // v4-mapped: an IPv4 route
+		"not-a-route,172.16.0.0/12": false,
+	} {
+		var rs []string
+		if routes != "" {
+			rs = strings.Split(routes, ",")
+		}
+		if got := RoutesNeedIPv6(rs); got != want {
+			t.Errorf("RoutesNeedIPv6(%q) = %v, want %v", routes, got, want)
+		}
+	}
+}
