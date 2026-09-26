@@ -56,3 +56,45 @@ func TestTunnelConnectCutsIncludeRulesAroundItsNetwork(t *testing.T) {
 		t.Errorf("tunnel route = %v", got)
 	}
 }
+
+// With auto-apply off, what a tunnel took comes back when it goes: the
+// include rule it cut and the exclude route inside its network return on the
+// disconnect's tunnel apply — no full apply is coming to do it, and without
+// them that traffic would leave outside the VPN.
+func TestTunnelDisconnectRestoresWhatItsConnectCut(t *testing.T) {
+	h := newTunnelHarness(t) // auto-apply off
+	ctx := context.Background()
+	if err := h.prov.AddRule(ctx, domain.ManagedRule{PolicyRule: domain.PolicyRule{
+		Priority: routing.ModelBRulePrio, Selector: "to 10.0.0.0/8", Table: routing.ModelBTable, Family: domain.FamilyV4, Proto: "riftroute",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	exclude := domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.70.5.5/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute}, ProfileID: "p1"}
+	h.own(t, exclude)
+
+	h.setTunnels(routing.TunnelInput{Name: "infra", Iface: "utun9", Routes: []string{"10.70.0.0/16"}})
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.kernel(t)["10.70.5.5/32"]; len(got) != 0 {
+		t.Fatalf("the exclude route didn't yield to the tunnel: %v", got)
+	}
+
+	h.setTunnels() // disconnected
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := h.prov.ListRules(ctx, domain.FamilyV4)
+	var sels []string
+	for _, r := range rules {
+		if r.Proto == "riftroute" {
+			sels = append(sels, r.Selector)
+		}
+	}
+	if len(sels) != 1 || sels[0] != "to 10.0.0.0/8" {
+		t.Errorf("include rules after the disconnect = %q, want the original back", sels)
+	}
+	if got := h.kernel(t)["10.70.5.5/32"]; len(got) != 1 || got[0] != "en0" {
+		t.Errorf("exclude route after the disconnect = %v, want it back via en0", got)
+	}
+}

@@ -60,7 +60,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 	}
 	var buildErr error
 	res, err := r.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		desired, rules, physGW, err := r.svc.DesiredManaged(ctx)
+		desired, rules, physGW, err := r.svc.DesiredForApply(ctx)
 		buildErr = err
 		o.UseGateway(physGW)
 		return desired, rules, err
@@ -104,7 +104,7 @@ func (r *Reconciler) applyTunnels(ctx context.Context) (safety.Result, error) {
 	opts.VetChangesOnly = true
 	opts.Unguarded = true
 	return r.proto.ApplyBuilt(ctx, func(ctx context.Context, owned []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		desired, rules, physGW, err := r.svc.DesiredTunnelsOnly(ctx, owned)
+		desired, rules, physGW, err := r.svc.TunnelsForApply(ctx, owned)
 		o.UseGateway(physGW)
 		return desired, rules, err
 	}, opts)

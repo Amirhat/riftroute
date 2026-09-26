@@ -97,7 +97,7 @@ func (s *Server) applyProfiles(ctx context.Context, req applyReq, snapshot []dom
 	opts := s.buildOptions(req, netip.Addr{}) // the build sets the gateway it derived against
 	opts.SnapshotProfiles = snapshot
 	res, _ = s.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
-		desired, rules, physGW, err := s.svc.DesiredManaged(ctx)
+		desired, rules, physGW, err := s.svc.DesiredForApply(ctx)
 		buildErr = err
 		o.UseGateway(physGW)
 		return desired, rules, err

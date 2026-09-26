@@ -292,6 +292,13 @@ func (s *Service) DesiredManaged(ctx context.Context) ([]domain.ManagedRoute, []
 // DesiredFromProfiles builds desired managed routes + rules from an explicit
 // profile set (used by config dry-run before anything is persisted).
 func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Profile) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+	in := s.profileInput(ctx, profiles)
+	routes, rules, err := routing.BuildDesired(in)
+	return routes, rules, in.GatewayV4, err
+}
+
+// profileInput is the builder's input for a profile set.
+func (s *Service) profileInput(ctx context.Context, profiles []domain.Profile) routing.DesiredInput {
 	in := s.networkInput(ctx, s.tunnels(), nil)
 	vg4, vi4 := s.resolveVPN(ctx, domain.FamilyV4)
 	vg6, vi6 := s.resolveVPN(ctx, domain.FamilyV6)
@@ -301,8 +308,7 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 	in.Domains = s.resolveDomains(ctx, profiles)
 	in.VPNGatewayV4, in.VPNIfaceV4 = vg4, vi4
 	in.VPNGatewayV6, in.VPNIfaceV6 = vg6, vi6
-	routes, rules, err := routing.BuildDesired(in)
-	return routes, rules, in.GatewayV4, err
+	return in
 }
 
 // DesiredTunnelsOnly is the desired set for a tunnel transition: owned —
@@ -321,6 +327,24 @@ func (s *Service) DesiredFromProfiles(ctx context.Context, profiles []domain.Pro
 // Like DesiredManaged it also returns the v4 physical gateway the set was
 // built against (zero if none), for the guardrails and the watchdog.
 func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+	routes, rules, gw, _ := s.tunnelsOnly(ctx, owned)
+	return routes, rules, gw, nil
+}
+
+// TunnelsForApply is DesiredTunnelsOnly for a tunnel apply: it also records
+// what now yields to the live tunnels, for the next one to put back.
+func (s *Service) TunnelsForApply(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+	routes, rules, gw, y := s.tunnelsOnly(ctx, owned)
+	s.saveYielded(y)
+	return routes, rules, gw, nil
+}
+
+// tunnelsOnly builds a tunnel apply's desired set. What earlier applies made
+// yield to live tunnels is put back first — so what a tunnel took is
+// returned when it goes, even with auto-apply off, where no full apply would
+// — then everything is placed beside the tunnels live now; what yields to
+// them this time is returned for the record.
+func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, yielded) {
 	if owned == nil {
 		owned = []domain.ManagedRoute{} // owns nothing: don't let networkInput read the map again
 	}
@@ -331,8 +355,35 @@ func (s *Service) DesiredTunnelsOnly(ctx context.Context, owned []domain.Managed
 			others = append(others, o)
 		}
 	}
+	prev := s.loadYielded()
+	others = prev.putBackRoutes(others)
+	rules := prev.putBackRules(s.actualManagedRules(ctx))
 	tp := routing.PlanTunnels(in)
-	return tp.Beside(others), tp.RulesBeside(s.actualManagedRules(ctx)), in.GatewayV4, nil
+	routes := tp.Beside(others)
+	return routes, tp.RulesBeside(rules), in.GatewayV4, yieldedTo(tp, others, rules, routes)
+}
+
+// DesiredForApply is DesiredManaged for a full apply: it also records what
+// the profiles' set gives up to the live tunnels, for a later tunnel apply
+// to put back once they're gone.
+func (s *Service) DesiredForApply(ctx context.Context) ([]domain.ManagedRoute, []domain.ManagedRule, netip.Addr, error) {
+	var profiles []domain.Profile
+	if s.store != nil {
+		profiles, _ = s.store.ListProfiles()
+	}
+	in := s.profileInput(ctx, profiles)
+	routes, rules, err := routing.BuildDesired(in)
+	if err != nil {
+		return routes, rules, in.GatewayV4, err
+	}
+	// The same set as if no tunnel were up: what yielded is the difference.
+	bare := in
+	bare.Tunnels, bare.Occupied = nil, nil
+	bareRoutes, bareRules, err := routing.BuildDesired(bare)
+	if err == nil {
+		s.saveYielded(yieldedTo(routing.PlanTunnels(in), bareRoutes, bareRules, routes))
+	}
+	return routes, rules, in.GatewayV4, nil
 }
 
 // TunnelsActive reports whether a tunnel is running, or has routes recorded
