@@ -115,6 +115,14 @@ jobs:
           TAGS=""
           if [ "${{ runner.os }}" = "Linux" ]; then TAGS="-tags webkit2_41"; fi
           "$(go env GOPATH)/bin/wails" build $TAGS -trimpath -ldflags "-X main.version=ci-${{ github.sha }}"
+      # The build regenerates the Go↔JS bindings. Stale committed ones make every
+      # release binary built after it report a "-dirty" tree.
+      - name: Bindings are up to date
+        run: |
+          git diff --exit-code -- desktop/frontend/wailsjs/go || {
+            echo "::error::desktop/frontend/wailsjs is out of date — run 'cd desktop && wails generate module' and commit it"
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: riftroute-gui-${{ matrix.os }}
