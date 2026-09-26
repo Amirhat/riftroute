@@ -4,7 +4,10 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-09-26
+
+Tunnels: an OpenVPN split tunnel next to your main VPN (thanks @ssenerg for
+the first version).
 
 ### Added
 - **Tunnels: run an OpenVPN connection next to your main VPN.** Connecting a
@@ -30,7 +33,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   profile's `cipher` (e.g. AES-256-CBC) is still offered to the server, which
   openvpn 2.6+ otherwise stops doing, so the server hung up after the login.
   Files a profile names are read only from its own folder (a login file only
-  from right beside it). Works on macOS and Linux.
+  from right beside it). The addressing a server hands the tunnel is checked
+  too: a network wider than its own, one that overlaps your networks, or a
+  peer at your router, DNS server or connectivity check is refused. Tunnels
+  you connected come back after an automatic update restarts the daemon.
+  Works on macOS and Linux.
 - **openvpn comes with RiftRoute on macOS.** A static OpenVPN 2.6 build ships
   in the app, the release tarballs and the Homebrew formula, and installing
   the daemon puts it root-owned beside it — never Homebrew's openvpn, which
@@ -45,15 +52,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   self-test); rolling the update back puts the previous openvpn back — or
   keeps the one the update added, which every daemon can use.
 - **A missing openvpn is put back (macOS).** A daemon updated by 0.2.6's
-  updater, which knew only the daemon, has no openvpn: the daemon's update
-  check now installs the one the newest signed release ships — even with
-  updates off, or while the daemon itself is held back from that release.
-  The Tunnels page offers **Check for updates** for it.
+  updater, which knew only the daemon, has no openvpn: the next update check
+  installs the one the newest signed release ships (never a halted one) —
+  also while the daemon itself is held back from that release, and on
+  **Check for updates**, which the Tunnels page offers, even with updates
+  off.
 
 ### Changed
 - **The daemon gets 40 s to stop on macOS** (launchd's ExitTimeOut, up from
-  its default 20 s): on shutdown it takes every tunnel down and settles
-  pending route changes first, instead of being killed halfway.
+  its default 20 s, for daemons installed from this version on): on shutdown
+  it takes every tunnel down and settles pending route changes first, instead
+  of being killed halfway.
 
 ### Fixed
 - **Only one daemon runs per install.** The daemon locks its state before
