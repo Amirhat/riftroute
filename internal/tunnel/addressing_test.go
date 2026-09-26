@@ -35,7 +35,8 @@ func TestVetAddressing(t *testing.T) {
 			{Name: "utun9", Addrs: []string{"10.99.0.2/24"}},
 		},
 		protected: []netip.Addr{netip.MustParseAddr("192.168.1.1"), netip.MustParseAddr("10.255.255.1"), netip.MustParseAddr("1.1.1.1")},
-		servers:   []netip.Addr{netip.MustParseAddr("198.51.100.7")},
+		servers:   []netip.Addr{netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("10.77.0.1")},
+		ours:      pfxs("10.0.0.0/8", "1.0.0.0/8"),
 	}
 	for _, tc := range []struct {
 		name   string
@@ -65,6 +66,12 @@ func TestVetAddressing(t *testing.T) {
 		{"v6 wider than ULA /48", pfxs("fd00::2/16"), nil, "wider"},
 		{"global v6 wider than /64", pfxs("2000::2/3"), nil, "wider"},
 		{"loopback", pfxs("127.0.0.2/30"), nil, "usable"},
+		// Inside the user's own routes, a server-chosen peer still can't be
+		// a resolver, an anchor or the tunnel's own server.
+		{"DNS peer inside a listed route", pfxs("10.255.255.2/32"), onTun("10.255.255.1/32"), "10.255.255.1"},
+		{"anchor peer inside a listed route", pfxs("1.1.1.2/32"), onTun("1.1.1.1/32"), "1.1.1.1"},
+		{"own server as peer inside a listed route", pfxs("10.77.0.2/32"), onTun("10.77.0.1/32"), "10.77.0.1"},
+		{"a listed route itself", pfxs("10.99.0.2/24"), onTun("10.70.0.0/16"), ""},
 	} {
 		got := vetAddressing(tc.nets, tc.routes, env)
 		switch {

@@ -126,9 +126,20 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			if c, ok := taken[prefixKey(pfx)]; why == "" && ok {
 				why = c.reason(t.Name)
 			}
-			for _, a := range servers(t) {
-				if why == "" && pfx.Contains(a) && !held[a] {
-					why = fmt.Sprintf("contains the tunnel's own server %s — its connection would loop back into the tunnel", a)
+			// No tunnel may carry a tunnel's server that nothing holds off it
+			// (a pin, someone else's host route): its own would loop back into
+			// itself, another's would ride this one — two via-default tunnels
+			// each carrying the other's server both stall.
+			for _, o := range ts {
+				for _, a := range servers(o) {
+					if why != "" || !pfx.Contains(a) || held[a] {
+						continue
+					}
+					if o.Name == t.Name {
+						why = fmt.Sprintf("contains the tunnel's own server %s — its connection would loop back into the tunnel", a)
+					} else {
+						why = fmt.Sprintf("contains tunnel %s's server %s — that tunnel's connection would ride this one", o.Name, a)
+					}
 				}
 			}
 			if why != "" {

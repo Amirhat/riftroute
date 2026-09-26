@@ -253,3 +253,25 @@ func TestKernelKeyMatchesAGatewaysSpellings(t *testing.T) {
 		}
 	}
 }
+
+// Two via-default tunnels each listing the network behind the other's server
+// would carry each other's connections and both stall: neither route goes in.
+func TestTunnelsNeverCarryEachOthersServer(t *testing.T) {
+	in := testInput()
+	in.Tunnels = []TunnelInput{
+		{Name: "a", Iface: "utun8", Routes: []string{"10.0.0.0/16"}, Servers: []netip.Addr{netip.MustParseAddr("172.16.1.1")}},
+		{Name: "b", Iface: "utun9", Routes: []string{"172.16.0.0/16"}, Servers: []netip.Addr{netip.MustParseAddr("10.0.5.5")}},
+	}
+	tp := PlanTunnels(in)
+	for name, other := range map[string]string{"a": "b", "b": "a"} {
+		bs := tp.Blocked[name]
+		if len(bs) != 1 || !strings.Contains(bs[0].Reason, "tunnel "+other+"'s server") {
+			t.Errorf("%s: blocked = %+v", name, bs)
+		}
+	}
+	// A pinned server (via direct) is held off every tunnel: no conflict.
+	in.Tunnels[1].Bypass = in.Tunnels[1].Servers
+	if bs := PlanTunnels(in).Blocked["a"]; len(bs) != 0 {
+		t.Errorf("a pinned server still blocks: %+v", bs)
+	}
+}

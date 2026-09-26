@@ -62,7 +62,17 @@ func vetAddressing(nets []netip.Prefix, routes []domain.Route, env addressingEnv
 			continue // a zoned (fe80::%utun…) or odd entry: not addressable from here
 		}
 		dst = dst.Masked()
-		if plumbing(dst) || insideAny(dst, own) || insideAny(dst, env.ours) {
+		if plumbing(dst) || insideAny(dst, own) {
+			continue
+		}
+		// Inside the user's own routes it isn't stray — but the server may
+		// still have chosen it (a p2p peer): it must not hold a resolver, an
+		// anchor or the tunnel's own server, which the planner keeps out of
+		// the tunnel even where the user's route covers them.
+		if insideAny(dst, env.ours) {
+			if why := holdsProtected(dst, env); why != "" {
+				return fmt.Sprintf("the server's settings put a route to %s into the tunnel, which %s; refusing", dst, why)
+			}
 			continue
 		}
 		// net30/p2p: a host route to the peer beside a local address — in
@@ -94,15 +104,8 @@ func vetNetwork(n netip.Prefix, env addressingEnv) string {
 		a.Is6() && !isULA(a) && n.Bits() < minGlobalV6:
 		return "is wider than a tunnel's own network may be"
 	}
-	for _, p := range env.protected {
-		if n.Contains(p.Unmap()) {
-			return fmt.Sprintf("holds %s (your router, DNS server or connectivity check)", p)
-		}
-	}
-	for _, s := range env.servers {
-		if n.Contains(s.Unmap()) {
-			return fmt.Sprintf("holds the tunnel's own server %s", s)
-		}
+	if why := holdsProtected(n, env); why != "" {
+		return why
 	}
 	for _, ifc := range env.ifaces {
 		if ifc.Name == env.iface {
@@ -116,6 +119,21 @@ func vetNetwork(n netip.Prefix, env addressingEnv) string {
 			if o = o.Masked(); o.Overlaps(n) {
 				return fmt.Sprintf("overlaps %s on %s", o, ifc.Name)
 			}
+		}
+	}
+	return ""
+}
+
+// holdsProtected says which protected address or own server n holds, or "".
+func holdsProtected(n netip.Prefix, env addressingEnv) string {
+	for _, p := range env.protected {
+		if n.Contains(p.Unmap()) {
+			return fmt.Sprintf("holds %s (your router, DNS server or connectivity check)", p)
+		}
+	}
+	for _, s := range env.servers {
+		if n.Contains(s.Unmap()) {
+			return fmt.Sprintf("holds the tunnel's own server %s", s)
 		}
 	}
 	return ""
