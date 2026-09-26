@@ -219,6 +219,21 @@ func run() error {
 		}
 	}
 	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
+	// Tunnel state changes come in bursts (every openvpn STATE line) and
+	// arrive on a management reader, which must not wait for a full State
+	// build: coalesce them onto one broadcaster.
+	stateKick := make(chan struct{}, 1)
+	broadcastSoon := func() {
+		select {
+		case stateKick <- struct{}{}:
+		default:
+		}
+	}
+	go func() { // for the life of the process
+		for range stateKick {
+			srv.BroadcastState(context.Background())
+		}
+	}()
 	tunnels, err := tunnel.New(tunnel.Options{
 		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher:  launcher,
@@ -239,14 +254,11 @@ func run() error {
 			if rec == nil {
 				return errors.New("daemon still starting")
 			}
-			// A panic takes every tunnel down before it flushes: nothing is
-			// left to apply for them, and retrying would only race it.
-			if err := rec.ApplyTunnels(ctx); !errors.Is(err, safety.ErrPanicking) {
-				return err
-			}
-			return nil
+			// Refused during a panic: the applier retries once it's done,
+			// which also covers a tunnel connected while it ran.
+			return rec.ApplyTunnels(ctx)
 		},
-		OnChange: func() { srv.BroadcastState(context.Background()) },
+		OnChange: broadcastSoon,
 		Log:      logger,
 	})
 	if err != nil {
@@ -628,7 +640,11 @@ func run() error {
 	serveErr := srv.Serve(ctx, ln)
 
 	// Tunnels first: each withdraws its routes through the protocol on the way
-	// down, which ShutdownResolve then commits.
+	// down, which ShutdownResolve then commits. A restart the daemon does on
+	// its own (an update, a rollback) brings the connected ones back.
+	if restartCode.Load() != 0 {
+		tunnels.RememberForRestart()
+	}
 	tunnels.Shutdown()
 
 	// Graceful shutdown: resolve any in-flight transactions (commit auto-applied,

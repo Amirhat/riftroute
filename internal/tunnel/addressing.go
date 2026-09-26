@@ -36,6 +36,7 @@ type addressingEnv struct {
 	ifaces    []domain.Iface // every interface, the tunnel's included
 	protected []netip.Addr   // gateways, resolvers, watchdog anchors
 	servers   []netip.Addr   // the tunnel's own server addresses
+	ours      []netip.Prefix // the routes RiftRoute puts into the tunnel for the user
 }
 
 // vetAddressing checks the tunnel's networks and the routes the kernel put
@@ -61,7 +62,7 @@ func vetAddressing(nets []netip.Prefix, routes []domain.Route, env addressingEnv
 			continue // a zoned (fe80::%utun…) or odd entry: not addressable from here
 		}
 		dst = dst.Masked()
-		if plumbing(dst) || insideAny(dst, own) {
+		if plumbing(dst) || insideAny(dst, own) || insideAny(dst, env.ours) {
 			continue
 		}
 		// net30/p2p: a host route to the peer beside a local address — in

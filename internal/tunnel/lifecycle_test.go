@@ -353,3 +353,101 @@ func TestOurCommandLine(t *testing.T) {
 		}
 	}
 }
+
+// On a reconnect the tunnel's own routes are still on its (persisted)
+// interface, and macOS doesn't mark them as RiftRoute's: they aren't stray.
+func TestOwnRoutesOnTheTunnelAreNotStray(t *testing.T) {
+	h := newHarness(t)
+	h.m.o.Routes = func(context.Context) ([]domain.Route, error) {
+		return []domain.Route{
+			{DstCIDR: "192.168.70.0/24", Iface: "utun9", Family: domain.FamilyV4, Owner: domain.OwnerSystem},
+			{DstCIDR: "192.168.72.11/32", Iface: "utun9", Family: domain.FamilyV4, Owner: domain.OwnerSystem},
+		}, nil
+	}
+	if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+}
+
+// Tunnels up when the daemon restarts into an update come back after it;
+// ones the user disconnected don't.
+func TestTunnelsComeBackAfterAnUpdateRestart(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.m.Save(ctx, infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	other := infraSpec()
+	other.Name = "other"
+	if _, err := h.m.Save(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	h.m.RememberForRestart()
+	h.m.Shutdown()
+
+	m2, err := New(Options{Dir: h.dir, Launcher: h.fl, Ifaces: h.m.o.Ifaces, Resolve: h.m.o.Resolve,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m2.Shutdown)
+	m2.StartAuto()
+	waitState(t, m2, "infra", domain.TunnelConnected)
+	if st, _ := m2.Status("other"); st.State != domain.TunnelDisconnected {
+		t.Fatalf("a tunnel that wasn't up came up: %+v", st)
+	}
+	// Only once: a later plain start doesn't reconnect it again.
+	if _, err := os.Stat(filepath.Join(h.dir, resumeFile)); !os.IsNotExist(err) {
+		t.Fatal("the resume list outlived its start")
+	}
+}
+
+// A save racing a delete of the same tunnel is refused, not half-applied.
+func TestSaveDuringDeleteIsRefused(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.m.Save(ctx, infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	var saveErr error
+	var armed atomic.Bool
+	armed.Store(true)
+	h.m.o.OnChange = func() {
+		if armed.CompareAndSwap(true, false) {
+			_, saveErr = h.m.Save(ctx, infraSpec())
+		}
+	}
+	if err := h.m.Delete(ctx, "infra"); err != nil {
+		t.Fatal(err)
+	}
+	if saveErr == nil || !strings.Contains(saveErr.Error(), "being deleted") {
+		t.Fatalf("save during delete: %v", saveErr)
+	}
+	if _, ok := h.m.Status("infra"); ok {
+		t.Fatal("the tunnel survived its delete")
+	}
+}
+
+// A refused apply is retried until it goes through — never abandoned.
+func TestApplierKeepsRetrying(t *testing.T) {
+	defer func(a, b time.Duration) { applyRetryEvery, applyRetryMax = a, b }(applyRetryEvery, applyRetryMax)
+	applyRetryEvery, applyRetryMax = time.Millisecond, 5*time.Millisecond
+	var calls atomic.Int32
+	a := newApplier(func(context.Context) error {
+		if calls.Add(1) < 60 {
+			return errors.New("an interactive change is awaiting confirmation")
+		}
+		return nil
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer a.close()
+	a.request()
+	waitFor(t, "the apply to go through", func() bool { return calls.Load() >= 60 })
+}

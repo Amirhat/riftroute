@@ -28,10 +28,13 @@ type applier struct {
 	once sync.Once
 }
 
-// Retry pacing for a refused apply.
+// Retry pacing for a refused apply: every applyRetryEvery at first, backing
+// off to applyRetryMax. It never gives up — an interactive change awaiting
+// confirmation can hold the protocol for as long as its timeout — but a
+// settled transaction or a new request retries at once.
 var (
 	applyRetryEvery = 3 * time.Second
-	applyRetries    = 40
+	applyRetryMax   = 30 * time.Second
 	applyTimeout    = 30 * time.Second
 )
 
@@ -109,9 +112,9 @@ func (a *applier) loop() {
 			if failures == 1 {
 				a.log.Warn("tunnel routes not applied yet; retrying", "err", err)
 			}
-			if failures <= applyRetries {
-				retry = time.After(applyRetryEvery)
-			}
+			retry = time.After(min(applyRetryEvery*time.Duration(failures), applyRetryMax))
+		} else if failures > 1 {
+			a.log.Info("tunnel routes applied", "after", failures)
 		}
 	}
 }

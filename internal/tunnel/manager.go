@@ -110,6 +110,13 @@ type session struct {
 // to be withdrawn.
 var shutdownApplyWait = 5 * time.Second
 
+// How long a stop waits for openvpn to exit after SIGTERM, then after
+// SIGKILL. Shutdown stops every tunnel at once, and the whole stop — these,
+// shutdownApplyWait, resolving pending route changes — has to fit in the
+// service manager's stop timeout (launchd: ExitTimeOut, 20 s on installs
+// from before it was raised).
+var stopGrace, killGrace = 6 * time.Second, 3 * time.Second
+
 // Connection attempt limits.
 var (
 	// maxFailedAttempts: a tunnel that has never connected in this session
@@ -152,7 +159,11 @@ func New(o Options) (*Manager, error) {
 	// directory, so the next start still finds (and reaps) what this one ran.
 	if len(filepath.Join(o.Dir, strings.Repeat("x", 32)+".sock")) > 100 {
 		if m.runDir, err = shortRunDir(o.Dir); err != nil {
-			return nil, err
+			// Tunnels still run; only a crashed run's leftovers go unreaped.
+			o.Log.Warn("no stable run directory for tunnels; using a temporary one", "err", err)
+			if m.runDir, err = os.MkdirTemp("", "rr-tun-"); err != nil {
+				return nil, err
+			}
 		}
 	}
 	m.reapStale()
@@ -345,7 +356,11 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 
 	m.mu.Lock()
 	prev := m.defs[spec.Name]
+	deleting := m.rt[spec.Name] != nil && m.rt[spec.Name].deleting
 	m.mu.Unlock()
+	if deleting {
+		return domain.TunnelStatus{}, fmt.Errorf("tunnel %s is being deleted; try again", spec.Name)
+	}
 	d := &def{
 		Name: spec.Name, Type: spec.Type, Config: spec.Config, Username: spec.Username,
 		Password: spec.Password, Via: spec.Via, Routes: routes, AutoConnect: spec.AutoConnect,
@@ -463,6 +478,17 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 	m.mu.Unlock()
 	m.changed()
 	return nil
+}
+
+// routePrefix parses a normalized route (a CIDR, or an address for a host).
+func routePrefix(s string) (netip.Prefix, bool) {
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.Masked(), true
+	}
+	if a, err := netip.ParseAddr(s); err == nil {
+		return netip.PrefixFrom(a, a.BitLen()), true
+	}
+	return netip.Prefix{}, false
 }
 
 func normalizeRoutes(in []string) ([]string, []string) {
@@ -589,7 +615,7 @@ func (m *Manager) Disconnect(ctx context.Context, name string) error {
 	select {
 	case <-s.done:
 		return nil
-	case <-time.After(10 * time.Second):
+	case <-time.After(stopGrace):
 	case <-ctx.Done():
 	}
 	// openvpn didn't exit on SIGTERM: kill it.
@@ -600,7 +626,7 @@ func (m *Manager) Disconnect(ctx context.Context, name string) error {
 	select {
 	case <-s.done:
 		return nil
-	case <-time.After(5 * time.Second):
+	case <-time.After(killGrace):
 		return fmt.Errorf("tunnel %s did not stop", name)
 	}
 }
@@ -610,14 +636,16 @@ func (m *Manager) StartAuto() {
 	if m.isClosed() {
 		return
 	}
+	resume := m.takeResume()
 	m.mu.Lock()
 	var names []string
 	for n, d := range m.defs {
-		if d.AutoConnect {
+		if d.AutoConnect || resume[n] {
 			names = append(names, n)
 		}
 	}
 	m.mu.Unlock()
+	slices.Sort(names)
 	for _, n := range names {
 		if err := m.Connect(n); errors.Is(err, errShuttingDown) {
 			return
@@ -631,6 +659,49 @@ func (m *Manager) StartAuto() {
 			m.changed()
 		}
 	}
+}
+
+// resumeFile lists the tunnels that were up when the daemon restarted on its
+// own (into an update, or back out of one); the next start reconnects them
+// along with the auto-connect ones. It is not a definition (.json).
+const resumeFile = "resume.list"
+
+// RememberForRestart records the tunnels that are up, so the start after
+// this restart brings them back: an automatic update must not quietly drop a
+// connection the user made. Call it before Shutdown.
+func (m *Manager) RememberForRestart() {
+	m.mu.Lock()
+	var names []string
+	for n, r := range m.rt {
+		if r.sess != nil && !r.sess.stopping.Load() {
+			names = append(names, n)
+		}
+	}
+	m.mu.Unlock()
+	if len(names) == 0 {
+		return
+	}
+	slices.Sort(names)
+	if err := os.WriteFile(filepath.Join(m.o.Dir, resumeFile), []byte(strings.Join(names, "\n")+"\n"), 0o600); err != nil {
+		m.o.Log.Warn("can't remember the tunnels to reconnect after the restart", "err", err)
+	}
+}
+
+// takeResume reads and removes the list RememberForRestart left.
+func (m *Manager) takeResume() map[string]bool {
+	p := filepath.Join(m.o.Dir, resumeFile)
+	b, err := os.ReadFile(p)
+	_ = os.Remove(p)
+	if err != nil {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, n := range strings.Fields(string(b)) {
+		if ValidName(n) {
+			out[n] = true
+		}
+	}
+	return out
 }
 
 // errShuttingDown refuses a connect once Shutdown has begun: an openvpn
@@ -667,6 +738,11 @@ func (m *Manager) Shutdown() {
 
 // requestApply asks for the tunnels' routes to be applied, without waiting.
 func (m *Manager) requestApply() { m.ap.request() }
+
+// Kick re-applies the tunnels' routes: the daemon calls it when a pending
+// route transaction settles, so a tunnel apply it refused goes through at
+// once instead of at the next retry.
+func (m *Manager) Kick() { m.ap.request() }
 
 // applyAndWait asks for an apply and waits up to d for it to finish.
 func (m *Manager) applyAndWait(ctx context.Context, d time.Duration) error {
@@ -820,6 +896,11 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 				r.server = st.remoteIP
 				if st.remotePort != "" {
 					r.server += ":" + st.remotePort
+				}
+				// The address openvpn actually connected to is one of its
+				// servers, whatever DNS said when the session started.
+				if a, err := netip.ParseAddr(st.remoteIP); err == nil && !slices.Contains(r.servers, a.Unmap()) {
+					r.servers = append(r.servers, a.Unmap())
 				}
 				r.since = &now
 			})
@@ -1046,6 +1127,17 @@ func (m *Manager) vetAddressing(ctx context.Context, name, iface string, nets []
 	m.mu.Lock()
 	if r := m.rt[name]; r != nil {
 		env.servers = append(append(env.servers, r.servers...), r.bypass...)
+	}
+	// Its own routes: on a reconnect they're still on the (persisted)
+	// interface, and macOS doesn't tag them as RiftRoute's.
+	if d := m.defs[name]; d != nil {
+		var listed []netip.Prefix
+		for _, s := range d.Routes {
+			if p, ok := routePrefix(s); ok {
+				listed = append(listed, p)
+			}
+		}
+		env.ours = routing.Aggregate(listed)
 	}
 	m.mu.Unlock()
 	var routes []domain.Route
