@@ -107,7 +107,9 @@ User-Agent is just `riftroute`. The server keeps no access log.
   staging stops it; every staged file's hash is re-checked) → swap.
 - A release is **skipped** only when it is itself broken (its self-test runs
   and fails, its tarball lacks a proper `riftrouted` or has a malformed
-  `openvpn`, its openvpn doesn't run, its version doesn't match). A
+  `openvpn`, a binary in it is for another architecture — macOS says
+  EBADARCH, not ENOEXEC — its openvpn doesn't run, its version doesn't
+  match). A
   cancelled, interrupted or I/O-failed attempt is retried later.
 - **Idle gate:** the daemon takes its apply lock only if nothing is being
   applied, nothing awaits confirmation, and no change started in the last 10

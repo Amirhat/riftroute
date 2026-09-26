@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -297,8 +296,8 @@ func (u *Updater) selfTest(ctx context.Context, bin, version string) error {
 }
 
 // classifyRun: the binary ran and failed, or isn't an executable for this
-// machine (ENOEXEC: wrong architecture/format) → the release is broken.
-// Anything else — cancelled or timed out, out of memory or processes
+// machine (notExecutable: the wrong architecture or format) → the release is
+// broken. Anything else — cancelled or timed out, out of memory or processes
 // (EAGAIN, ENOMEM), a busy or unexecutable file system (ETXTBSY, EACCES), a
 // missing file — is this computer's moment, not the release's.
 func classifyRun(ctx context.Context, err error) error {
@@ -306,8 +305,13 @@ func classifyRun(ctx context.Context, err error) error {
 		return err
 	}
 	var ee *exec.ExitError
-	if errors.As(err, &ee) || errors.Is(err, syscall.ENOEXEC) {
+	if errors.As(err, &ee) {
 		return broken(err)
+	}
+	for _, errno := range notExecutable {
+		if errors.Is(err, errno) {
+			return broken(err)
+		}
 	}
 	return err
 }
