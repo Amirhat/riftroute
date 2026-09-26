@@ -168,6 +168,28 @@ f: rule=*.example.org keeps its shape; the profile set is empty; nft list table 
 	)
 }
 
+// Tunnel names and VPN servers: registered ones wherever they appear (server
+// addresses even in documentation ranges, which are otherwise kept), and an
+// unregistered tunnel — deleted since — by position.
+func TestTunnelNamesAndServers(t *testing.T) {
+	r := New()
+	r.Add(Tunnel, "acme-office")
+	r.Add(Server, "VPN-GW01", "198.51.100.7", "2001:db8:5::9")
+	in := `level=WARN msg="tunnel error" tunnel=acme-office err="can't reach vpn-gw01"
+level=DEBUG msg=openvpn tunnel=acme-office line="TCP connection established with [AF_INET]198.51.100.7:443"
+level=DEBUG msg=openvpn tunnel=acme-office line="UDPv6 link remote: [AF_INET6]2001:db8:5::9:1194"
+level=WARN msg="tunnel error" tunnel=old-deleted err="tunnel \"old-deleted\" is gone"
+tunnel routes not applied yet; retrying`
+	out := r.String(in)
+	mustNotContain(t, out, "acme-office", "vpn-gw01", "198.51.100.7", "2001:db8:5::9", "old-deleted")
+	mustContain(t, out,
+		`tunnel=<tunnel-1> err="can't reach <server-`,
+		"[AF_INET]<server-", "[AF_INET6]<server-",
+		`tunnel=<tunnel-2> err="tunnel \"<tunnel-2>\" is gone"`, // same name, same placeholder
+		"tunnel routes not applied yet",
+	)
+}
+
 func TestIPv6WithSurroundingPunctuation(t *testing.T) {
 	r := New()
 	out := r.String("add host 2a01:4f8::1: gateway x; route 2a01:4f8:c0c:1::2: file exists; peer 2a01:4f8::77. dst:2a01:4f8::99 tcp 2a01:4f8::2.443")

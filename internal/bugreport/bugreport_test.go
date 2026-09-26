@@ -106,6 +106,59 @@ func TestReportKeepsWhatDebuggingNeeds(t *testing.T) {
 	}
 }
 
+// Tunnels RiftRoute runs: their names, logins and servers reach the report
+// through doctor checks, openvpn's output and the log — never as themselves.
+func TestReportRedactsTunnels(t *testing.T) {
+	in := fixture()
+	in.State.Tunnels = []domain.TunnelStatus{{
+		Name: "acme-office", Username: "jdoe-vpn", State: domain.TunnelFailed,
+		Servers: []string{"vpn-gw01:1194/udp", "198.51.100.7:443/tcp", "2001:db8:5::9:1194/udp"},
+		Server:  "198.51.100.7:443",
+	}}
+	in.Doctor.Checks = append(in.Doctor.Checks,
+		domain.DoctorCheck{Name: "tunnel:acme-office", Status: domain.CheckFail, Detail: "openvpn exited: AUTH: user jdoe-vpn rejected by vpn-gw01"},
+		domain.DoctorCheck{Name: "tunnel:old-deleted", Status: domain.CheckPass, Detail: "disconnected"}, // State unavailable
+	)
+	in.Log += `
+time=2026-09-23T06:30:00.000+03:30 level=DEBUG msg=openvpn tunnel=acme-office line="TCP connection established with [AF_INET]198.51.100.7:443"
+time=2026-09-23T06:30:01.000+03:30 level=DEBUG msg=openvpn tunnel=acme-office line="UDPv6 link remote: [AF_INET6]2001:db8:5::9:1194"
+time=2026-09-23T06:30:02.000+03:30 level=WARN msg="tunnel error" tunnel=acme-office err="the server rejected jdoe-vpn"`
+	rep := Render(in)
+	for _, secret := range []string{"acme-office", "jdoe-vpn", "vpn-gw01", "198.51.100.7", "2001:db8:5::9", "old-deleted"} {
+		if strings.Contains(rep.Text, secret) {
+			t.Errorf("report leaks %q", secret)
+		}
+	}
+	for _, want := range []string{
+		"[fail] tunnel:<tunnel-1>: openvpn exited: AUTH: user <user-", // the check's shape survives
+		"[pass] tunnel:<tunnel-2>: disconnected",
+		"tunnel=<tunnel-1> line=\"TCP connection established with [AF_INET]<server-",
+	} {
+		if !strings.Contains(rep.Text, want) {
+			t.Errorf("report lacks %q", want)
+		}
+	}
+	if t.Failed() {
+		t.Log(rep.Text)
+	}
+}
+
+func TestServerHost(t *testing.T) {
+	for in, want := range map[string]string{
+		"vpn.example.net:1194/udp": "vpn.example.net",
+		"vpn-gw01:443/tcp":         "vpn-gw01",
+		"198.51.100.7:443":         "198.51.100.7",
+		"2001:db8:5::9:1194/udp":   "2001:db8:5::9",
+		"[2001:db8::1]:443":        "2001:db8::1",
+		"vpn.example.net":          "vpn.example.net",
+		"":                         "",
+	} {
+		if got := serverHost(in); got != want {
+			t.Errorf("serverHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestGenericIface(t *testing.T) {
 	for _, n := range []string{"en0", "utun4", "ipsec0", "wlp2s0", "enp0s31f6", "wg0", "lo0", "bridge100", "awdl0", "docker0", "tun0"} {
 		if !GenericIface(n) {

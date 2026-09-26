@@ -1,7 +1,8 @@
 // Package redact scrubs identifying data out of text a user may post publicly
 // (bug reports): IP and MAC addresses, e-mail addresses, domains, URLs,
-// profile/list/app/user names, host and interface names, home-directory
-// paths, and the timezone in timestamps (which alone can reveal a country).
+// profile/list/app/user/tunnel names, host, VPN server and interface names,
+// home-directory paths, and the timezone in timestamps (which alone can
+// reveal a country).
 // Each distinct value maps to a stable placeholder — <ip4-lan-1>, <domain-2>,
 // <profile-1> — so the report keeps its structure ("default via <ip4-lan-1>
 // dev en0" still reads as a route) without the value. It errs toward
@@ -38,7 +39,9 @@ const (
 	Host    Kind = "host"
 	Iface   Kind = "iface"
 	URL     Kind = "url"
-	Rule    Kind = "rule" // other rule values (ASN, country)
+	Rule    Kind = "rule"   // other rule values (ASN, country)
+	Tunnel  Kind = "tunnel" // a tunnel RiftRoute runs itself
+	Server  Kind = "server" // a VPN server's host name or address
 )
 
 // Redactor replaces sensitive values with stable placeholders. Safe for
@@ -127,7 +130,7 @@ var (
 	reURL       = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]{1,15}://[^\s"'<>]+`)
 	reEmail     = regexp.MustCompile(`(?i)[a-z0-9._%+-]+@[\p{L}\p{N}.-]+\.[\p{L}]{2,}`)
 	reTimestamp = regexp.MustCompile(`\b(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2}(?:\.\d+)?)(Z|[+-]\d{2}:?\d{2})`)
-	reKeyword   = regexp.MustCompile(`(?i)\b(profile|list|rule|iface|interface)(=|:?[ \t]+)`)
+	reKeyword   = regexp.MustCompile(`(?i)\b(profile|list|rule|iface|interface|tunnel)(=|:?[ \t]+)`)
 	reIPv6      = regexp.MustCompile(`(?i)[0-9a-f]*:[0-9a-f]*:[0-9a-f.:]*(?:%[0-9a-z]+)?(?:/\d{1,3})?`)
 	reMAC       = regexp.MustCompile(`(?i)\b[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}\b`)
 	reIPv4      = regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?`)
@@ -209,9 +212,9 @@ func (r *Redactor) replaceToken(s string, t token) string {
 }
 
 // keywordValues masks names by position, for names nobody registered: a
-// quoted value after profile/list/rule (`profile "Old Bank"`, and the same
-// inside an escaped log attribute, `profile \"Old Bank\"`), an unquoted
-// `profile=`/`list=` attribute, and a non-generic `iface=` name.
+// quoted value after profile/list/rule/tunnel (`profile "Old Bank"`, and the
+// same inside an escaped log attribute, `profile \"Old Bank\"`), an unquoted
+// `profile=`/`list=`/`tunnel=` attribute, and a non-generic `iface=` name.
 func (r *Redactor) keywordValues(s string) string {
 	var b strings.Builder
 	last := 0
@@ -237,7 +240,7 @@ func (r *Redactor) keywordValues(s string) string {
 			if !quoted {
 				continue // `rule=*.<domain-1>` keeps its useful shape
 			}
-		default: // profile, list
+		default: // profile, list, tunnel
 			if !quoted && !isEq {
 				continue // prose: "the profile set is…"
 			}
@@ -312,7 +315,7 @@ func GenericIface(name string) bool { return genericIface.MatchString(name) }
 
 // caseless kinds match regardless of case (DNS and host names are
 // case-insensitive; "Amirs-MacBook-Pro" and "amirs-macbook-pro.local" are one).
-func caseless(k Kind) bool { return k == Domain || k == Host }
+func caseless(k Kind) bool { return k == Domain || k == Host || k == Server }
 
 // asciiLower lowercases A–Z only, so byte offsets in the lowered copy line up
 // with the original (strings.ToLower can change the length of some runes).
