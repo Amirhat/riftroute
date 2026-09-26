@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Tunnels } from './Tunnels'
 import { api } from '../lib/api'
@@ -420,6 +420,23 @@ describe('Tunnels view — a definition the daemon can’t read', () => {
     expect(mockApi.deleteTunnel).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(mockApi.deleteTunnel).toHaveBeenCalledWith('office'))
+  })
+
+  it('opens the editor as a named dialog: focus inside, the via choice a group, Escape closes', async () => {
+    withTunnels([{ ...connected, state: 'disconnected' }])
+    renderView()
+    const edit = await screen.findByRole('button', { name: 'Edit infra' })
+    edit.focus()
+    fireEvent.click(edit)
+    const dialog = screen.getByRole('dialog', { name: 'Edit tunnel infra' })
+    expect(dialog).toHaveAttribute('aria-modal', 'true')
+    expect(dialog).toContainElement(document.activeElement as HTMLElement)
+    const via = screen.getByRole('group', { name: 'Reach the OpenVPN server' })
+    expect(via.tagName).toBe('FIELDSET')
+    expect(within(via).getAllByRole('radio')).toHaveLength(2)
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(edit).toHaveFocus()
   })
 
   it('edits a tunnel saved without a via as direct', async () => {

@@ -30,6 +30,17 @@ describe('ConfirmModal', () => {
     expect(onCancel).not.toHaveBeenCalled()
   })
 
+  it('is a dialog named by its title and described by its message, and Escape cancels', () => {
+    const onCancel = vi.fn()
+    render(<ConfirmModal open title="Delete tunnel infra" message="Disconnects it." onConfirm={() => {}} onCancel={onCancel} />)
+    const dialog = screen.getByRole('dialog', { name: 'Delete tunnel infra' })
+    expect(dialog).toHaveAccessibleDescription('Disconnects it.')
+    // The safe choice has focus, so Enter never confirms by accident.
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
   it('fires onCancel from the Cancel button', () => {
     const onCancel = vi.fn()
     render(<ConfirmModal open title="t" message="m" onConfirm={() => {}} onCancel={onCancel} />)

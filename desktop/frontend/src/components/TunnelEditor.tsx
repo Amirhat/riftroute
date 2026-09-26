@@ -58,6 +58,7 @@ export function TunnelEditor({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const engineHintId = useId()
+  const titleId = useId()
 
   const needsAuth = profile ? profile.needs_auth : !!existing?.needs_auth
   const servers = profile ? (profile.servers ?? []) : (existing?.servers ?? [])
@@ -133,10 +134,10 @@ export function TunnelEditor({
     !busy && name !== '' && !nameError && parsed.errors.length === 0 && (editing || (profile && !profile.error))
 
   return (
-    <Modal onBackdrop={busy ? undefined : onClose} className="max-w-xl">
+    <Modal onBackdrop={busy ? undefined : onClose} className="max-w-xl" labelledBy={titleId}>
       <div className="space-y-5 p-5">
         <div>
-          <h2 className="text-base font-semibold text-default">
+          <h2 id={titleId} className="text-base font-semibold text-default">
             {editing ? `Edit tunnel ${existing.name}` : 'Add an OpenVPN tunnel'}
           </h2>
           <p className="mt-1 text-sm text-muted">
@@ -242,8 +243,10 @@ export function TunnelEditor({
           <IssueList issues={issuesFor('routes')} />
         </div>
 
-        <div className="space-y-2">
-          <Label>Reach the OpenVPN server</Label>
+        <fieldset className="space-y-2">
+          <legend className="text-[11px] font-medium uppercase tracking-wider text-muted">
+            Reach the OpenVPN server
+          </legend>
           {(
             [
               ['direct', 'Directly', 'Around your main VPN, over your own network (like OpenVPN Connect does).'],
@@ -267,7 +270,7 @@ export function TunnelEditor({
               </span>
             </label>
           ))}
-        </div>
+        </fieldset>
 
         <div className="flex items-center justify-between">
           <div>
