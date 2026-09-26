@@ -460,8 +460,17 @@ export interface TunnelEngine {
   install?: TunnelInstall
 }
 
+// What fixes openvpn here (absent from daemons that predate it):
+// update — RiftRoute's own openvpn (macOS) is missing, and the daemon's
+//   update check installs the one the newest release ships;
+// reinstall — RiftRoute's own openvpn is there but unusable: reinstall the
+//   daemon from a current release;
+// install — the system's openvpn package (Linux): commands/note/url say how.
+export type TunnelInstallAction = 'update' | 'reinstall' | 'install'
+
 export interface TunnelInstall {
   system: string
+  action?: TunnelInstallAction
   commands?: string[] | null
   note?: string
   url?: string

@@ -14,12 +14,19 @@ export function Card({
   children,
   className = '',
   tone = 'default',
+  id,
 }: {
   children: ReactNode
   className?: string
   tone?: keyof typeof cardTones
+  // An anchor another view can scroll to (App's navigate).
+  id?: string
 }) {
-  return <div className={`rounded-xl border ${cardTones[tone]} ${className}`}>{children}</div>
+  return (
+    <div id={id} className={`rounded-xl border ${cardTones[tone]} ${className}`}>
+      {children}
+    </div>
+  )
 }
 
 export function CardHeader({ title, hint }: { title: string; hint?: ReactNode }) {

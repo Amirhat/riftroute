@@ -282,7 +282,7 @@ export function TunnelEditor({
         <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
           {!canConnect && (
             <p id={engineHintId} className="me-auto text-xs text-muted">
-              OpenVPN isn't installed yet — save now, connect once it is.
+              OpenVPN isn't usable yet — save now, connect once it is (see the Tunnels page).
             </p>
           )}
           <button
@@ -304,7 +304,7 @@ export function TunnelEditor({
             <button
               onClick={() => save(true)}
               disabled={!canSave || !canConnect}
-              title={canConnect ? undefined : 'Install OpenVPN first (see the Tunnels page)'}
+              title={canConnect ? undefined : "OpenVPN isn't usable yet (see the Tunnels page)"}
               aria-describedby={canConnect ? undefined : engineHintId}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >

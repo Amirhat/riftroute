@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, tunnelEngineKey, useStateQuery, useTunnelEngineQuery } from '../lib/queries'
@@ -7,7 +7,7 @@ import { copyText, openURL } from '../lib/system'
 import { Addr, Badge, Card, Dot, Label, Skeleton } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { TunnelEditor } from '../components/TunnelEditor'
-import type { TunnelEngine, TunnelState, TunnelStatus } from '../types'
+import type { TunnelEngine, TunnelState, TunnelStatus, UpdateStatus } from '../types'
 
 const stateTone: Record<TunnelState, 'success' | 'warning' | 'danger' | 'muted'> = {
   connected: 'success',
@@ -21,7 +21,7 @@ type EditorState = { mode: 'new' } | { mode: 'edit'; tunnel: TunnelStatus } | nu
 
 // Tunnels lists the VPN connections RiftRoute runs itself. Status comes from
 // the live state push, so connect progress shows without polling.
-export function Tunnels() {
+export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) {
   const qc = useQueryClient()
   const stateQ = useStateQuery()
   const [editor, setEditor] = useState<EditorState>(null)
@@ -34,6 +34,8 @@ export function Tunnels() {
   // connecting: openvpn's own error still explains what's wrong.
   const engine = engineQ.data
   const canConnect = !engine || engine.available
+  // The banner's heading: why Connect is off, for its accessible description.
+  const engineProblemId = useId()
 
   const tunnels = stateQ.data?.tunnels ?? []
   const refresh = () => {
@@ -77,7 +79,14 @@ export function Tunnels() {
       </div>
 
       {engine && !engine.available && (
-        <EngineBanner engine={engine} checking={engineQ.isFetching} onRecheck={() => engineQ.refetch()} />
+        <EngineBanner
+          engine={engine}
+          headingId={engineProblemId}
+          update={stateQ.data?.update}
+          checking={engineQ.isFetching}
+          onRecheck={() => engineQ.refetch()}
+          onOpenUpdates={onOpenUpdates}
+        />
       )}
       {error && (
         <Card tone="danger" className="p-3 text-sm text-danger">
@@ -106,8 +115,9 @@ export function Tunnels() {
             <p className="text-sm text-muted">
               Import an <span className="font-mono">.ovpn</span> profile to reach private networks (say{' '}
               <Addr>192.168.70.0/24</Addr>) while your main VPN carries everything else. RiftRoute runs the{' '}
-              <span className="font-mono">openvpn</span> program, which you install yourself — the OpenVPN Connect app
-              isn't needed.
+              <span className="font-mono">openvpn</span> program itself — the OpenVPN Connect app isn't needed. On
+              macOS it comes with RiftRoute; on Linux it's your distribution's{' '}
+              <span className="font-mono">openvpn</span> package.
             </p>
             <button
               onClick={() => setEditor({ mode: 'new' })}
@@ -124,6 +134,7 @@ export function Tunnels() {
             t={t}
             busy={busy === t.name}
             canConnect={canConnect}
+            whyNotId={engineProblemId}
             onConnect={() => run(t.name, () => api.connectTunnel(t.name))}
             onDisconnect={() => run(t.name, () => api.disconnectTunnel(t.name))}
             onEdit={() => setEditor({ mode: 'edit', tunnel: t })}
@@ -169,20 +180,42 @@ export function Tunnels() {
 }
 
 // EngineBanner explains, before the user tries to connect, that tunnels need
-// the openvpn program and how to install it on this system. RiftRoute never
-// installs it itself; the daemon notices it once it's there.
+// openvpn and how to get it on this system. On macOS that's the openvpn that
+// ships with RiftRoute: when it's missing, the daemon's update check installs
+// the one the newest release ships, so the banner offers that check; when
+// it's there but unusable, reinstalling the daemon puts it back. On Linux
+// it's the distribution's package, with the commands to install it. Either
+// way the daemon notices it once it's there.
 function EngineBanner({
   engine,
+  headingId,
+  update,
   checking,
   onRecheck,
+  onOpenUpdates,
 }: {
   engine: TunnelEngine
+  headingId: string
+  update?: UpdateStatus
   checking: boolean
   onRecheck: () => void
+  onOpenUpdates?: () => void
 }) {
+  const qc = useQueryClient()
   const inst = engine.install
   const cmds = inst?.commands ?? []
+  // Daemons from before the action field: macOS help was RiftRoute's own
+  // openvpn then too.
+  const action = inst?.action ?? (inst?.system === 'macOS' ? 'reinstall' : 'install')
+  // Only the installed service updates itself, so only it can fetch
+  // openvpn; until the state says, assume it is.
+  const canFetch = action === 'update' && (update ? update.self_updatable : true)
   const [copied, setCopied] = useState(false)
+  const [fetching, setFetching] = useState<{ busy: boolean; done: boolean; error: string | null }>({
+    busy: false,
+    done: false,
+    error: null,
+  })
   async function copy() {
     try {
       setCopied(await copyText(cmds.join('\n')))
@@ -190,49 +223,103 @@ function EngineBanner({
       setCopied(false)
     }
   }
+  // checkForUpdates runs the daemon's update check, which installs a missing
+  // openvpn before it answers, then looks at openvpn again.
+  async function checkForUpdates() {
+    setFetching({ busy: true, done: false, error: null })
+    let error: string | null = null
+    try {
+      error = (await api.checkUpdate()).error || null
+    } catch (e) {
+      error = friendly(e)
+    }
+    setFetching({ busy: false, done: true, error })
+    qc.invalidateQueries({ queryKey: stateKey })
+    onRecheck()
+  }
   return (
     <Card tone="warning" className="p-4">
       <div role="status" className="space-y-3 text-sm">
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
-            <h2 className="font-semibold text-warning">{engine.problem || "OpenVPN isn't usable"}</h2>
+            <h2 id={headingId} className="font-semibold text-warning">
+              {engine.problem || "OpenVPN isn't usable"}
+            </h2>
             <p className="text-muted">
               {engine.path ? (
                 <>
                   RiftRoute found <span className="ltr font-mono">{engine.path}</span> but can't use it.
                 </>
+              ) : action === 'install' ? (
+                <>
+                  Tunnels run on the <span className="font-mono">openvpn</span> program from your system's packages.
+                </>
               ) : (
                 <>
-                  Tunnels run on the <span className="font-mono">openvpn</span> program, which you install yourself.
+                  Tunnels run on the <span className="font-mono">openvpn</span> that ships with RiftRoute.
                 </>
               )}
               {cmds.length > 0 && inst?.system ? ` On ${inst.system}, run this in a terminal:` : ''}
             </p>
           </div>
-          <button
-            onClick={onRecheck}
-            disabled={checking}
-            className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-sm text-default hover:bg-elevated disabled:opacity-50"
-          >
-            {checking ? 'Checking…' : 'Check again'}
-          </button>
-        </div>
-        {cmds.length > 0 && (
-          <div className="flex items-start gap-2 rounded-lg border border-line bg-surface p-3">
-            <pre className="ltr min-w-0 flex-1 overflow-x-auto font-mono text-sm text-default">{cmds.join('\n')}</pre>
+          {canFetch ? (
             <button
-              onClick={copy}
-              className="shrink-0 rounded-md px-2 py-1 text-xs text-muted hover:bg-elevated hover:text-default"
+              onClick={checkForUpdates}
+              disabled={fetching.busy}
+              className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >
-              {copied ? 'Copied' : 'Copy'}
+              {fetching.busy ? 'Checking for updates…' : 'Check for updates'}
             </button>
-          </div>
-        )}
-        {inst?.note && <p className="text-muted">{inst.note}</p>}
-        {inst?.url && (
-          <button onClick={() => openURL(inst.url!)} className="ltr text-accent hover:underline">
-            {inst.url}
-          </button>
+          ) : (
+            <button
+              onClick={onRecheck}
+              disabled={checking}
+              className="shrink-0 rounded-lg border border-line px-3 py-1.5 text-sm text-default hover:bg-elevated disabled:opacity-50"
+            >
+              {checking ? 'Checking…' : 'Check again'}
+            </button>
+          )}
+        </div>
+        {action === 'update' ? (
+          <>
+            {canFetch ? (
+              <p className="text-muted">Checking for updates installs it from RiftRoute's newest signed release.</p>
+            ) : (
+              <p className="text-muted">
+                This daemon isn't running as the installed service, so it can't fetch it. Install the daemon from a
+                current release: Settings → Daemon service, or{' '}
+                <span className="ltr font-mono">sudo riftroute daemon install</span>.
+              </p>
+            )}
+            {canFetch && update?.mode === 'off' && (
+              <p className="text-muted">
+                Updates are off, so RiftRoute doesn't check on its own — checking here still works.{' '}
+                {onOpenUpdates && (
+                  <button onClick={onOpenUpdates} className="text-accent hover:underline">
+                    Settings → Updates
+                  </button>
+                )}
+              </p>
+            )}
+            {fetching.done &&
+              (fetching.error ? (
+                <p className="text-danger">The update check failed: {fetching.error}</p>
+              ) : (
+                <p className="text-muted">
+                  Checked. If openvpn is still missing in a minute, reinstall the daemon from a current release.
+                </p>
+              ))}
+            {inst?.url && (
+              <p className="text-muted">
+                Current release:{' '}
+                <button onClick={() => openURL(inst.url!)} className="ltr text-accent hover:underline">
+                  {inst.url}
+                </button>
+              </p>
+            )}
+          </>
+        ) : (
+          <InstallSteps inst={inst} copied={copied} onCopy={copy} />
         )}
         <p className="text-xs text-muted">RiftRoute picks it up as soon as it's installed — no restart needed.</p>
       </div>
@@ -240,10 +327,46 @@ function EngineBanner({
   )
 }
 
+// InstallSteps shows the daemon's own steps: the commands to run (with Copy),
+// its note and a link.
+function InstallSteps({
+  inst,
+  copied,
+  onCopy,
+}: {
+  inst?: TunnelEngine['install']
+  copied: boolean
+  onCopy: () => void
+}) {
+  const cmds = inst?.commands ?? []
+  return (
+    <>
+      {cmds.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-line bg-surface p-3">
+          <pre className="ltr min-w-0 flex-1 overflow-x-auto font-mono text-sm text-default">{cmds.join('\n')}</pre>
+          <button
+            onClick={onCopy}
+            className="shrink-0 rounded-md px-2 py-1 text-xs text-muted hover:bg-elevated hover:text-default"
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      )}
+      {inst?.note && <p className="text-muted">{inst.note}</p>}
+      {inst?.url && (
+        <button onClick={() => openURL(inst.url!)} className="ltr text-accent hover:underline">
+          {inst.url}
+        </button>
+      )}
+    </>
+  )
+}
+
 function TunnelCard({
   t,
   busy,
   canConnect,
+  whyNotId,
   onConnect,
   onDisconnect,
   onEdit,
@@ -252,6 +375,8 @@ function TunnelCard({
   t: TunnelStatus
   busy: boolean
   canConnect: boolean
+  // The element that says why Connect is off (the engine banner's heading).
+  whyNotId: string
   onConnect: () => void
   onDisconnect: () => void
   onEdit: () => void
@@ -307,7 +432,8 @@ function TunnelCard({
               onClick={onConnect}
               disabled={busy || !canConnect}
               aria-label={`${busy ? 'Connecting' : 'Connect'} ${t.name}`}
-              title={canConnect ? undefined : 'Install OpenVPN first (see above)'}
+              aria-describedby={canConnect ? undefined : whyNotId}
+              title={canConnect ? undefined : "OpenVPN isn't usable yet (see above)"}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >
               {busy ? 'Connecting…' : 'Connect'}

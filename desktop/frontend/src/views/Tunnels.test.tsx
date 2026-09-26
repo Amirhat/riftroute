@@ -3,7 +3,7 @@ import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Tunnels } from './Tunnels'
 import { api } from '../lib/api'
-import type { State, TunnelProfileFile, TunnelStatus } from '../types'
+import type { State, TunnelProfileFile, TunnelStatus, UpdateStatus } from '../types'
 
 vi.mock('../lib/api', () => ({
   api: {
@@ -14,6 +14,7 @@ vi.mock('../lib/api', () => ({
     saveTunnel: vi.fn(),
     openTunnelProfile: vi.fn(),
     tunnelEngine: vi.fn(),
+    checkUpdate: vi.fn(),
   },
 }))
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>
@@ -54,11 +55,11 @@ function withTunnels(tunnels: TunnelStatus[]) {
   mockApi.state.mockResolvedValue({ tunnels } as unknown as State)
 }
 
-function renderView() {
+function renderView(onOpenUpdates?: () => void) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <Tunnels />
+      <Tunnels onOpenUpdates={onOpenUpdates} />
     </QueryClientProvider>,
   )
 }
@@ -335,7 +336,11 @@ describe('Tunnels view — routes left out', () => {
     expect(screen.getByText('sudo apt install openvpn')).toBeInTheDocument()
     const connect = screen.getByRole('button', { name: 'Connect infra' })
     expect(connect).toBeDisabled()
-    expect(connect).toHaveAttribute('title', 'Install OpenVPN first (see above)')
+    expect(connect).toHaveAttribute('title', "OpenVPN isn't usable yet (see above)")
+    // Why it's off is in its accessible description too, not only a tooltip.
+    expect(connect).toHaveAccessibleDescription("OpenVPN isn't installed")
+    expect(screen.getByText(/from your system's packages/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check for updates' })).not.toBeInTheDocument()
     expect(screen.getByText('disconnected')).toBeInTheDocument() // state in words, not just a color
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
@@ -361,13 +366,126 @@ describe('Tunnels view — routes left out', () => {
 
     const saveConnect = screen.getByRole('button', { name: 'Save & connect' })
     expect(saveConnect).toBeDisabled()
-    expect(saveConnect).toHaveAttribute('title', 'Install OpenVPN first (see the Tunnels page)')
-    expect(saveConnect).toHaveAccessibleDescription(/OpenVPN isn't installed yet/)
+    expect(saveConnect).toHaveAttribute('title', "OpenVPN isn't usable yet (see the Tunnels page)")
+    expect(saveConnect).toHaveAccessibleDescription(/OpenVPN isn't usable yet/)
     fireEvent.click(saveConnect)
     expect(mockApi.saveTunnel).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
     expect(mockApi.connectTunnel).not.toHaveBeenCalled()
+  })
+})
+
+// On macOS openvpn ships with RiftRoute: a missing one comes back with the
+// daemon's update check (its repair), which the page offers as the fix.
+describe('Tunnels view — macOS openvpn', () => {
+  const macMissing = {
+    available: false,
+    problem: "OpenVPN isn't installed",
+    install: {
+      system: 'macOS',
+      action: 'update',
+      note: 'Tunnels use the openvpn that ships with RiftRoute. Checking for updates installs it: `riftroute update check`…',
+      url: 'https://github.com/Amirhat/riftroute/releases/latest',
+    },
+  }
+  const disconnected: TunnelStatus = { ...connected, state: 'disconnected', iface: undefined, since: undefined }
+  const update = (over: Partial<UpdateStatus> = {}): UpdateStatus => ({
+    mode: 'auto',
+    current: '0.3.0',
+    state: 'idle',
+    can_roll_back: false,
+    self_updatable: true,
+    ...over,
+  })
+  function withMac(u: UpdateStatus | undefined) {
+    mockApi.state.mockResolvedValue({ tunnels: [disconnected], update: u } as unknown as State)
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockApi.tunnelEngine.mockResolvedValue(macMissing)
+  })
+
+  it('offers Check for updates, and frees Connect once the check brought openvpn', async () => {
+    withMac(update())
+    mockApi.checkUpdate.mockResolvedValue(update({ last_check: new Date().toISOString(), action: 'none' }))
+    renderView()
+    expect(await screen.findByText("OpenVPN isn't installed")).toBeInTheDocument()
+    expect(screen.getByText(/that ships with RiftRoute\./)).toBeInTheDocument()
+    expect(screen.getByText(/installs it from RiftRoute's newest signed release/)).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/install(s)? (it )?yourself/)
+    expect(screen.queryByText(/Updates are off/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect infra' })).toBeDisabled()
+
+    // The daemon's check installs openvpn before it answers.
+    mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/Library/PrivilegedHelperTools/riftroute-openvpn' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Check for updates' }))
+    await waitFor(() => expect(mockApi.checkUpdate).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.queryByText("OpenVPN isn't installed")).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'Connect infra' })).toBeEnabled()
+  })
+
+  it('says when updates are off, links to Settings → Updates, and still checks', async () => {
+    withMac(update({ mode: 'off' }))
+    mockApi.checkUpdate.mockResolvedValue(update({ mode: 'off' }))
+    const onOpenUpdates = vi.fn()
+    renderView(onOpenUpdates)
+    expect(await screen.findByText(/Updates are off, so RiftRoute doesn't check on its own/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings → Updates' }))
+    expect(onOpenUpdates).toHaveBeenCalledOnce()
+
+    // Still missing after the check: say what's left to do.
+    fireEvent.click(screen.getByRole('button', { name: 'Check for updates' }))
+    expect(
+      await screen.findByText(/If openvpn is still missing in a minute, reinstall the daemon from a current release/),
+    ).toBeInTheDocument()
+  })
+
+  it('shows why the check failed', async () => {
+    withMac(update())
+    mockApi.checkUpdate.mockResolvedValue(update({ state: 'error', error: 'no route to host' }))
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Check for updates' }))
+    expect(await screen.findByText('The update check failed: no route to host')).toHaveClass('text-danger')
+  })
+
+  it('asks for the installed daemon where the check can’t fetch openvpn', async () => {
+    withMac(update({ self_updatable: false }))
+    renderView()
+    expect(await screen.findByText(/isn't running as the installed service/)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Check for updates' })).not.toBeInTheDocument())
+    expect(screen.getByText('sudo riftroute daemon install')).toHaveClass('ltr', 'font-mono')
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+  })
+
+  it('shows the reinstall steps for an openvpn that is there but unusable', async () => {
+    withMac(update())
+    mockApi.tunnelEngine.mockResolvedValue({
+      available: false,
+      path: '/Library/PrivilegedHelperTools/riftroute-openvpn',
+      problem: "/Library/PrivilegedHelperTools/riftroute-openvpn doesn't run: dyld: Library not loaded",
+      install: {
+        system: 'macOS',
+        action: 'reinstall',
+        note: 'Reinstall the daemon from a current release to put back the openvpn that ships with RiftRoute.',
+        url: 'https://github.com/Amirhat/riftroute/releases/latest',
+      },
+    })
+    renderView()
+    expect(await screen.findByText(/but can't use it/)).toBeInTheDocument()
+    expect(screen.getByText(/Reinstall the daemon from a current release/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Check for updates' })).not.toBeInTheDocument()
+  })
+
+  it('never tells macOS users to install openvpn themselves when there are no tunnels', async () => {
+    mockApi.state.mockResolvedValue({ tunnels: [], update: update() } as unknown as State)
+    mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/usr/sbin/openvpn' })
+    renderView()
+    expect(await screen.findByText('No tunnels yet')).toBeInTheDocument()
+    expect(document.body).not.toHaveTextContent(/yourself/)
+    expect(screen.getByText(/On\s+macOS it comes with RiftRoute/)).toBeInTheDocument()
   })
 })
