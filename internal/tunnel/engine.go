@@ -46,26 +46,52 @@ var reVersion = regexp.MustCompile(`OpenVPN (\d+)\.(\d+)(?:\.\d+)?(?:_[A-Za-z0-9
 // supportedOS lists where the daemon runs tunnels (where RiftRoute runs).
 func supportedOS(goos string) bool { return goos == "darwin" || goos == "linux" }
 
-// versionCache remembers the version of the binary at a path, keyed by the
-// file's identity, so the engine can be reported on every page load without
-// running openvpn each time.
+// failedProbeFor is how long a failed version probe is remembered for the
+// same binary: long enough that a page polling GET /tunnels/engine doesn't
+// start a process per request, short enough that a fix outside the binary
+// (a missing library put back) is noticed soon. A changed binary is probed
+// again straight away.
+const failedProbeFor = 30 * time.Second
+
+// versionCache remembers the result of probing the binary at a path, keyed
+// by the file's identity (path, size, mtime, inode), so the engine can be
+// reported on every page load without running openvpn each time.
 type versionCache struct {
 	mu  sync.Mutex
 	key string
 	ver string
+	err error     // a failed probe: remembered until at+failedProbeFor
+	at  time.Time // when err was recorded
+	now func() time.Time
 }
 
 func (c *versionCache) version(bin string, fi os.FileInfo) (string, error) {
-	key := fmt.Sprintf("%s|%d|%d", bin, fi.Size(), fi.ModTime().UnixNano())
+	key := fmt.Sprintf("%s|%d|%d|%d", bin, fi.Size(), fi.ModTime().UnixNano(), fileIno(fi))
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	// Held across the probe: concurrent callers wait for its answer rather
+	// than starting their own.
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.key == key {
-		return c.ver, nil
+	if c.key == key && (c.err == nil || now().Sub(c.at) < failedProbeFor) {
+		return c.ver, c.err
 	}
+	ver, err := probeVersion(bin)
+	c.key, c.ver, c.err, c.at = key, ver, err, now()
+	return ver, err
+}
+
+// probeVersion runs `bin --version` as nobody, with openvpn's own
+// environment. Anything short of a version (or a clean run that didn't print
+// one) means tunnels aren't available: a binary root can't even check is not
+// one to run as root.
+func probeVersion(bin string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	cmd.Env = openvpnEnv(runtime.GOOS)
 	cmd.Dir = "/"
 	cmd.WaitDelay = 2 * time.Second  // a child holding stdout open can't hang us
 	unprivileged(cmd)                // reading a version needs no root
@@ -74,15 +100,15 @@ func (c *versionCache) version(bin string, fi os.FileInfo) (string, error) {
 	var exit *exec.ExitError
 	switch {
 	case ver != "":
+		return ver, nil
 	case ctx.Err() != nil:
 		return "", fmt.Errorf("%s --version didn't finish", bin)
 	case errors.As(err, &exit): // it ran and failed: broken (a missing library, …)
 		return "", fmt.Errorf("%s doesn't run: %s", bin, firstLine(out, err))
-	case err != nil: // couldn't be started as nobody: unknown, not broken
-		return "", nil
+	case err != nil: // it couldn't even be started (as nobody)
+		return "", fmt.Errorf("%s couldn't be checked: %v", bin, err)
 	}
-	c.key, c.ver = key, ver // only a successful probe is remembered
-	return ver, nil
+	return "", nil // it ran cleanly without saying: openvpn will say what it can't do
 }
 
 func firstLine(out []byte, err error) string {
@@ -117,23 +143,15 @@ func tooOld(ver string) bool {
 type hostInfo struct {
 	goos      string
 	osRelease map[string]string // /etc/os-release on Linux
-	brew      bool              // Homebrew is installed (macOS)
 }
 
 func readHost() hostInfo {
 	h := hostInfo{goos: runtime.GOOS}
-	switch h.goos {
-	case "linux":
+	if h.goos == "linux" {
 		for _, p := range []string{"/etc/os-release", "/usr/lib/os-release"} {
 			if data, err := os.ReadFile(p); err == nil {
 				h.osRelease = parseOSRelease(data)
 				break
-			}
-		}
-	case "darwin":
-		for _, p := range []string{"/opt/homebrew/bin/brew", "/usr/local/bin/brew"} {
-			if _, err := os.Stat(p); err == nil {
-				h.brew = true
 			}
 		}
 	}
@@ -165,12 +183,14 @@ func detectEngine(h hostInfo, find func() (string, os.FileInfo, error), versionO
 		return domain.TunnelEngine{Problem: "tunnels aren't supported on " + h.goos}
 	}
 	bin, fi, err := find()
+	var unsafe *unsafeError
 	switch {
 	case errors.Is(err, errNotFound):
 		return domain.TunnelEngine{Problem: "OpenVPN isn't installed", Install: installHelp(h)}
-	case err != nil: // present but unsafe to run as root
-		return domain.TunnelEngine{Path: bin, Problem: err.Error(), Install: repairHelp(h, bin,
-			"Other users could have changed it, so reinstall it rather than just fixing the permissions.")}
+	case errors.As(err, &unsafe): // present, but others could have changed it
+		return domain.TunnelEngine{Path: bin, Problem: err.Error(), Install: unsafeHelp(h, unsafe)}
+	case err != nil: // present, but it couldn't be checked
+		return domain.TunnelEngine{Path: bin, Problem: err.Error(), Install: repairHelp(h, bin, "")}
 	}
 	e := domain.TunnelEngine{Path: bin}
 	if e.Version, err = versionOf(bin, fi); err != nil {
@@ -186,9 +206,14 @@ func detectEngine(h hostInfo, find func() (string, os.FileInfo, error), versionO
 	return e
 }
 
-// connectNote is appended wherever the OpenVPN Connect app might be mistaken
-// for what RiftRoute needs.
-const connectNote = "The OpenVPN Connect app doesn't include the openvpn program RiftRoute runs."
+// macReinstall is the one fix on macOS, whatever is wrong with openvpn: the
+// daemon runs only the copy that ships with RiftRoute, which installing the
+// daemon puts in place.
+const macReinstall = "Tunnels need the openvpn that ships with RiftRoute — reinstall the daemon from a release " +
+	"that includes it (riftroute daemon install / the app's Install button)."
+
+// releasesURL is where a release that includes openvpn comes from.
+const releasesURL = "https://github.com/Amirhat/riftroute/releases/latest"
 
 // linuxInstall maps os-release IDs to install steps. IDs are matched in
 // os-release order (ID, then each ID_LIKE), so a derivative falls back to
@@ -232,9 +257,6 @@ func linuxEntry(h hostInfo) (int, bool) {
 
 var genericLinuxNote = fmt.Sprintf("Install the openvpn package (%d.%d or newer) with your distribution's package manager.", minMajor, minMinor)
 
-// isHomebrew reports a binary Homebrew installed (it lives in the Cellar).
-func isHomebrew(bin string) bool { return strings.Contains(bin, "/Cellar/") }
-
 func systemName(h hostInfo) string {
 	switch h.goos {
 	case "darwin":
@@ -255,12 +277,7 @@ func installHelp(h hostInfo) *domain.TunnelInstall {
 	in := &domain.TunnelInstall{System: systemName(h)}
 	switch h.goos {
 	case "darwin":
-		in.Commands = []string{"brew install openvpn"}
-		in.Note = connectNote
-		if !h.brew {
-			in.Note = "Needs Homebrew — install it from brew.sh first. " + connectNote
-			in.URL = "https://brew.sh"
-		}
+		in.Note, in.URL = macReinstall, releasesURL
 	case "linux":
 		if i, ok := linuxEntry(h); ok && len(linuxInstall[i].cmds) > 0 {
 			d := linuxInstall[i]
@@ -277,13 +294,7 @@ func installHelp(h hostInfo) *domain.TunnelInstall {
 func upgradeHelp(h hostInfo, bin string) *domain.TunnelInstall {
 	in := &domain.TunnelInstall{System: systemName(h)}
 	if h.goos == "darwin" {
-		if isHomebrew(bin) {
-			in.Commands = []string{"brew upgrade openvpn"}
-			return in
-		}
-		// Homebrew's paths are searched first, so installing it there wins.
-		in = installHelp(h)
-		in.Note = strings.TrimSpace(fmt.Sprintf("RiftRoute uses Homebrew's openvpn ahead of %s. %s", bin, in.Note))
+		in.Note, in.URL = macReinstall, releasesURL
 		return in
 	}
 	in.Note = fmt.Sprintf("This system's openvpn package is older than %d.%d: upgrade the system, or install a newer "+
@@ -292,13 +303,31 @@ func upgradeHelp(h hostInfo, bin string) *domain.TunnelInstall {
 	return in
 }
 
+// unsafeHelp is how to fix an openvpn that someone other than root could have
+// changed: reinstall it, don't just fix the permissions — it may have been
+// replaced already.
+func unsafeHelp(h hostInfo, u *unsafeError) *domain.TunnelInstall {
+	const replaced = "Other users could have changed it, so reinstall it rather than just fixing the permissions."
+	if h.goos == "linux" && u.Path != u.Bin {
+		// A package reinstall doesn't fix the folder.
+		in := repairHelp(h, u.Bin, "")
+		in.Note = strings.TrimSpace(fmt.Sprintf("Make %s owned by root and writable only by root, then reinstall openvpn: "+
+			"other users could have replaced it. %s", u.Path, in.Note))
+		return in
+	}
+	if h.goos == "linux" && strings.Contains(u.Why, "owned") {
+		return repairHelp(h, u.Bin, "openvpn must belong to root: reinstall the package so it does. "+replaced)
+	}
+	return repairHelp(h, u.Bin, replaced)
+}
+
 // repairHelp is how to replace a broken or tampered openvpn at bin.
 func repairHelp(h hostInfo, bin, why string) *domain.TunnelInstall {
 	in := &domain.TunnelInstall{System: systemName(h), Note: why}
-	switch {
-	case h.goos == "darwin" && isHomebrew(bin):
-		in.Commands = []string{"brew reinstall openvpn"}
-	case h.goos == "linux":
+	switch h.goos {
+	case "darwin":
+		in.Note, in.URL = strings.TrimSpace(why+" "+macReinstall), releasesURL
+	case "linux":
 		if i, ok := linuxEntry(h); ok && linuxInstall[i].reinstall != "" {
 			in.Commands = []string{linuxInstall[i].reinstall}
 			break
