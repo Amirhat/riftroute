@@ -51,8 +51,11 @@ var (
 // GuardEnv is what BootGuard needs. It runs before the database is opened,
 // so it's free to replace it.
 type GuardEnv struct {
-	Current  string
-	Binary   string
+	Current string
+	Binary  string
+	// OpenVPN is the installed openvpn beside the daemon (Env.OpenVPN): a
+	// rollback restores it together with the daemon.
+	OpenVPN  string
 	StateDir string
 	DBPath   string
 	// DBVersion reads a database file's schema version (PRAGMA user_version).
@@ -119,8 +122,13 @@ func BootGuard(env GuardEnv) (*Guard, error) {
 		return rollbackOrCarryOn(env, m, "you")
 	case env.Current != m.To:
 		// Not the new binary. Boots == 0: the swap never finished (a crash
-		// between the marker and the rename) — nothing happened, try again
-		// later. Otherwise the rollback already happened: record it once.
+		// between the marker and the daemon's rename) — the daemon wasn't
+		// replaced, so the openvpn beside it goes back too, and it's as if
+		// nothing happened; try again later. Otherwise the rollback already
+		// happened: record it once.
+		if m.Boots == 0 {
+			restoreOpenVPNFor(env)
+		}
 		if env.Current == m.From && m.Boots > 0 {
 			recordRolledBack(env.StateDir, m.To, "health")
 		}
@@ -203,6 +211,10 @@ func rollback(env GuardEnv, m marker, by string) error {
 			env.Log.Warn("restored the database from before the update (the previous version can't read the new one)")
 		}
 	}
+	// openvpn first: the daemon's rename below is the commit point — until
+	// it happens, every start runs this rollback again, and restoring
+	// openvpn twice changes nothing.
+	restoreOpenVPNFor(env)
 	if err := copyFileAtomic(prev, env.Binary, 0o755); err != nil {
 		return fmt.Errorf("restore binary: %w", err)
 	}
@@ -217,6 +229,25 @@ func rollback(env GuardEnv, m marker, by string) error {
 	recordRolledBack(env.StateDir, m.To, by)
 	env.Log.Warn("rolled back", "from", m.To, "by", by)
 	return nil
+}
+
+// restoreOpenVPNFor puts back the openvpn the last update replaced (or
+// removes the one it added). A failure is logged, not fatal: the daemon
+// matters more, and every openvpn RiftRoute ships runs every daemon's tunnels.
+func restoreOpenVPNFor(env GuardEnv) {
+	if env.OpenVPN == "" {
+		return
+	}
+	ps, err := loadPersisted(env.StateDir)
+	if err != nil || ps.OpenVPNSwap == "" {
+		return
+	}
+	if err := restoreOpenVPN(env.OpenVPN, ps.OpenVPNSwap); err != nil {
+		env.Log.Error("rollback: putting the previous openvpn back failed", "err", err)
+		return
+	}
+	_, _ = updateState(env.StateDir, func(ps *persisted) { ps.OpenVPNSwap = "" })
+	env.Log.Warn("rolled back openvpn with the daemon", "was", ps.OpenVPNSwap)
 }
 
 func recordRolledBack(dir, version, by string) {

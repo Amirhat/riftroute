@@ -24,6 +24,10 @@ type persisted struct {
 	RollbackError  string    `json:"rollback_error,omitempty"`
 	InstalledAt    time.Time `json:"installed_at,omitzero"`
 	LastCheck      time.Time `json:"last_check,omitzero"`
+	// OpenVPNSwap is what the last update did to the openvpn beside the
+	// daemon, for a rollback to undo: openvpnReplaced, openvpnAdded, or ""
+	// (not touched).
+	OpenVPNSwap string `json:"openvpn_swap,omitempty"`
 	// LastAdvice is the update server's last word on the newest release it
 	// served; a GitHub copy of that release obeys it too.
 	LastAdvice struct {
@@ -41,6 +45,37 @@ func stagingDir(dir string) string  { return filepath.Join(dir, "update-staging"
 func backupPath(dir string) string  { return filepath.Join(dir, "update-backup.db") }
 func prevBinary(bin string) string  { return bin + ".prev" }
 func pendingPath(dir string) string { return filepath.Join(dir, "update-pending.json") }
+
+// What an update did to the installed openvpn (persisted.OpenVPNSwap).
+const (
+	openvpnReplaced = "replaced" // the previous one is kept as .prev
+	openvpnAdded    = "added"    // there was none before
+)
+
+// restoreOpenVPN undoes openvpn's side of the last swap (see keepOpenVPN).
+// Running it again after it succeeded (a crash before the daemon's own
+// restore) changes nothing.
+func restoreOpenVPN(path, how string) error {
+	if path == "" {
+		return nil
+	}
+	switch how {
+	case openvpnReplaced:
+		prev := prevBinary(path)
+		if !fileExists(prev) {
+			return nil // already restored, or cleared by a manual install
+		}
+		if err := copyFileAtomic(prev, path, 0o755); err != nil {
+			return err
+		}
+		_ = os.Remove(prev)
+	case openvpnAdded:
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
 
 // loadPersisted reads the state (creating it, with a fresh rollout bucket, if
 // it's missing or unreadable).
