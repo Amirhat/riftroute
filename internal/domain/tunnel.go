@@ -12,6 +12,11 @@ type TunnelType string
 // system `openvpn` binary with every route/DNS side effect removed.
 const TunnelOpenVPN TunnelType = "openvpn"
 
+// TunnelWireGuard is a WireGuard client connection, run inside the daemon
+// (wireguard-go) from a wg-quick configuration; its AllowedIPs never become
+// routes, and its DNS and hooks are ignored.
+const TunnelWireGuard TunnelType = "wireguard"
+
 // TunnelVia is how a managed tunnel reaches its own server.
 type TunnelVia string
 

@@ -45,7 +45,9 @@ type Options struct {
 	Apply func(ctx context.Context) error
 	// OnChange is called after a status change (the daemon broadcasts state).
 	OnChange func()
-	Log      *slog.Logger
+	// WireGuard makes WireGuard's tun devices; nil is this OS's own.
+	WireGuard WGSystem
+	Log       *slog.Logger
 }
 
 // Manager runs the daemon's tunnels: it stores their definitions, runs one
@@ -149,7 +151,10 @@ func New(o Options) (*Manager, error) {
 		defs: map[string]*def{}, parsed: map[string]*parsed{}, perrs: map[string]error{},
 		rt: map[string]*live{}, broken: map[string]error{}, closed: make(chan struct{}),
 	}
-	m.drivers = map[domain.TunnelType]driver{domain.TunnelOpenVPN: ovpnDriver{o: &m.o}}
+	m.drivers = map[domain.TunnelType]driver{
+		domain.TunnelOpenVPN:   ovpnDriver{o: &m.o},
+		domain.TunnelWireGuard: wgDriver{o: &m.o},
+	}
 	m.ap = newApplier(func(ctx context.Context) error {
 		if m.o.Apply == nil {
 			return nil
@@ -374,6 +379,9 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if strings.ContainsAny(spec.Username+spec.Password, "\r\n\x00") {
 		bad("username", "username and password can't contain line breaks")
 	}
+	if spec.Type == domain.TunnelWireGuard && (spec.Username != "" || spec.Password != "") {
+		bad("username", "a WireGuard tunnel has no username or password; its keys are in the configuration")
+	}
 
 	m.mu.Lock()
 	prev := m.defs[spec.Name]
@@ -388,7 +396,7 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		UpdatedAt: time.Now(),
 	}
 	keptPassword := false
-	if prev != nil {
+	if prev != nil && prev.Type == d.Type {
 		if d.Config == "" {
 			d.Config = prev.Config
 		}
@@ -400,7 +408,11 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		}
 	}
 	if strings.TrimSpace(d.Config) == "" {
-		bad("config", "a configuration is required (an OpenVPN profile, .ovpn)")
+		if d.Type == domain.TunnelWireGuard {
+			bad("config", "a WireGuard configuration (.conf) is required")
+		} else {
+			bad("config", "an OpenVPN profile (.ovpn) is required")
+		}
 	} else if m.drivers[d.Type] == nil {
 		// reported above
 	} else if p, err := m.parse(d.Type, d.Config); err != nil {
