@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -245,5 +246,41 @@ func TestTunnelPasswordIsNeverAFlagValue(t *testing.T) {
 				t.Errorf("%s --%s takes a %s value", name, f.Name, f.Value.Type())
 			}
 		})
+	}
+}
+
+// A wg-quick file imports as a WireGuard tunnel: its DNS is reported as
+// ignored, its AllowedIPs never become routes, and a login is refused.
+// Its profile can only be replaced by another WireGuard configuration.
+func TestTunnelAddWireGuard(t *testing.T) {
+	sock := tunnelDaemon(t)
+	k := func(b byte) string { return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{b}, 32)) }
+	conf := filepath.Join(t.TempDir(), "lab-wg0.conf")
+	text := "[Interface]\nPrivateKey = " + k(1) + "\nAddress = 10.64.0.2/32\nDNS = 10.64.0.1\n" +
+		"[Peer]\nPublicKey = " + k(2) + "\nEndpoint = 198.51.100.7:51820\nAllowedIPs = 0.0.0.0/0\n"
+	if err := os.WriteFile(conf, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "add", "lab", conf, "--username", "alice"); err == nil ||
+		!strings.Contains(err.Error(), "no username or password") {
+		t.Fatalf("a login for WireGuard: %v", err)
+	}
+	out, errOut, err := runCLI(t, sock, "", "tunnel", "add", "lab", conf, "--route", "10.20.0.0/16")
+	if err != nil {
+		t.Fatalf("add: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "saved tunnel lab (wireguard: 198.51.100.7:51820/udp") || !strings.Contains(out, "ignored from the configuration (RiftRoute handles these): DNS") {
+		t.Fatalf("stdout:\n%s", out)
+	}
+	if strings.Contains(errOut, "OpenVPN") {
+		t.Errorf("a WireGuard tunnel was warned about openvpn:\n%s", errOut)
+	}
+	out, _, err = runCLI(t, sock, "", "tunnel", "list")
+	if err != nil || !strings.Contains(out, "wireguard") || !strings.Contains(out, "10.20.0.0/16") || strings.Contains(out, "0.0.0.0/0") {
+		t.Fatalf("list: %v\n%s", err, out)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "edit", "lab", "--profile", writeProfile(t, plainProfile)); err == nil ||
+		!strings.Contains(err.Error(), "WireGuard configuration") {
+		t.Fatalf("an .ovpn for a WireGuard tunnel: %v", err)
 	}
 }

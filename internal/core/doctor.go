@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -52,7 +53,11 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 
 	// Tunnels RiftRoute runs itself.
 	if ts := s.TunnelStatuses(ctx); len(ts) > 0 {
-		if s.tunnelEngine != nil {
+		// openvpn matters to OpenVPN tunnels only; WireGuard is built in.
+		openvpn := slices.ContainsFunc(ts, func(t domain.TunnelStatus) bool {
+			return t.Type == domain.TunnelOpenVPN || t.Type == ""
+		})
+		if s.tunnelEngine != nil && openvpn {
 			if e := s.tunnelEngine(); !e.Available {
 				fix := "tunnels can't connect until this is fixed"
 				if h := e.Install.Summary(); h != "" {
@@ -68,7 +73,11 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 			name := "tunnel:" + t.Name
 			switch {
 			case t.State == domain.TunnelFailed:
-				add(name, domain.CheckFail, t.LastError, "fix the login or profile, then `riftroute tunnel up "+t.Name+"`")
+				what := "the login or profile"
+				if t.Type == domain.TunnelWireGuard {
+					what = "the configuration"
+				}
+				add(name, domain.CheckFail, t.LastError, "fix "+what+", then `riftroute tunnel up "+t.Name+"`")
 			case t.State == domain.TunnelConnected:
 				status, detail, fix := connectedTunnelCheck(t, expected[t.Name], installed)
 				add(name, status, detail, fix)

@@ -37,6 +37,9 @@ type addressingEnv struct {
 	protected []netip.Addr   // gateways, resolvers, watchdog anchors
 	servers   []netip.Addr   // the tunnel's own server addresses
 	ours      []netip.Prefix // the routes RiftRoute puts into the tunnel for the user
+	// configured: the addresses come from the tunnel's own configuration
+	// (WireGuard's Address), not from its server.
+	configured bool
 }
 
 // vetAddressing checks the tunnel's networks and the routes the kernel put
@@ -49,6 +52,9 @@ func vetAddressing(nets []netip.Prefix, routes []domain.Route, env addressingEnv
 			continue // every interface's fe80::/64
 		}
 		if why := vetNetwork(n, env); why != "" {
+			if env.configured {
+				return fmt.Sprintf("the configuration's Address %s %s; refusing", n.Addr(), why)
+			}
 			return fmt.Sprintf("the server gave the tunnel the network %s, which %s; refusing", n, why)
 		}
 		own = append(own, n)

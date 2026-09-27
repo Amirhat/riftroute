@@ -211,12 +211,15 @@ func run() error {
 	var launcher tunnel.Launcher = &tunnel.ExecLauncher{Output: func(name, line string) {
 		logger.Debug("openvpn", "tunnel", name, "line", line)
 	}}
+	var wireguard tunnel.WGSystem // this OS's
 	if fp, ok := prov.(*fake.Provider); ok {
 		launcher = &tunnel.FakeLauncher{ // never run a real openvpn under -provider fake
 			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
 			OnDown:  func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
 			Missing: fakeNoVPN,
 		}
+		// …nor create a real WireGuard interface.
+		wireguard = tunnel.NoWireGuard{Why: "WireGuard tunnels don't run under -provider fake (they would create a real interface)"}
 	}
 	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
 	// Tunnel state changes come in bursts (every openvpn STATE line) and
@@ -237,6 +240,7 @@ func run() error {
 	tunnels, err := tunnel.New(tunnel.Options{
 		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher:  launcher,
+		WireGuard: wireguard,
 		Ifaces:    prov.Interfaces,
 		Protected: svc.TunnelProtected,
 		Routes: func(ctx context.Context) ([]domain.Route, error) {

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 func writeFiles(t *testing.T, top string, files map[string]string) {
@@ -64,5 +67,31 @@ func TestLoadTunnelProfile(t *testing.T) {
 
 	if _, err := loadTunnelProfile(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Errorf("a folder picked as the profile: %v", err)
+	}
+}
+
+// A wg-quick file loads as WireGuard: as it is (nothing to inline, no
+// login), with its endpoints and what's ignored for the editor.
+func TestLoadTunnelProfileWireGuard(t *testing.T) {
+	dir := t.TempDir()
+	key := func(b byte) string { return base64.StdEncoding.EncodeToString([]byte(strings.Repeat(string(rune(b)), 32))) }
+	text := "[Interface]\nPrivateKey = " + key('a') + "\nAddress = 10.64.0.2/32\nDNS = 10.64.0.1\nPostUp = echo hi\n" +
+		"[Peer]\nPublicKey = " + key('b') + "\nEndpoint = vpn.example.com:51820\nAllowedIPs = 0.0.0.0/0\n"
+	writeFiles(t, dir, map[string]string{"lab.conf": text, "bad.conf": "[Interface]\nAddress = 10.64.0.2/32\n"})
+
+	f, err := loadTunnelProfile(filepath.Join(dir, "lab.conf"))
+	if err != nil || f.Error != "" {
+		t.Fatalf("lab: %v %q", err, f.Error)
+	}
+	if f.Type != domain.TunnelWireGuard || f.Config != text || f.NeedsAuth || len(f.Files) != 0 {
+		t.Errorf("lab = %+v", f)
+	}
+	if !slices.Equal(f.Servers, []string{"vpn.example.com:51820/udp"}) || !slices.Equal(f.Ignored, []string{"DNS", "PostUp"}) {
+		t.Errorf("servers %q ignored %q", f.Servers, f.Ignored)
+	}
+
+	f, err = loadTunnelProfile(filepath.Join(dir, "bad.conf"))
+	if err != nil || f.Type != domain.TunnelWireGuard || !strings.Contains(f.Error, "PrivateKey") {
+		t.Errorf("bad: %v %+v", err, f)
 	}
 }

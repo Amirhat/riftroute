@@ -63,7 +63,7 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 | Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark; macOS PF match on uid/user) |
 | Lists | Inline static + subscribable remote lists (HTTPS-only, size-capped, checksummed, never executed) |
 | Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails |
-| Tunnels | Run an OpenVPN profile as a split tunnel next to your main VPN — only listed networks go through it; the server can't take the default route or DNS |
+| Tunnels | Run an OpenVPN profile or a WireGuard configuration as a split tunnel next to your main VPN — only listed networks go through it; the server can't take the default route or DNS |
 | Kill switch | Default-drop egress fence (nftables on Linux / pf on macOS) with a reconnect allow-list |
 | Diagnostics | `doctor` battery, IPv6 + DNS **leak detector**, desired-vs-actual **drift**, conflict/overlap detection, MTU/blackhole check |
 | Observability | Live **flow monitor** (which connections go via VPN vs direct), route-explain (LPM simulator), audit timeline, `watch` TUI |
@@ -198,16 +198,20 @@ the first hit. **If you depend on a specific subdomain, add it as its own exact
 guaranteed, immediate coverage. Wildcard subdomain learning is available on
 macOS (scoped resolver files) and Linux (systemd-resolved).
 
-### Tunnels — an OpenVPN connection next to your main VPN
+### Tunnels — an OpenVPN or WireGuard connection next to your main VPN
 
-Running a second VPN client usually knocks the first one off: the server pushes
-`redirect-gateway` (a pair of `0/1` + `128/1` routes that out-rank the other
-VPN's default route) and its own DNS. RiftRoute can run the OpenVPN connection
-itself as a **split tunnel** instead, so a VPN that already carries everything
-(Windscribe, …) stays up and only the networks you list go through OpenVPN.
+Running a second VPN client usually knocks the first one off: an OpenVPN server
+pushes `redirect-gateway` (a pair of `0/1` + `128/1` routes that out-rank the
+other VPN's default route) and its own DNS, and `wg-quick` turns a WireGuard
+config's `AllowedIPs = 0.0.0.0/0` into the same. RiftRoute can run the
+connection itself as a **split tunnel** instead, so a VPN that already carries
+everything (Windscribe, …) stays up and only the networks you list go through
+the tunnel.
 
-Tunnels run on the `openvpn` program (2.5 or newer) — not the OpenVPN Connect
-app, which doesn't include it:
+**WireGuard** is built in — nothing to install, on macOS and Linux (see
+[WireGuard](#wireguard) below). **OpenVPN** tunnels run on the `openvpn`
+program (2.5 or newer) — not the OpenVPN Connect app, which doesn't include
+it:
 
 - **macOS: nothing to install.** RiftRoute ships its own openvpn (OpenVPN 2.6,
   built from source — see [THIRD_PARTY.md](THIRD_PARTY.md)) in the app and the
@@ -280,6 +284,43 @@ Or use the **Tunnels** page in the app. How it works:
   challenge/2FA logins, encrypted private keys, proxies, `<connection>` blocks,
   TAP tunnels.
 
+#### WireGuard
+
+```bash
+riftroute tunnel add lab ~/Downloads/lab-wg0.conf --route 10.20.0.0/16 --connect
+```
+
+The standard `wg-quick` file your provider or admin hands out (the app's
+Tunnels page takes it too — it's recognized by its `[Interface]`). WireGuard
+runs inside the daemon (wireguard-go): no program to install, and if the
+daemon stops, its interface goes with it.
+
+- **`AllowedIPs` never become routes** — they only decide what the server may
+  send back. Only the networks you list (`--route`) go into the tunnel, like an
+  OpenVPN tunnel's.
+- Used from the file: `PrivateKey`, `Address`, `MTU`, and each `[Peer]`'s
+  `PublicKey`, `PresharedKey`, `Endpoint` and `PersistentKeepalive`. **Ignored,
+  and shown as ignored:** `DNS`, `Table`, the `PreUp`/`PostUp`/`PreDown`/
+  `PostDown` scripts, `SaveConfig`, `ListenPort`, `FwMark` — RiftRoute decides
+  routes and DNS and runs no scripts.
+- Each `Address` is put on the interface as a single host, so its mask routes
+  nothing by itself; it's checked like an OpenVPN server's addressing (it may
+  not overlap your networks, your router, DNS server or connectivity check).
+- `--via direct` pins each endpoint to your router, as for OpenVPN; an endpoint
+  given by name is looked up again if handshakes stop, and the tunnel follows
+  it without a restart.
+- WireGuard has no connection of its own, so the state comes from its
+  handshakes: **connected** after the first one; **reconnecting** when there
+  has been none for 3 minutes (an idle tunnel renews its handshake every 2, so
+  quiet isn't mistaken for down); **failed** when the first doesn't come within
+  90 seconds — the server doesn't know the key, or can't be reached (another
+  VPN's firewall, as above).
+- The file — it holds the private key — is stored like an OpenVPN profile: in
+  the root-only directory, never in the database, never returned by the API.
+  No username or password.
+- Under `-provider fake` (development), WireGuard tunnels don't run: they would
+  create a real interface.
+
 `openvpn` runs as root, so the daemon runs only one that nobody but root can
 change: on macOS the copy RiftRoute installs at
 `/Library/PrivilegedHelperTools/riftroute-openvpn`, on Linux the
@@ -307,7 +348,7 @@ riftroute watch                  # live TUI
 riftroute profile <enable|disable> <name> [--apply]
 riftroute apply [file] [--dry-run] [--yes]
 riftroute killswitch <on|off|status>
-riftroute tunnel <add|edit|up|down|list|log|rm>   # OpenVPN beside your main VPN
+riftroute tunnel <add|edit|up|down|list|log|rm>   # OpenVPN or WireGuard beside your main VPN
 riftroute list <list|refresh>
 riftroute snapshot ...           # inspect saved snapshots
 riftroute panic                  # flush all managed routes immediately

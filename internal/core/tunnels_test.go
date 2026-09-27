@@ -177,3 +177,37 @@ func TestTunnelRoutesKeepDNSAndTheCanaryOut(t *testing.T) {
 		t.Errorf("desired = %v", routes)
 	}
 }
+
+// openvpn matters to OpenVPN tunnels only: with WireGuard tunnels alone, a
+// missing openvpn is no failure, and a failed WireGuard tunnel's fix points
+// at its configuration.
+func TestDoctorChecksOpenVPNOnlyForOpenVPNTunnels(t *testing.T) {
+	svc := newSvc(t)
+	svc.SetTunnelEngine(func() domain.TunnelEngine { return domain.TunnelEngine{Problem: "OpenVPN isn't installed"} })
+	engine := func() *domain.DoctorCheck {
+		for _, c := range svc.Doctor(context.Background()).Checks {
+			if c.Name == "tunnel-engine" {
+				return &c
+			}
+		}
+		return nil
+	}
+	svc.tunnelStatus = func() []domain.TunnelStatus {
+		return []domain.TunnelStatus{{Name: "lab", Type: domain.TunnelWireGuard, State: domain.TunnelFailed, LastError: "no handshake"}}
+	}
+	if c := engine(); c != nil {
+		t.Errorf("WireGuard only: tunnel-engine = %+v", c)
+	}
+	if c := tunnelCheck(t, svc, "lab"); c.Status != domain.CheckFail || !strings.Contains(c.Fix, "fix the configuration") {
+		t.Errorf("failed WireGuard tunnel: %+v", c)
+	}
+	svc.tunnelStatus = func() []domain.TunnelStatus {
+		return []domain.TunnelStatus{
+			{Name: "lab", Type: domain.TunnelWireGuard, State: domain.TunnelDisconnected},
+			{Name: "office", Type: domain.TunnelOpenVPN, State: domain.TunnelDisconnected},
+		}
+	}
+	if c := engine(); c == nil || c.Status != domain.CheckFail {
+		t.Errorf("with an OpenVPN tunnel: tunnel-engine = %+v, want FAIL", c)
+	}
+}
