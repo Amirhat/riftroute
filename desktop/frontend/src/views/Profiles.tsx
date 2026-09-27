@@ -114,6 +114,7 @@ export function Profiles() {
   const profiles = profilesQ.data ?? []
   const platform = stateQ.data?.capabilities.platform
   const profileNames = profiles.map((p) => p.name)
+  const tunnelOf = (p: Profile) => (stateQ.data?.tunnels ?? []).find((t) => t.name === p.tunnel)
 
   return (
     <div className="space-y-4">
@@ -204,15 +205,33 @@ export function Profiles() {
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-semibold text-default">{p.name}</span>
-                <Badge tone={p.mode === 'include' ? 'vpn' : 'muted'}>{p.mode}</Badge>
+                {p.mode === 'tunnel' ? (
+                  <Badge tone="accent">
+                    → tunnel {p.tunnel}
+                    {tunnelOf(p)?.type ? ` · ${tunnelOf(p)?.type === 'wireguard' ? 'WireGuard' : 'OpenVPN'}` : ''}
+                  </Badge>
+                ) : (
+                  <Badge tone={p.mode === 'include' ? 'vpn' : 'muted'}>{p.mode}</Badge>
+                )}
               </div>
               <Toggle on={p.enabled} onClick={() => toggle(p)} />
             </div>
             <div className="space-y-1.5 p-4">
               {p.description && <div className="text-sm text-default">{p.description}</div>}
-              <div className="text-xs text-muted">
-                gateway {p.gateway} · priority {p.priority}
-              </div>
+              {p.mode === 'tunnel' ? (
+                <div className="text-xs text-muted">
+                  priority {p.priority}
+                  {!tunnelOf(p)
+                    ? ` · there's no tunnel named ${p.tunnel} — this profile routes nothing`
+                    : tunnelOf(p)?.state !== 'connected' && tunnelOf(p)?.state !== 'reconnecting'
+                      ? ` · ${p.tunnel} isn't connected — its targets take their usual path`
+                      : ''}
+                </div>
+              ) : (
+                <div className="text-xs text-muted">
+                  gateway {p.gateway} · priority {p.priority}
+                </div>
+              )}
               {(p.rules ?? []).length === 0 && <div className="text-sm text-muted">no rules</div>}
               {(p.rules ?? []).map((r, i) => (
                 <div key={i} className="ltr flex items-center gap-2 text-sm">

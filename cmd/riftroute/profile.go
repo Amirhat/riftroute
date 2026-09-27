@@ -5,6 +5,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+
+	"github.com/Amirhat/riftroute/internal/domain"
 )
 
 func profileCmd() *cobra.Command {
@@ -33,7 +35,7 @@ func profileListCmd() *cobra.Command {
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 			fmt.Fprintln(tw, "NAME\tENABLED\tMODE\tGATEWAY\tRULES")
 			for _, p := range profs {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", p.Name, yn(p.Enabled), p.Mode, p.Gateway, len(p.Rules))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\n", p.Name, yn(p.Enabled), p.Mode, target(p), len(p.Rules))
 			}
 			return tw.Flush()
 		},
@@ -58,7 +60,11 @@ func profileShowCmd() *cobra.Command {
 					return printJSON(cmd.OutOrStdout(), p)
 				}
 				out := cmd.OutOrStdout()
-				fmt.Fprintf(out, "%s (enabled=%s mode=%s gateway=%s priority=%d)\n", p.Name, yn(p.Enabled), p.Mode, p.Gateway, p.Priority)
+				if p.Mode == domain.ModeTunnel {
+					fmt.Fprintf(out, "%s (enabled=%s mode=tunnel tunnel=%s priority=%d)\n", p.Name, yn(p.Enabled), p.Tunnel, p.Priority)
+				} else {
+					fmt.Fprintf(out, "%s (enabled=%s mode=%s gateway=%s priority=%d)\n", p.Name, yn(p.Enabled), p.Mode, p.Gateway, p.Priority)
+				}
 				for _, r := range p.Rules {
 					fmt.Fprintf(out, "  - %s %s\t%s\n", r.Type, r.Value, r.Comment)
 				}
@@ -98,4 +104,13 @@ func profileToggleCmd(enable bool) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "(reserved) non-interactive")
 	return cmd
+}
+
+// target is where a profile sends its destinations: its gateway, or the
+// tunnel a tunnel-mode profile goes into.
+func target(p domain.Profile) string {
+	if p.Mode == domain.ModeTunnel {
+		return "→ tunnel " + p.Tunnel
+	}
+	return p.Gateway
 }

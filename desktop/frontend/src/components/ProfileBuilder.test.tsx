@@ -5,13 +5,14 @@ import { ProfileBuilder } from './ProfileBuilder'
 import { api } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
-  api: { saveProfile: vi.fn(), lists: vi.fn(), systemUsers: vi.fn(), systemApps: vi.fn() },
+  api: { saveProfile: vi.fn(), lists: vi.fn(), systemUsers: vi.fn(), systemApps: vi.fn(), state: vi.fn() },
 }))
 const mockApi = api as unknown as {
   saveProfile: ReturnType<typeof vi.fn>
   lists: ReturnType<typeof vi.fn>
   systemUsers: ReturnType<typeof vi.fn>
   systemApps: ReturnType<typeof vi.fn>
+  state: ReturnType<typeof vi.fn>
 }
 
 const ROUTE_PH = '10.0.0.0/8 or 1.1.1.1'
@@ -46,6 +47,42 @@ describe('ProfileBuilder', () => {
     mockApi.lists.mockResolvedValue([])
     mockApi.systemUsers.mockResolvedValue([{ uid: '501', username: 'amir', full_name: 'Amir H' }])
     mockApi.systemApps.mockResolvedValue([{ value: 'system.slice/nginx.service', name: 'nginx' }])
+    mockApi.state.mockResolvedValue({ tunnels: [{ name: 'con3', type: 'wireguard', state: 'connected' }] })
+  })
+
+  it('sends a profile through a chosen tunnel, and needs one chosen', async () => {
+    mockApi.saveProfile.mockResolvedValue({ result: { status: 'committed', plan: { ops: [], inverse: [] } } })
+    renderBuilder()
+    fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'via-con3' } })
+    fireEvent.click(screen.getByText('Through a tunnel'))
+    fireEvent.click(screen.getByText('+ Add route target'))
+    fireEvent.change(screen.getByPlaceholderText(ROUTE_PH), { target: { value: '9.9.9.9' } })
+    expect(screen.queryByText('Gateway')).not.toBeInTheDocument()
+    expect(applyBtn().disabled).toBe(true) // no tunnel chosen yet
+
+    const picker = (await screen.findByLabelText('Tunnel')) as HTMLSelectElement
+    expect(screen.getByRole('option', { name: 'con3 · WireGuard' })).toBeInTheDocument()
+    fireEvent.change(picker, { target: { value: 'con3' } })
+    expect(applyBtn().disabled).toBe(false)
+    fireEvent.click(applyBtn())
+    await vi.waitFor(() => expect(mockApi.saveProfile).toHaveBeenCalled())
+    expect(mockApi.saveProfile.mock.calls[0][0]).toMatchObject({
+      name: 'via-con3',
+      mode: 'tunnel',
+      tunnel: 'con3',
+      rules: [{ type: 'ip', value: '9.9.9.9' }],
+    })
+  })
+
+  it('refuses app rules through a tunnel', async () => {
+    renderBuilder()
+    fireEvent.change(screen.getByPlaceholderText(NAME_PH), { target: { value: 'via-con3' } })
+    fireEvent.click(screen.getByText('Through a tunnel'))
+    fireEvent.change(await screen.findByLabelText('Tunnel'), { target: { value: 'con3' } })
+    fireEvent.click(screen.getByText('+ Add app rule'))
+    fireEvent.change(screen.getByLabelText('App rule value'), { target: { value: '501' } })
+    expect(screen.getByText(/can't go through a tunnel yet/)).toBeInTheDocument()
+    expect(applyBtn().disabled).toBe(true)
   })
 
   it('sets honest, actionable expectations for wildcard subdomain coverage', () => {

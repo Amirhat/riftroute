@@ -220,6 +220,8 @@ export interface Profile {
   priority: number
   rules?: Rule[]
   lists?: string[]
+  // With mode "tunnel": the tunnel its destinations go into.
+  tunnel?: string
 }
 
 export interface PlanOp {
@@ -407,6 +409,8 @@ export interface TunnelStatus {
   // Installed, but an app rule of an include profile still sends that app's
   // traffic for them elsewhere (another VPN).
   captured?: TunnelBlocked[] | null
+  // The tunnel-mode profiles that send their destinations into it.
+  profiles?: TunnelProfileRef[] | null
   // The daemon can't read this tunnel's saved definition: it can only be
   // deleted (and added again). last_error says why; the other fields are
   // placeholders (via "direct", no routes or servers).
@@ -438,6 +442,15 @@ export interface TunnelSpec {
   via: TunnelVia
   routes: string[]
   auto_connect: boolean
+}
+
+// TunnelProfileRef is a tunnel-mode profile routed into a tunnel: its toggle
+// state, and how many destinations it sends in (0 while off).
+export interface TunnelProfileRef {
+  id: string
+  name: string
+  enabled: boolean
+  routes: number
 }
 
 // TunnelProfileFile is a .ovpn (inlined) or a WireGuard .conf picked in the

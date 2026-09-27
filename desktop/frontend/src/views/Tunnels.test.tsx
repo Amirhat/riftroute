@@ -15,6 +15,10 @@ vi.mock('../lib/api', () => ({
     openTunnelProfile: vi.fn(),
     tunnelEngine: vi.fn(),
     checkUpdate: vi.fn(),
+    setProfileEnabled: vi.fn(),
+    apply: vi.fn(),
+    confirm: vi.fn(),
+    rollback: vi.fn(),
   },
 }))
 const mockApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>
@@ -661,5 +665,62 @@ describe('Tunnels view — WireGuard', () => {
     fireEvent.click(screen.getByText('Replace .conf…'))
     expect(await screen.findByText(/This is a WireGuard tunnel; choose a \.conf file/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+})
+
+describe('Tunnels view — profiles through a tunnel', () => {
+  const con3: TunnelStatus = {
+    name: 'con3',
+    type: 'wireguard',
+    via: 'direct',
+    routes: [],
+    auto_connect: false,
+    has_password: false,
+    needs_auth: false,
+    servers: ['vpn.example.com:51820/udp'],
+    state: 'connected',
+    iface: 'utun8',
+    bytes_in: 0,
+    bytes_out: 0,
+    profiles: [
+      { id: 'a', name: 'dns', enabled: true, routes: 2 },
+      { id: 'b', name: 'corp', enabled: false, routes: 0 },
+    ],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockApi.tunnelEngine.mockResolvedValue({ available: true, path: '/usr/sbin/openvpn', version: '2.6.14' })
+  })
+
+  it('lists the profiles sent into a tunnel, and turns one off from its card', async () => {
+    withTunnels([con3])
+    mockApi.setProfileEnabled.mockResolvedValue({ status: 'committed' })
+    renderView()
+    expect(await screen.findByText('Profiles through this tunnel')).toBeInTheDocument()
+    expect(screen.getByText('2 destinations')).toBeInTheDocument()
+    expect(screen.getByText('off')).toBeInTheDocument()
+    // With profiles sending routes in, an empty own list isn't a warning.
+    expect(screen.queryByText(/Nothing yet/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('switch', { name: 'Send profile dns through con3' }))
+    await waitFor(() => expect(mockApi.setProfileEnabled).toHaveBeenCalledWith('dns', false))
+  })
+
+  it('applies pending changes from the page, confirmed like any other', async () => {
+    mockApi.state.mockResolvedValue({ tunnels: [con3], drift: { pending: true, adds: 0, dels: 2 } } as unknown as State)
+    mockApi.apply.mockResolvedValue({
+      tx_id: 'tx-7',
+      needs_confirm: true,
+      status: 'pending',
+      plan: { ops: [], inverse: [] },
+      diff: { adds: 0, dels: 2, changes: 0, in_sync: false, entries: [] },
+    })
+    mockApi.confirm.mockResolvedValue({})
+    renderView()
+    expect(await screen.findByText('Pending changes')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }))
+    await waitFor(() => expect(mockApi.apply).toHaveBeenCalledWith(false, 60))
+    fireEvent.click(await screen.findByRole('button', { name: /Keep/ }))
+    await waitFor(() => expect(mockApi.confirm).toHaveBeenCalledWith('tx-7'))
   })
 })

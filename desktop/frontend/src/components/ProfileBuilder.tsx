@@ -5,6 +5,7 @@ import { Combobox } from './Combobox'
 import { Label, Toggle, fieldCls } from './ui'
 import { friendly } from '../lib/format'
 import { api } from '../lib/api'
+import { useStateQuery } from '../lib/queries'
 import {
   validateRouteTarget,
   validateDomain,
@@ -14,6 +15,10 @@ import {
   type AppStrategy,
 } from '../lib/validate'
 import type { ApplyResult, ConfigImportResult, Diff, Plan, Profile, Rule } from '../types'
+
+// A profile's target: around the main VPN, into it, or into one of
+// RiftRoute's own tunnels.
+type ProfileMode = 'include' | 'exclude' | 'tunnel'
 
 // ProfileBuilder is the visual, interactive split-tunneling designer: metadata,
 // a routing-mode selector, and dynamic managers for CIDR/IP, domain, and per-app
@@ -72,7 +77,9 @@ export function ProfileBuilder({
   const [name, setName] = useState(initial?.name ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
-  const [mode, setMode] = useState<'include' | 'exclude'>((initial?.mode as 'include' | 'exclude') || 'exclude')
+  const [mode, setMode] = useState<ProfileMode>((initial?.mode as ProfileMode) || 'exclude')
+  const [tunnel, setTunnel] = useState(initial?.tunnel ?? '')
+  const tunnels = useStateQuery().data?.tunnels ?? []
   const [gateway, setGateway] = useState(initial?.gateway ?? 'auto')
   // Kept as raw text so the field can be blanked while retyping (a number
   // state snapped an emptied input straight back to 0).
@@ -100,7 +107,7 @@ export function ProfileBuilder({
     setPreviewPlan(null)
     setPreviewDiff(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, enabled, mode, gateway, priority, routes, domains, apps, listRefs])
+  }, [name, enabled, mode, tunnel, gateway, priority, routes, domains, apps, listRefs])
 
   // A fresh preview renders at the bottom of a tall modal — bring it into view.
   useEffect(() => {
@@ -131,9 +138,13 @@ export function ProfileBuilder({
   const appModeErr =
     mode === 'exclude' && apps.some((r) => r.value.trim())
       ? 'Per-app rules only take effect in Include mode — switch the mode or remove them.'
-      : null
+      : mode === 'tunnel' && apps.some((r) => r.value.trim())
+        ? "Per-app rules can't go through a tunnel yet — use Include mode for them, or remove them."
+        : null
+  const tunnelErr = mode === 'tunnel' && !tunnel ? 'Choose the tunnel these targets go into.' : null
 
-  const hasErrors = nameErr !== null || gatewayErr !== null || anyRowInvalid || appModeErr !== null
+  const hasErrors =
+    nameErr !== null || gatewayErr !== null || anyRowInvalid || appModeErr !== null || tunnelErr !== null
 
   // Live staged-changes counts (valid, non-empty rows only).
   const staged = {
@@ -163,6 +174,7 @@ export function ProfileBuilder({
       description: description.trim() || undefined,
       enabled,
       mode,
+      tunnel: mode === 'tunnel' ? tunnel : undefined,
       gateway: gateway.trim() || 'auto',
       priority: parseInt(priority, 10) || 0,
       rules,
@@ -266,7 +278,7 @@ export function ProfileBuilder({
         {/* Routing mode */}
         <div>
           <Label>Routing mode</Label>
-          <div className="mt-2 grid grid-cols-2 gap-2">
+          <div className="mt-2 grid grid-cols-3 gap-2">
             <ModeCard
               active={mode === 'exclude'}
               onClick={() => setMode('exclude')}
@@ -277,9 +289,41 @@ export function ProfileBuilder({
               active={mode === 'include'}
               onClick={() => setMode('include')}
               title="Include"
-              desc="Only these targets go through the tunnel (everything else is direct). Needs an active VPN."
+              desc="Only these targets go through the VPN (everything else is direct). Needs an active VPN."
+            />
+            <ModeCard
+              active={mode === 'tunnel'}
+              onClick={() => setMode('tunnel')}
+              title="Through a tunnel"
+              desc="These targets go into one of your tunnels while it's connected; otherwise they take their usual path."
             />
           </div>
+          {mode === 'tunnel' && (
+            <div className="mt-3">
+              {tunnels.length === 0 ? (
+                <p className="text-sm text-warning">No tunnels yet — add one on the Tunnels page first.</p>
+              ) : (
+                <Field label="Tunnel" error={submitted ? tunnelErr : null}>
+                  <select
+                    value={tunnel}
+                    onChange={(e) => setTunnel(e.target.value)}
+                    aria-label="Tunnel"
+                    className={inputCls(submitted ? tunnelErr : null)}
+                  >
+                    <option value="">Choose a tunnel…</option>
+                    {tunnels.map((t) => (
+                      <option key={t.name} value={t.name}>
+                        {t.name} · {t.type === 'wireguard' ? 'WireGuard' : 'OpenVPN'}
+                      </option>
+                    ))}
+                    {tunnel && !tunnels.some((t) => t.name === tunnel) && (
+                      <option value={tunnel}>{tunnel} (not found)</option>
+                    )}
+                  </select>
+                </Field>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Route targets */}
@@ -347,9 +391,11 @@ export function ProfileBuilder({
         <details className="rounded-lg border border-line">
           <summary className="cursor-pointer select-none px-3 py-2 text-sm text-muted">Advanced</summary>
           <div className="grid grid-cols-2 gap-4 border-t border-line p-3">
-            <Field label="Gateway" error={gatewayErr}>
-              <input value={gateway} onChange={(e) => setGateway(e.target.value)} placeholder="auto" className={inputCls(gatewayErr)} />
-            </Field>
+            {mode !== 'tunnel' && (
+              <Field label="Gateway" error={gatewayErr}>
+                <input value={gateway} onChange={(e) => setGateway(e.target.value)} placeholder="auto" className={inputCls(gatewayErr)} />
+              </Field>
+            )}
             <Field label="Priority">
               <input
                 type="number"
@@ -511,7 +557,7 @@ function AppManager({
   rows: Row[]
   setRows: React.Dispatch<React.SetStateAction<Row[]>>
   platform?: string
-  mode: 'include' | 'exclude'
+  mode: ProfileMode
   modeError: string | null
   errorFor: (r: Row) => string | null
 }) {
