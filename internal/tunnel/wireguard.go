@@ -332,9 +332,11 @@ func (w *wgSession) follow(st wgStats) {
 		}
 	}
 	var added []netip.Addr
+	moved := false
 	w.m.update(w.name, func(r *live) {
-		if w.server.IsValid() && (r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting) {
-			r.server = w.server.String()
+		if w.server.IsValid() && (r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting) &&
+			r.server != w.server.String() {
+			r.server, moved = w.server.String(), true
 		}
 		for _, a := range fresh {
 			if !slices.Contains(r.servers, a) && len(r.servers) < 4*maxPins {
@@ -344,6 +346,9 @@ func (w *wgSession) follow(st wgStats) {
 		}
 	})
 	if len(added) == 0 {
+		if moved {
+			w.m.changed()
+		}
 		return
 	}
 	pins := pinsOf(w.m, w.name)
