@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/netip"
@@ -363,5 +364,30 @@ func TestResolveEndpoints(t *testing.T) {
 	}
 	if _, _, _, err := m.resolveEndpoints(context.Background(), domain.TunnelViaDirect, []WGPeer{{Endpoint: Remote{Host: "gone.test", Port: 1}}}); err == nil {
 		t.Error("an unresolved endpoint connected")
+	}
+}
+
+// Under -provider fake, WireGuard is off (it would create a real
+// interface): connecting says why, and nothing starts.
+func TestNoWireGuardRefusesToConnect(t *testing.T) {
+	client, server := newWGKeys(t), newWGKeys(t)
+	m, err := New(Options{
+		Dir: t.TempDir(), Launcher: &FakeLauncher{}, WireGuard: NoWireGuard{Why: "not under the fake provider"},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Shutdown)
+	if _, err := m.Save(context.Background(), wgSpec(client, server, 51820)); err != nil {
+		t.Fatal(err)
+	}
+	err = m.Connect("wg1")
+	var ee *EngineError
+	if !errors.As(err, &ee) || !strings.Contains(err.Error(), "not under the fake provider") {
+		t.Fatalf("connect = %v", err)
+	}
+	if st, _ := m.Status("wg1"); st.State != domain.TunnelDisconnected {
+		t.Errorf("a refused connect left a session: %+v", st)
 	}
 }

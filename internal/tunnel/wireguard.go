@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -76,10 +77,24 @@ func (w wgDriver) system() WGSystem {
 }
 
 func (w wgDriver) engine() domain.TunnelEngine {
-	if w.system() == nil {
+	sys := w.system()
+	if sys == nil {
 		return domain.TunnelEngine{Problem: "WireGuard tunnels run on macOS and Linux"}
 	}
+	if n, ok := sys.(NoWireGuard); ok {
+		return domain.TunnelEngine{Problem: n.Why}
+	}
 	return domain.TunnelEngine{Available: true, Version: "wireguard-go (built in)"}
+}
+
+// NoWireGuard turns WireGuard tunnels off, saying why: under -provider fake,
+// where nothing may touch the host, a WireGuard session would create a real
+// interface (OpenVPN gets FakeLauncher there instead).
+type NoWireGuard struct{ Why string }
+
+func (n NoWireGuard) CreateTUN(int) (tun.Device, error) { return nil, errors.New(n.Why) }
+func (n NoWireGuard) Configure(context.Context, string, []netip.Addr, int) error {
+	return errors.New(n.Why)
 }
 
 func (w wgDriver) run(ctx context.Context, m *Manager, name string, d *def, p *parsed, s *session) {
