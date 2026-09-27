@@ -4,6 +4,25 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **WireGuard tunnels.** A WireGuard configuration — the standard `wg-quick`
+  file providers hand out — runs as a split tunnel next to your main VPN, like
+  an OpenVPN profile: `riftroute tunnel add <name> <file.conf> --route <cidr>…`,
+  or the Tunnels page, which takes a `.conf` as well as an `.ovpn`. It's built
+  in (wireguard-go, inside the daemon): nothing to install on macOS or Linux,
+  and a WireGuard tunnel connects even while openvpn is missing. Its
+  `AllowedIPs` never become routes and its `DNS` and scripts are ignored, so
+  only the networks you list go through it. The state follows its handshakes
+  (connected, reconnecting after 3 minutes without one, failed when the first
+  doesn't come), and an endpoint given by name is followed when it moves.
+
+### Fixed
+- **Release binaries built beside the app aren't stamped `-dirty`.** The CLI
+  and daemon inside the 0.3.0 DMG reported `4b61541-dirty`: `go.mod` wasn't
+  tidy, and the app build tidied it. CI now checks it.
+
 ## [0.3.0] — 2026-09-27
 
 Tunnels: an OpenVPN split tunnel next to your main VPN (thanks @ssenerg for

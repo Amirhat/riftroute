@@ -1,6 +1,7 @@
 # WireGuard tunnels — design
 
-Status: plan, for the release after 0.3.0 (OpenVPN tunnels).
+Status: implemented for the release after 0.3.0 (OpenVPN tunnels). Where the
+code differs from the plan below, it says so.
 
 A WireGuard tunnel is a split tunnel like an OpenVPN one: only the networks the
 user lists go in, the main VPN keeps the default route and DNS. Everything the
@@ -50,6 +51,13 @@ type Parsed interface {
 }
 ```
 
+*As built*, the seam is smaller (`internal/tunnel/driver.go`): a `driver` has
+`parse`, `engine` and `run(ctx, m *Manager, …)`, and a session reports through
+the Manager's own helpers (`update`, `setErr`, `requestApply`,
+`vetAddressing`) rather than a callback interface — the OpenVPN code moved
+behind it unchanged, which kept its reviewed behaviour exactly. A callback
+`Session` can still come with the third driver.
+
 `Session` carries the definition and its secrets, the resolved remotes, and
 the callbacks the manager's state machine is built on: `Connecting(detail)`,
 `Connected(iface, nets, localIP, server)`, `Reconnecting(reason)`,
@@ -81,7 +89,8 @@ Multiple peers are allowed; the endpoints are all pinned (via direct).
 1. Resolve and pin the endpoints to the physical gateway (via direct), as for
    OpenVPN.
 2. `tun.CreateTUN("utun", mtu)` (macOS) / `tun.CreateTUN("rr-<name>", mtu)`
-   (Linux) — the daemon is root.
+   (Linux) — the daemon is root. *As built:* `rrwg%d` on Linux, numbered by
+   the kernel (a tunnel name can be longer than an interface name may).
 3. Assign `Address` to the interface (macOS `ifconfig … inet A A netmask …`,
    `inet6 … prefixlen …`; Linux netlink/`ip addr`), bring it up.
 4. `device.NewDevice(tun, conn.NewDefaultBind(), logger)`; `IpcSet` with the
@@ -91,6 +100,11 @@ Multiple peers are allowed; the endpoints are all pinned (via direct).
    than 180 s (WireGuard's reject-after time); **failed** when no handshake in
    the first 90 s (with the likely cause: endpoint unreachable — another VPN's
    firewall — or a key the server doesn't know).
+   *As built:* a handshake older than 120 s is renewed at once
+   (`SendHandshakeInitiation`, not a keepalive — a keepalive on keys still
+   within reject-after goes out on them to a server that may have lost them,
+   and nothing answers), so an idle tunnel isn't taken for a dead one.
+   Addresses are assigned as single hosts (`/32`, `/128`), and vetted as such.
 6. Bytes from `rx_bytes`/`tx_bytes`.
 7. Stop: `device.Close()` closes the tun; the manager withdraws the routes.
 
@@ -107,10 +121,17 @@ address assignment and `CreateTUN` are behind a small seam, faked in tests.
 ## Step 3 — app and CLI
 
 - `riftroute tunnel add <name> <file.conf> --route …` detects WireGuard by the
-  file's `[Interface]`; `--type` overrides.
+  file's `[Interface]`; `--type` overrides. *As built:* no `--type` — the
+  `[Interface]` can't be mistaken — and `tunnel edit --profile` takes a file of
+  the tunnel's own type only.
 - The Tunnels page: a type chooser, the import dialog accepts `.conf`, the card
-  shows the last handshake and the peer instead of openvpn's phase.
+  shows the last handshake and the peer instead of openvpn's phase. *As built:*
+  the type follows the chosen file (no chooser); the card shows the type, and
+  the connected peer as the server.
 - No engine banner: WireGuard is built in (the engine is always available).
+  *As built:* the openvpn banner shows only for OpenVPN tunnels (or before
+  any tunnel exists); under `-provider fake` WireGuard is off
+  (`tunnel.NoWireGuard`) — it would create a real interface.
 
 ## Step 4 — review and release
 
