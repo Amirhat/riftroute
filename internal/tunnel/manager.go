@@ -48,21 +48,22 @@ type Options struct {
 	Log      *slog.Logger
 }
 
-// Manager runs the daemon's tunnels: it stores their definitions, supervises
-// one openvpn per connected tunnel through its management socket, and reports
-// what the engine should route (Inputs).
+// Manager runs the daemon's tunnels: it stores their definitions, runs one
+// session per connected tunnel through its protocol's driver (driver.go), and
+// reports what the engine should route (Inputs).
 type Manager struct {
-	o      Options
-	store  *defStore
-	runDir string
+	o       Options
+	store   *defStore
+	runDir  string
+	drivers map[domain.TunnelType]driver
 
 	ap *applier
 
-	mu    sync.Mutex
-	defs  map[string]*def
-	profs map[string]*Profile
-	perrs map[string]error
-	rt    map[string]*live
+	mu     sync.Mutex
+	defs   map[string]*def
+	parsed map[string]*parsed
+	perrs  map[string]error
+	rt     map[string]*live
 	// broken are saved definitions that can't be read: listed as failed, so
 	// the user sees them and can delete them.
 	broken map[string]error
@@ -145,9 +146,10 @@ func New(o Options) (*Manager, error) {
 	}
 	m := &Manager{
 		o: o, store: st, runDir: o.Dir,
-		defs: map[string]*def{}, profs: map[string]*Profile{}, perrs: map[string]error{},
+		defs: map[string]*def{}, parsed: map[string]*parsed{}, perrs: map[string]error{},
 		rt: map[string]*live{}, broken: map[string]error{}, closed: make(chan struct{}),
 	}
+	m.drivers = map[domain.TunnelType]driver{domain.TunnelOpenVPN: ovpnDriver{o: &m.o}}
 	m.ap = newApplier(func(ctx context.Context) error {
 		if m.o.Apply == nil {
 			return nil
@@ -181,6 +183,25 @@ func New(o Options) (*Manager, error) {
 	return m, nil
 }
 
+// parse reads a config with its type's driver.
+func (m *Manager) parse(t domain.TunnelType, config string) (*parsed, error) {
+	drv := m.drivers[t]
+	if drv == nil {
+		return nil, fmt.Errorf("unsupported tunnel type %q", t)
+	}
+	return drv.parse(config)
+}
+
+// typeNames lists the supported tunnel types, for messages.
+func (m *Manager) typeNames() string {
+	var ts []string
+	for t := range m.drivers {
+		ts = append(ts, string(t))
+	}
+	slices.Sort(ts)
+	return strings.Join(ts, ", ")
+}
+
 // shortRunDir is a private directory under the system temp dir named after
 // dir: created 0700, and refused if it exists as anything but a directory of
 // ours that only we can use.
@@ -202,8 +223,8 @@ func shortRunDir(dir string) (string, error) {
 
 func (m *Manager) cache(d *def) {
 	m.defs[d.Name] = d
-	p, err := Parse(d.Config)
-	m.profs[d.Name], m.perrs[d.Name] = p, err
+	p, err := m.parse(d.Type, d.Config)
+	m.parsed[d.Name], m.perrs[d.Name] = p, err
 	if m.rt[d.Name] == nil {
 		m.rt[d.Name] = &live{state: domain.TunnelDisconnected}
 	}
@@ -248,7 +269,7 @@ func brokenStatus(name string, err error) domain.TunnelStatus {
 }
 
 func (m *Manager) statusLocked(name string) domain.TunnelStatus {
-	d, p, r := m.defs[name], m.profs[name], m.rt[name]
+	d, p, r := m.defs[name], m.parsed[name], m.rt[name]
 	s := domain.TunnelStatus{
 		Name: d.Name, Type: d.Type, Via: d.Via, Routes: append([]string{}, d.Routes...),
 		AutoConnect: d.AutoConnect, Username: d.Username, HasPassword: d.Password != "",
@@ -256,7 +277,7 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 		Since: r.since, LastError: r.lastErr, BytesIn: r.in, BytesOut: r.out, Servers: []string{},
 	}
 	if p != nil {
-		s.NeedsAuth, s.Servers, s.Ignored = p.NeedsAuth, p.Servers(), p.Ignored
+		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
 	}
 	if err := m.perrs[name]; err != nil && r.sess == nil {
 		s.State, s.LastError = domain.TunnelFailed, "profile is no longer valid: "+err.Error()
@@ -337,8 +358,8 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if spec.Type == "" {
 		spec.Type = domain.TunnelOpenVPN
 	}
-	if spec.Type != domain.TunnelOpenVPN {
-		bad("type", fmt.Sprintf("unsupported tunnel type %q (only openvpn)", spec.Type))
+	if m.drivers[spec.Type] == nil {
+		bad("type", fmt.Sprintf("unsupported tunnel type %q (%s)", spec.Type, m.typeNames()))
 	}
 	if spec.Via == "" {
 		spec.Via = domain.TunnelViaDirect
@@ -379,8 +400,10 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		}
 	}
 	if strings.TrimSpace(d.Config) == "" {
-		bad("config", "an OpenVPN profile (.ovpn) is required")
-	} else if p, err := Parse(d.Config); err != nil {
+		bad("config", "a configuration is required (an OpenVPN profile, .ovpn)")
+	} else if m.drivers[d.Type] == nil {
+		// reported above
+	} else if p, err := m.parse(d.Type, d.Config); err != nil {
 		bad("config", err.Error())
 	} else {
 		// A saved password goes only to the profile it was entered for:
@@ -390,20 +413,20 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		// its name check.
 		if keptPassword && prev.Config != d.Config {
 			d.Password = ""
-			if p.NeedsAuth && p.InlinePass == "" {
+			if p.needsAuth && p.inlinePass == "" {
 				bad("password", "the profile changed; enter the password again")
 			}
 		}
 		if d.Username == "" {
-			d.Username = p.InlineUser
+			d.Username = p.inlineUser
 		}
 		if d.Password == "" {
-			d.Password = p.InlinePass
+			d.Password = p.inlinePass
 		}
-		if p.NeedsAuth && d.Username == "" {
+		if p.needsAuth && d.Username == "" {
 			bad("username", "this profile logs in with a username and password; the username is required")
 		}
-		if p.NeedsAuth && d.Password == "" {
+		if p.needsAuth && d.Password == "" {
 			bad("password", "this profile logs in with a username and password; the password is required")
 		}
 	}
@@ -472,7 +495,7 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 	}
 	m.mu.Lock()
 	delete(m.defs, name)
-	delete(m.profs, name)
+	delete(m.parsed, name)
 	delete(m.perrs, name)
 	delete(m.rt, name)
 	m.mu.Unlock()
@@ -533,7 +556,7 @@ func normalizeRoutes(in []string) ([]string, []string) {
 // tunnel that is already up is a no-op.
 func (m *Manager) Connect(name string) error {
 	m.mu.Lock()
-	d, p, perr := m.defs[name], m.profs[name], m.perrs[name]
+	d, p, perr := m.defs[name], m.parsed[name], m.perrs[name]
 	if _, bad := m.broken[name]; bad {
 		m.mu.Unlock()
 		return fmt.Errorf("tunnel %s's saved definition can't be read; delete it and add it again", name)
@@ -555,10 +578,11 @@ func (m *Manager) Connect(name string) error {
 	if perr != nil {
 		return fmt.Errorf("tunnel %s: profile is no longer valid: %w", name, perr)
 	}
-	if p.NeedsAuth && (d.Username == "" || d.Password == "") {
+	if p.needsAuth && (d.Username == "" || d.Password == "") {
 		return fmt.Errorf("tunnel %s needs a username and password", name)
 	}
-	if e := m.o.Launcher.Engine(); !e.Available {
+	drv := m.drivers[d.Type]
+	if e := drv.engine(); !e.Available {
 		return &EngineError{Engine: e}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -585,7 +609,11 @@ func (m *Manager) Connect(name string) error {
 	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s}
 	m.mu.Unlock()
 	m.changed()
-	go m.run(ctx, name, d, p, s)
+	go func() {
+		defer close(s.done)
+		defer m.finish(name, s)
+		drv.run(ctx, m, name, d, p, s)
+	}()
 	return nil
 }
 
@@ -778,11 +806,9 @@ func (m *Manager) sockPath(name string) string { return filepath.Join(m.runDir, 
 func (m *Manager) cfgPath(name string) string  { return filepath.Join(m.runDir, name+".ovpn") }
 func (m *Manager) pidPath(name string) string  { return filepath.Join(m.runDir, name+".pid") }
 
-// run is one connection attempt, from resolving the server to openvpn's exit.
-func (m *Manager) run(ctx context.Context, name string, d *def, p *Profile, s *session) {
-	defer close(s.done)
-	defer m.finish(name, s)
-
+// runOpenVPN is one OpenVPN session, from resolving the server to openvpn's
+// exit (ovpnDriver).
+func (m *Manager) runOpenVPN(ctx context.Context, name string, d *def, p *Profile, s *session) {
 	remotes, bypass, err := m.resolveRemotes(ctx, d.Via, p.Remotes)
 	if err != nil {
 		m.setErr(name, err.Error())
@@ -1072,17 +1098,17 @@ func (m *Manager) reresolve(ctx context.Context, name string, d *def, s *session
 		return // at most once a minute
 	}
 	m.mu.Lock()
-	p, r := m.profs[name], m.rt[name]
+	p, r := m.parsed[name], m.rt[name]
 	if p == nil || r == nil || r.sess != s {
 		m.mu.Unlock()
 		return
 	}
 	old := append([]netip.Addr(nil), r.bypass...)
 	m.mu.Unlock()
-	if !hasHostname(p.Remotes) {
+	if !hasHostname(p.remotes) {
 		return
 	}
-	_, pins, err := m.resolveRemotes(ctx, d.Via, p.Remotes)
+	_, pins, err := m.resolveRemotes(ctx, d.Via, p.remotes)
 	if err != nil || sameAddrs(old, pins) {
 		return
 	}
