@@ -14,13 +14,17 @@ import (
 	"github.com/Amirhat/riftroute/internal/tunnel"
 )
 
-// TunnelProfileFile is an OpenVPN profile picked in the native dialog: the
-// files it references are inlined here, as the desktop user (never by the
-// root daemon), and it is parsed so the editor can preview what will run.
+// TunnelProfileFile is an OpenVPN profile or a WireGuard configuration
+// picked in the native dialog. A profile's referenced files are inlined here,
+// as the desktop user (never by the root daemon); either is parsed so the
+// editor can preview what will run.
 type TunnelProfileFile struct {
-	Path      string   `json:"path"`
-	Name      string   `json:"name"`
-	Config    string   `json:"config"`
+	Path string `json:"path"`
+	Name string `json:"name"`
+	// Type is the tunnel type the file is for: openvpn, or wireguard (a
+	// wg-quick file, recognized by its [Interface]).
+	Type      domain.TunnelType `json:"type"`
+	Config    string            `json:"config"`
 	Servers   []string `json:"servers"`
 	NeedsAuth bool     `json:"needs_auth"`
 	Ignored   []string `json:"ignored"`
@@ -35,13 +39,13 @@ type TunnelProfileFile struct {
 	Error string `json:"error"`
 }
 
-// OpenTunnelProfileDialog picks a .ovpn file. An empty Path with a nil error
-// means the user cancelled.
+// OpenTunnelProfileDialog picks a .ovpn or WireGuard .conf file. An empty
+// Path with a nil error means the user cancelled.
 func (a *App) OpenTunnelProfileDialog() (TunnelProfileFile, error) {
 	path, err := wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
-		Title: "Choose an OpenVPN profile",
+		Title: "Choose an OpenVPN profile or a WireGuard configuration",
 		Filters: []wruntime.FileFilter{
-			{DisplayName: "OpenVPN profile (*.ovpn, *.conf)", Pattern: "*.ovpn;*.conf"},
+			{DisplayName: "VPN configuration (*.ovpn, *.conf)", Pattern: "*.ovpn;*.conf"},
 			{DisplayName: "All files", Pattern: "*"},
 		},
 	})
@@ -57,7 +61,21 @@ func loadTunnelProfile(path string) (TunnelProfileFile, error) {
 	if err != nil {
 		return TunnelProfileFile{}, fmt.Errorf("could not read the profile: %w", err)
 	}
-	out := TunnelProfileFile{Path: path, Name: filepath.Base(path), Servers: []string{}, Ignored: []string{}, Files: []string{}}
+	out := TunnelProfileFile{Path: path, Name: filepath.Base(path), Type: domain.TunnelOpenVPN, Servers: []string{}, Ignored: []string{}, Files: []string{}}
+	if tunnel.IsWireGuard(text) {
+		// Nothing to inline: a wg-quick file carries its keys itself.
+		out.Type, out.Config = domain.TunnelWireGuard, text
+		c, err := tunnel.ParseWG(text)
+		if err != nil {
+			out.Error = err.Error()
+			return out, nil
+		}
+		out.Servers = c.Servers()
+		if c.Ignored != nil {
+			out.Ignored = c.Ignored
+		}
+		return out, nil
+	}
 	res, err := tunnel.InlineFiles(text, filepath.Dir(path))
 	if err != nil {
 		out.Error = err.Error()

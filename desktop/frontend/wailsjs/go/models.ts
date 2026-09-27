@@ -1450,6 +1450,7 @@ export namespace main {
 	export class TunnelProfileFile {
 	    path: string;
 	    name: string;
+	    type: string;
 	    config: string;
 	    servers: string[];
 	    needs_auth: boolean;
@@ -1467,6 +1468,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
 	        this.name = source["name"];
+	        this.type = source["type"];
 	        this.config = source["config"];
 	        this.servers = source["servers"];
 	        this.needs_auth = source["needs_auth"];
