@@ -434,6 +434,9 @@ func TestWireGuardVetsTheAddressBeforeTheInterfaceHoldsIt(t *testing.T) {
 // it — and shows as the server, but isn't pinned around the main VPN.
 func TestWireGuardFollowsARoamingServer(t *testing.T) {
 	fastWG(t)
+	// No renewals here: a client handshake from 127.0.0.1 would have the
+	// server roam back to it before it answers from ::1.
+	wgRekeyAfter, wgStaleAfter = time.Hour, time.Hour
 	client, server := newWGKeys(t), newWGKeys(t)
 	srv := startWGServer(t, server, client, 0)
 	sys := &fakeWG{}
@@ -457,24 +460,50 @@ func TestWireGuardFollowsARoamingServer(t *testing.T) {
 		}
 	}()
 
-	// The server answers from ::1 from now on.
-	got, _ := srv.dev.IpcGet()
-	var clientPort string
-	for _, l := range strings.Split(got, "\n") {
-		if v, ok := strings.CutPrefix(l, "endpoint="); ok {
-			_, clientPort, _ = strings.Cut(v, ":")
+	// The server can send once the session is confirmed: it has had the
+	// client's first data (the keepalive after the handshake, 148 + 32
+	// bytes in).
+	var got, clientPort string
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		got, _ = srv.dev.IpcGet()
+		rx := 0
+		for _, l := range strings.Split(got, "\n") {
+			if v, ok := strings.CutPrefix(l, "rx_bytes="); ok {
+				rx, _ = strconv.Atoi(v)
+			}
+			if v, ok := strings.CutPrefix(l, "endpoint="); ok {
+				_, clientPort, _ = strings.Cut(v, ":")
+			}
+		}
+		if rx >= 180 {
+			break
 		}
 	}
+	// The server answers from ::1 from now on.
 	if clientPort == "" {
 		t.Fatalf("the server doesn't know the client's endpoint:\n%s", got)
 	}
-	if err := srv.dev.IpcSet("public_key=" + hex.EncodeToString(client.pub[:]) + "\nupdate_only=true\nendpoint=[::1]:" + clientPort + "\n"); err != nil {
-		t.Fatal(err)
-	}
-	srv.tun.Outbound <- tuntest.Ping(netip.MustParseAddr("10.64.0.2"), netip.MustParseAddr("10.64.0.1"))
-
+	// Resent until it lands: wireguard-go on macOS now and then sends one to
+	// [::] right after its endpoint is set in-process ("no route to host").
 	want := "[::1]:" + strconv.Itoa(srv.port)
-	waitWG(t, m, "the server followed", func(s domain.TunnelStatus) bool { return s.Server == want })
+	for try := 0; ; try++ {
+		if err := srv.dev.IpcSet("public_key=" + hex.EncodeToString(client.pub[:]) + "\nupdate_only=true\nendpoint=[::1]:" + clientPort + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		srv.tun.Outbound <- tuntest.Ping(netip.MustParseAddr("10.64.0.2"), netip.MustParseAddr("10.64.0.1"))
+		followed := false
+		for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline) && !followed; time.Sleep(10 * time.Millisecond) {
+			st, _ := m.Status("wg1")
+			followed = st.Server == want
+		}
+		if followed {
+			break
+		}
+		if try == 10 {
+			st, _ := m.Status("wg1")
+			t.Fatalf("the client never followed the server to ::1: %+v", st)
+		}
+	}
 	in := m.Inputs()
 	if len(in) != 1 || !slices.Contains(in[0].Servers, netip.MustParseAddr("::1")) || !slices.Contains(in[0].Servers, netip.MustParseAddr("127.0.0.1")) {
 		t.Errorf("servers = %+v, want both addresses kept out of the routes", in)
