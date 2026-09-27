@@ -38,6 +38,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      # The Wails build tidies go.mod. An untidy one makes every release
+      # binary built after it report a "-dirty" tree (0.3.0's DMG CLI did).
+      - name: go.mod is tidy
+        run: |
+          go mod tidy -diff || {
+            echo "::error::go.mod/go.sum aren't tidy — run 'go mod tidy' and commit it"
+            exit 1
+          }
       - run: go vet ./internal/... ./cmd/...
       - run: go test -race ./internal/... ./cmd/...
 
