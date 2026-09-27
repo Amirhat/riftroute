@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -389,5 +390,133 @@ func TestNoWireGuardRefusesToConnect(t *testing.T) {
 	}
 	if st, _ := m.Status("wg1"); st.State != domain.TunnelDisconnected {
 		t.Errorf("a refused connect left a session: %+v", st)
+	}
+}
+
+// An Address at the router (or a LAN host, or a resolver) would cut the
+// machine off the moment the interface holds it: it's refused before
+// anything is put on the interface.
+func TestWireGuardVetsTheAddressBeforeTheInterfaceHoldsIt(t *testing.T) {
+	fastWG(t)
+	client, server := newWGKeys(t), newWGKeys(t)
+	sys := &fakeWG{}
+	m, err := New(Options{
+		Dir: t.TempDir(), Launcher: &FakeLauncher{}, WireGuard: sys,
+		Protected: func(context.Context) []netip.Addr { return []netip.Addr{netip.MustParseAddr("192.168.1.1")} },
+		Resolve: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m.Shutdown)
+	spec := wgSpec(client, server, 51820)
+	spec.Config = strings.Replace(spec.Config, "Address = 10.64.0.2/24", "Address = 192.168.1.1/32", 1)
+	if _, err := m.Save(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Connect("wg1"); err != nil {
+		t.Fatal(err)
+	}
+	st := waitWG(t, m, "failed", func(s domain.TunnelStatus) bool { return s.State == domain.TunnelFailed })
+	if !strings.Contains(st.LastError, "192.168.1.1") {
+		t.Errorf("last error = %q", st.LastError)
+	}
+	if got := sys.configured(); len(got) != 0 {
+		t.Errorf("the address went on the interface before it was refused: %v", got)
+	}
+}
+
+// WireGuard follows a server that answers from another address (roaming):
+// that address joins the tunnel's servers — no tunnel's routes may carry
+// it — and shows as the server, but isn't pinned around the main VPN.
+func TestWireGuardFollowsARoamingServer(t *testing.T) {
+	fastWG(t)
+	client, server := newWGKeys(t), newWGKeys(t)
+	srv := startWGServer(t, server, client, 0)
+	sys := &fakeWG{}
+	m := newWGManager(t, sys)
+	if _, err := m.Save(context.Background(), wgSpec(client, server, srv.port)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Connect("wg1"); err != nil {
+		t.Fatal(err)
+	}
+	waitWG(t, m, "connected", func(s domain.TunnelStatus) bool { return s.State == domain.TunnelConnected })
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	go func() { // take what reaches the client's tun
+		for {
+			select {
+			case <-sys.tun(0).Inbound:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// The server answers from ::1 from now on.
+	got, _ := srv.dev.IpcGet()
+	var clientPort string
+	for _, l := range strings.Split(got, "\n") {
+		if v, ok := strings.CutPrefix(l, "endpoint="); ok {
+			_, clientPort, _ = strings.Cut(v, ":")
+		}
+	}
+	if clientPort == "" {
+		t.Fatalf("the server doesn't know the client's endpoint:\n%s", got)
+	}
+	if err := srv.dev.IpcSet("public_key=" + hex.EncodeToString(client.pub[:]) + "\nupdate_only=true\nendpoint=[::1]:" + clientPort + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	srv.tun.Outbound <- tuntest.Ping(netip.MustParseAddr("10.64.0.2"), netip.MustParseAddr("10.64.0.1"))
+
+	want := "[::1]:" + strconv.Itoa(srv.port)
+	waitWG(t, m, "the server followed", func(s domain.TunnelStatus) bool { return s.Server == want })
+	in := m.Inputs()
+	if len(in) != 1 || !slices.Contains(in[0].Servers, netip.MustParseAddr("::1")) || !slices.Contains(in[0].Servers, netip.MustParseAddr("127.0.0.1")) {
+		t.Errorf("servers = %+v, want both addresses kept out of the routes", in)
+	}
+	if len(in[0].Bypass) != 0 {
+		t.Errorf("a roamed address was pinned: %v", in[0].Bypass)
+	}
+}
+
+// Handshakes are timed on this machine's monotonic clock, by change: a
+// device stamp from before the session started — a wall clock stepped back
+// — still counts, and an unchanged one never ages differently.
+func TestWireGuardTimesHandshakesByChange(t *testing.T) {
+	w := &wgSession{}
+	t0 := time.Now()
+	w.observe(wgStats{}, t0)
+	if !w.shook.IsZero() {
+		t.Fatal("no handshake yet, but one was noted")
+	}
+	w.observe(wgStats{latest: time.Unix(100, 0)}, t0.Add(time.Second)) // a stamp in 1970
+	if !w.shook.Equal(t0.Add(time.Second)) {
+		t.Fatalf("a handshake stamped before the session wasn't counted: %v", w.shook)
+	}
+	w.observe(wgStats{latest: time.Unix(100, 0)}, t0.Add(time.Minute))
+	if !w.shook.Equal(t0.Add(time.Second)) {
+		t.Fatalf("an unchanged handshake was renewed: %v", w.shook)
+	}
+	w.observe(wgStats{latest: time.Unix(50, 0)}, t0.Add(2*time.Minute)) // stepped back, but new
+	if !w.shook.Equal(t0.Add(2 * time.Minute)) {
+		t.Fatalf("a new handshake wasn't noted: %v", w.shook)
+	}
+}
+
+// A client from before WireGuard sends no type: an edit keeps the tunnel's.
+func TestWireGuardEditWithoutATypeKeepsIt(t *testing.T) {
+	client, server := newWGKeys(t), newWGKeys(t)
+	m := newWGManager(t, &fakeWG{})
+	if _, err := m.Save(context.Background(), wgSpec(client, server, 51820)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := m.Save(context.Background(), domain.TunnelSpec{Name: "wg1", Routes: []string{"10.80.0.0/16"}})
+	if err != nil || st.Type != domain.TunnelWireGuard || len(st.Routes) != 1 || st.Routes[0] != "10.80.0.0/16" {
+		t.Fatalf("edit = %+v, %v", st, err)
 	}
 }

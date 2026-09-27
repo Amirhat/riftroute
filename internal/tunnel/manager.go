@@ -361,7 +361,14 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		bad("name", "use 1–32 lowercase letters, digits, - or _ (starting with a letter or digit)")
 	}
 	if spec.Type == "" {
+		// A client that doesn't send the type (one from before WireGuard)
+		// edits a tunnel of the type it has.
 		spec.Type = domain.TunnelOpenVPN
+		m.mu.Lock()
+		if prev := m.defs[spec.Name]; prev != nil && prev.Type != "" {
+			spec.Type = prev.Type
+		}
+		m.mu.Unlock()
 	}
 	if m.drivers[spec.Type] == nil {
 		bad("type", fmt.Sprintf("unsupported tunnel type %q (%s)", spec.Type, m.typeNames()))

@@ -150,6 +150,14 @@ func (w wgDriver) run(ctx context.Context, m *Manager, name string, d *def, p *p
 	for _, a := range c.Addresses {
 		hosts = append(hosts, a.Addr())
 	}
+	// Unlike OpenVPN's, which the server pushes, WireGuard's addresses are in
+	// the configuration: vet them before the interface holds them. One at the
+	// router, a LAN host or a resolver would cut this machine off at once —
+	// that's no route, so nothing would roll it back.
+	if why := m.vetAddressing(ctx, name, iface, hostPrefixes(hosts)); why != "" {
+		m.setErr(name, why)
+		return
+	}
 	if err := sys.Configure(ctx, iface, hosts, mtu); err != nil {
 		m.setErr(name, "couldn't set up "+iface+": "+err.Error())
 		return
@@ -221,9 +229,15 @@ type wgSession struct {
 	hosts []netip.Addr
 	eps   []netip.AddrPort
 
-	up, vetted     bool
+	up             bool
 	lastNudge      time.Time
 	stale, resolve time.Time // when the tunnel went stale; the last re-resolve
+	// seen is the newest handshake the device reported (its wall-clock
+	// stamp), and shook when this session saw it change: every age is
+	// measured on this machine's monotonic clock, so a clock step neither
+	// fails a live tunnel nor makes it flap.
+	seen, shook time.Time
+	endpoint    netip.AddrPort // the endpoint the device sends to now
 }
 
 func (w *wgSession) supervise(ctx context.Context) {
@@ -240,7 +254,8 @@ func (w *wgSession) supervise(ctx context.Context) {
 		now := time.Now()
 		st := readWGStats(w.dev)
 		w.m.update(w.name, func(r *live) { r.in, r.out = st.rx, st.tx })
-		if !st.latest.After(start) {
+		w.observe(st, now)
+		if w.shook.IsZero() {
 			// Never shook hands in this session: WireGuard keeps retrying the
 			// handshake (every 5 s) until then.
 			if now.Sub(start) > wgFirstHandshake {
@@ -249,21 +264,15 @@ func (w *wgSession) supervise(ctx context.Context) {
 			}
 			continue
 		}
-		if !w.vetted {
-			if why := w.m.vetAddressing(ctx, w.name, w.iface, w.hostPrefixes()); why != "" {
-				w.m.setErr(w.name, why)
-				return
-			}
-			w.vetted = true
-		}
-		age := now.Sub(st.latest)
+		w.follow(st.endpoint)
+		age := now.Sub(w.shook)
 		if age > wgRekeyAfter && now.Sub(w.lastNudge) >= wgNudgeEvery {
 			w.nudge(now)
 		}
 		switch {
 		case age < wgStaleAfter && !w.up:
 			w.up, w.stale = true, time.Time{}
-			w.connected(now, st.endpoint)
+			w.connected(now)
 		case age >= wgStaleAfter && w.up:
 			w.up, w.stale = false, now
 			w.m.update(w.name, func(r *live) {
@@ -278,8 +287,63 @@ func (w *wgSession) supervise(ctx context.Context) {
 	}
 }
 
+// observe notes a handshake newer than the last one seen, stamped now.
+func (w *wgSession) observe(st wgStats, now time.Time) {
+	if !st.latest.IsZero() && !st.latest.Equal(w.seen) {
+		w.seen, w.shook = st.latest, now
+	}
+}
+
+// follow keeps up with the endpoint the device sends to. WireGuard moves a
+// peer's endpoint to wherever its authenticated packets come from (roaming:
+// a server with several addresses, or one that answers from another). The
+// new address joins the tunnel's servers, so no tunnel's routes ever carry
+// it — WireGuard's own packets looping into a tunnel. It isn't pinned: the
+// address is the server's choice, and a pin routes it around the main VPN,
+// so it's reached through that instead.
+func (w *wgSession) follow(endpoint string) {
+	ap, err := netip.ParseAddrPort(endpoint)
+	if err != nil {
+		return
+	}
+	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+	if ap == w.endpoint {
+		return
+	}
+	w.endpoint = ap
+	a := ap.Addr()
+	added := false
+	w.m.update(w.name, func(r *live) {
+		if r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting {
+			r.server = w.endpoint.String()
+		}
+		if !slices.Contains(r.servers, a) && len(r.servers) < 4*maxPins {
+			r.servers = append(r.servers, a)
+			added = true
+		}
+	})
+	if added {
+		if w.d.Via == domain.TunnelViaDirect && !slices.Contains(pinsOf(w.m, w.name), a) {
+			w.m.o.Log.Warn("tunnel server answers from an address that isn't pinned; it's reached through the main VPN",
+				"tunnel", w.name, "addr", a)
+		}
+		w.m.requestApply()
+	}
+	w.m.changed()
+}
+
+// pinsOf returns a tunnel's pinned server addresses.
+func pinsOf(m *Manager, name string) []netip.Addr {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r := m.rt[name]; r != nil {
+		return slices.Clone(r.bypass)
+	}
+	return nil
+}
+
 // connected records a (re)established tunnel and has its routes applied.
-func (w *wgSession) connected(now time.Time, endpoint string) {
+func (w *wgSession) connected(now time.Time) {
 	var local string
 	v6 := false
 	for _, a := range w.hosts {
@@ -290,7 +354,10 @@ func (w *wgSession) connected(now time.Time, endpoint string) {
 	}
 	w.m.update(w.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
-		r.iface, r.localIP, r.v6, r.server = w.iface, local, v6, endpoint
+		r.iface, r.localIP, r.v6 = w.iface, local, v6
+		if w.endpoint.IsValid() {
+			r.server = w.endpoint.String()
+		}
 		r.since = &now
 	})
 	w.m.requestApply()
@@ -310,9 +377,10 @@ func (w *wgSession) nudge(now time.Time) {
 	}
 }
 
-func (w *wgSession) hostPrefixes() []netip.Prefix {
+// hostPrefixes are addrs as single hosts, as they go on the interface.
+func hostPrefixes(addrs []netip.Addr) []netip.Prefix {
 	var out []netip.Prefix
-	for _, a := range w.hosts {
+	for _, a := range addrs {
 		out = append(out, netip.PrefixFrom(a, a.BitLen()))
 	}
 	return out
