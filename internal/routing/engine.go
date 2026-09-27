@@ -82,7 +82,7 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 
 	tunnels := PlanTunnels(in)
 	for _, p := range profs {
-		if !p.Enabled {
+		if !p.Enabled || p.Mode == domain.ModeTunnel { // a tunnel's routes: TunnelProfileRoutes
 			continue
 		}
 		byFamily := profilePrefixes(p, in)
@@ -298,6 +298,60 @@ func profilePrefixes(p domain.Profile, in DesiredInput) map[domain.Family][]neti
 	return byFamily
 }
 
+// TunnelProfileRoutes are the destinations of the enabled tunnel-mode
+// profiles, by the tunnel they go into: each profile's CIDRs, IPs, domains
+// (in.Domains) and lists (in.Lists), aggregated per tunnel, as the route
+// strings a tunnel's own list holds (a host as its bare address). They
+// become that tunnel's routes (TunnelInput.Routes).
+func TunnelProfileRoutes(in DesiredInput) map[string][]string {
+	byTunnel := map[string][]netip.Prefix{}
+	for _, p := range in.Profiles {
+		if !p.Enabled || p.Mode != domain.ModeTunnel || p.Tunnel == "" {
+			continue
+		}
+		for _, pfxs := range profilePrefixes(p, in) {
+			byTunnel[p.Tunnel] = append(byTunnel[p.Tunnel], pfxs...)
+		}
+	}
+	out := map[string][]string{}
+	for name, pfxs := range byTunnel {
+		// Anything holding the router, a resolver or an anchor (a /0 does) is
+		// left out and reported by PlanTunnels, as for a tunnel's own routes.
+		for _, p := range Aggregate(pfxs) {
+			s := p.String()
+			if p.Bits() == p.Addr().BitLen() {
+				s = p.Addr().String()
+			}
+			out[name] = append(out[name], s)
+		}
+	}
+	return out
+}
+
+// WithRoutes returns tunnels with extra routes added to each tunnel's own
+// (a tunnel with none keeps its list as it is).
+func WithRoutes(tunnels []TunnelInput, extra map[string][]string) []TunnelInput {
+	if len(extra) == 0 {
+		return tunnels
+	}
+	out := make([]TunnelInput, len(tunnels))
+	for i, t := range tunnels {
+		if add := extra[t.Name]; len(add) > 0 {
+			seen := map[string]bool{}
+			var routes []string
+			for _, r := range append(append([]string(nil), t.Routes...), add...) {
+				if !seen[r] {
+					seen[r] = true
+					routes = append(routes, r)
+				}
+			}
+			t.Routes = routes
+		}
+		out[i] = t
+	}
+	return out
+}
+
 // Destinations are the networks the enabled profiles route, by mode and
 // family, as if no tunnel were up — what a full apply's routes and include
 // rules are made of, before they are cut around live tunnels. Only which
@@ -328,7 +382,7 @@ func ProfileDestinations(in DesiredInput) Destinations {
 		unsure: map[string]map[domain.Family]bool{}, mode: map[string]domain.Mode{},
 	}
 	for _, p := range in.Profiles {
-		if !p.Enabled {
+		if !p.Enabled || p.Mode == domain.ModeTunnel { // routes nothing past or into the main VPN
 			continue
 		}
 		d.mode[p.ID] = p.Mode

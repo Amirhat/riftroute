@@ -72,6 +72,8 @@ type ProfileConfig struct {
 	Rules       []RuleConfig `yaml:"rules" toml:"rules"`
 	Lists       []string     `yaml:"lists" toml:"lists"`
 	IPVersion   []string     `yaml:"ip_version" toml:"ip_version"`
+	// Tunnel: with mode: tunnel, the tunnel its destinations go into.
+	Tunnel string `yaml:"tunnel,omitempty" toml:"tunnel,omitempty"`
 }
 
 // RuleConfig is a single rule entry.
@@ -151,6 +153,7 @@ func (c *Config) ToDomain() ([]domain.Profile, []domain.List, error) {
 			Gateway:     orDefault(pc.Gateway, "auto"),
 			Priority:    pc.Priority,
 			Lists:       pc.Lists,
+			Tunnel:      strings.TrimSpace(pc.Tunnel),
 		}
 		for _, fam := range pc.IPVersion {
 			p.IPVersion = append(p.IPVersion, domain.Family(fam))
@@ -189,6 +192,7 @@ func FromDomain(profiles []domain.Profile, lists []domain.List, splitDNS []domai
 			Gateway:     p.Gateway,
 			Priority:    p.Priority,
 			Lists:       p.Lists,
+			Tunnel:      p.Tunnel,
 		}
 		for _, f := range p.IPVersion {
 			pc.IPVersion = append(pc.IPVersion, string(f))

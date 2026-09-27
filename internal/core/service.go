@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -89,13 +90,53 @@ func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 			tunnels = append(tunnels, routing.TunnelInput{Name: t.Name, Routes: t.Routes})
 		}
 	}
-	plan := routing.PlanTunnels(s.networkInput(ctx, tunnels, nil))
+	refs, extra := s.tunnelProfiles(ctx)
+	plan := routing.PlanTunnels(s.networkInput(ctx, routing.WithRoutes(tunnels, extra), nil))
 	captured := routing.AppRuleCaptures(plan, s.actualManagedRules(ctx))
 	for i := range ts {
 		ts[i].Blocked = append(ts[i].Blocked, plan.Blocked[ts[i].Name]...)
 		ts[i].Captured = append(ts[i].Captured, captured[ts[i].Name]...)
+		ts[i].Profiles = refs[ts[i].Name]
 	}
 	return ts
+}
+
+// tunnelProfiles lists, by tunnel, the tunnel-mode profiles that send their
+// destinations into it — enabled or not, with how many destinations each
+// has — and the enabled ones' destinations (the stored profiles, as a full
+// apply would route them).
+func (s *Service) tunnelProfiles(ctx context.Context) (map[string][]domain.TunnelProfileRef, map[string][]string) {
+	if s.store == nil {
+		return nil, nil
+	}
+	profiles, err := s.store.ListProfiles()
+	if err != nil {
+		return nil, nil
+	}
+	var tp []domain.Profile
+	for _, p := range profiles {
+		if p.Mode == domain.ModeTunnel && p.Tunnel != "" {
+			tp = append(tp, p)
+		}
+	}
+	if len(tp) == 0 {
+		return nil, nil
+	}
+	in := routing.DesiredInput{Profiles: tp, Lists: s.listsMap(), Domains: s.resolveDomains(ctx, tp)}
+	refs := map[string][]domain.TunnelProfileRef{}
+	for _, p := range tp {
+		ref := domain.TunnelProfileRef{ID: p.ID, Name: p.Name, Enabled: p.Enabled}
+		if p.Enabled { // a disabled one's domains aren't looked up
+			one := in
+			one.Profiles = []domain.Profile{p}
+			ref.Routes = len(routing.TunnelProfileRoutes(one)[p.Tunnel])
+		}
+		refs[p.Tunnel] = append(refs[p.Tunnel], ref)
+	}
+	for _, rs := range refs {
+		slices.SortFunc(rs, func(a, b domain.TunnelProfileRef) int { return strings.Compare(a.Name, b.Name) })
+	}
+	return refs, routing.TunnelProfileRoutes(in)
 }
 
 // networkInput is the network side of desired state: the physical gateways,
@@ -308,6 +349,8 @@ func (s *Service) profileInput(ctx context.Context, profiles []domain.Profile) r
 	in.Domains = s.resolveDomains(ctx, profiles)
 	in.VPNGatewayV4, in.VPNIfaceV4 = vg4, vi4
 	in.VPNGatewayV6, in.VPNIfaceV6 = vg6, vi6
+	// Tunnel-mode profiles' destinations are their tunnels' routes.
+	in.Tunnels = routing.WithRoutes(in.Tunnels, routing.TunnelProfileRoutes(in))
 	return in
 }
 
@@ -349,7 +392,10 @@ func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) 
 	if owned == nil {
 		owned = []domain.ManagedRoute{} // owns nothing: don't let networkInput read the map again
 	}
-	in := s.networkInput(ctx, s.tunnels(), owned)
+	// The tunnel-mode profiles' destinations as the last full apply
+	// committed them: a profile saved but not applied must not reach the
+	// kernel through a tunnel event.
+	in := s.networkInput(ctx, routing.WithRoutes(s.tunnels(), s.loadProfileRoutes()), owned)
 	var others []domain.ManagedRoute
 	for _, o := range owned {
 		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
@@ -387,7 +433,8 @@ func (s *Service) DesiredForApply(ctx context.Context) ([]domain.ManagedRoute, [
 		return routes, rules, in.GatewayV4, nil, nil // nothing to record
 	}
 	y := yieldedTo(routing.PlanTunnels(in), bareRoutes, bareRules, routes)
-	return routes, rules, in.GatewayV4, func() { s.saveYielded(y) }, nil
+	pr := routing.TunnelProfileRoutes(in)
+	return routes, rules, in.GatewayV4, func() { s.saveYielded(y); s.saveProfileRoutes(pr) }, nil
 }
 
 // TunnelsActive reports whether a tunnel is running, or has routes recorded

@@ -185,8 +185,11 @@ func validate(c *Config, lines lineIndex, platform string) Result {
 		if mode == "" {
 			mode = "exclude"
 		}
-		if mode != "exclude" && mode != "include" {
-			add(SevError, base+".mode", "profiles.mode", fmt.Sprintf("invalid mode %q (expected exclude or include)", p.Mode))
+		if mode != "exclude" && mode != "include" && mode != "tunnel" {
+			add(SevError, base+".mode", "profiles.mode", fmt.Sprintf("invalid mode %q (expected exclude, include or tunnel)", p.Mode))
+		}
+		for _, is := range tunnelModeIssues(mode, p.Tunnel, len(p.Rules), func(j int) string { return p.Rules[j].Type }) {
+			add(SevError, base+"."+is.field, "profiles."+is.field, is.msg)
 		}
 		if mode == "include" && platform == "darwin" {
 			// macOS supports include mode via PF route-to anchors. `app` rules there
@@ -256,8 +259,11 @@ func ValidateProfile(p domain.Profile, platform string, knownLists map[string]bo
 	if mode == "" {
 		mode = "exclude"
 	}
-	if mode != "exclude" && mode != "include" {
-		add(SevError, "mode", fmt.Sprintf("invalid mode %q (expected exclude or include)", p.Mode))
+	if mode != "exclude" && mode != "include" && mode != "tunnel" {
+		add(SevError, "mode", fmt.Sprintf("invalid mode %q (expected exclude, include or tunnel)", p.Mode))
+	}
+	for _, is := range tunnelModeIssues(mode, p.Tunnel, len(p.Rules), func(j int) string { return string(p.Rules[j].Type) }) {
+		add(SevError, is.field, is.msg)
 	}
 	if mode == "include" && platform == "darwin" {
 		for _, rule := range p.Rules {
@@ -477,4 +483,29 @@ func yamlErrLine(err error) int {
 		return line
 	}
 	return 0
+}
+
+type fieldIssue struct{ field, msg string }
+
+// tunnelModeIssues checks a profile's tunnel target: a tunnel-mode profile
+// names its tunnel and carries destinations only — an app rule can't go
+// through a tunnel yet — and only a tunnel-mode profile names one.
+func tunnelModeIssues(mode, tunnel string, rules int, ruleType func(int) string) []fieldIssue {
+	var out []fieldIssue
+	tunnel = strings.TrimSpace(tunnel)
+	switch {
+	case mode == "tunnel" && tunnel == "":
+		out = append(out, fieldIssue{"tunnel", "a tunnel-mode profile names the tunnel its destinations go into"})
+	case mode != "tunnel" && tunnel != "":
+		out = append(out, fieldIssue{"tunnel", "only a tunnel-mode profile goes into a tunnel; set mode: tunnel, or remove tunnel"})
+	}
+	if mode == "tunnel" {
+		for j := 0; j < rules; j++ {
+			if ruleType(j) == "app" {
+				out = append(out, fieldIssue{fmt.Sprintf("rules[%d]", j),
+					"per-app rules can't go through a tunnel yet — use include mode for them, or remove the app rule"})
+			}
+		}
+	}
+	return out
 }

@@ -241,3 +241,33 @@ func TestMarkTunnelNamesTheTunnel(t *testing.T) {
 		}
 	}
 }
+
+// The tunnel's status lists the tunnel-mode profiles routed into it — with
+// their toggle state and how much each sends in — and checks their
+// destinations like its own routes.
+func TestTunnelStatusListsItsProfiles(t *testing.T) {
+	svc := newSvc(t)
+	for _, p := range []domain.Profile{
+		{ID: "a", Name: "via con3", Enabled: true, Mode: domain.ModeTunnel, Tunnel: "con3",
+			Rules: []domain.Rule{{Type: domain.RuleIP, Value: "9.9.9.9"}, {Type: domain.RuleCIDR, Value: "10.20.0.0/24"}}},
+		{ID: "b", Name: "off", Enabled: false, Mode: domain.ModeTunnel, Tunnel: "con3",
+			Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "172.16.0.0/12"}}},
+		{ID: "c", Name: "elsewhere", Enabled: true, Mode: domain.ModeTunnel, Tunnel: "other",
+			Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "192.0.2.0/24"}}},
+	} {
+		if err := svc.Store().UpsertProfile(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc.tunnelStatus = func() []domain.TunnelStatus {
+		return []domain.TunnelStatus{{Name: "con3", Type: domain.TunnelWireGuard, State: domain.TunnelDisconnected}}
+	}
+	ts := svc.TunnelStatuses(context.Background())
+	if len(ts) != 1 {
+		t.Fatalf("statuses = %+v", ts)
+	}
+	got := ts[0].Profiles
+	if len(got) != 2 || got[0].Name != "off" || got[0].Enabled || got[0].Routes != 0 || got[1].Name != "via con3" || !got[1].Enabled || got[1].Routes != 2 {
+		t.Fatalf("profiles of con3 = %+v", got)
+	}
+}

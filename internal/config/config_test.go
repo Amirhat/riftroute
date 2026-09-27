@@ -371,3 +371,38 @@ func TestPreferencesInConfig(t *testing.T) {
 		t.Fatalf("nil prefs must be omitted:\n%s", data)
 	}
 }
+
+// A tunnel-mode profile names its tunnel and holds destinations only; the
+// file round-trips its tunnel.
+func TestTunnelModeProfiles(t *testing.T) {
+	ok := domain.Profile{Name: "via con3", Mode: domain.ModeTunnel, Tunnel: "con3",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "10.20.0.0/24"}, {Type: domain.RuleDomain, Value: "*.corp.example.com"}}}
+	if r := ValidateProfile(ok, "darwin", nil); r.HasErrors() {
+		t.Fatalf("a valid tunnel-mode profile: %+v", r.Issues)
+	}
+	for name, p := range map[string]domain.Profile{
+		"no tunnel":           {Name: "a", Mode: domain.ModeTunnel},
+		"an app rule":         {Name: "b", Mode: domain.ModeTunnel, Tunnel: "con3", Rules: []domain.Rule{{Type: domain.RuleApp, Value: "501"}}},
+		"a tunnel on exclude": {Name: "c", Mode: domain.ModeExclude, Tunnel: "con3"},
+		"an unknown mode":     {Name: "d", Mode: "sideways"},
+	} {
+		if r := ValidateProfile(p, "linux", nil); !r.HasErrors() {
+			t.Errorf("%s: no error", name)
+		}
+	}
+
+	cfg, res := ParseBytes([]byte("version: 1\nprofiles:\n  - name: via-con3\n    enabled: true\n    mode: tunnel\n    tunnel: con3\n    rules:\n      - { type: cidr, value: 10.20.0.0/24 }\n"), FormatYAML, "linux")
+	if res.HasErrors() {
+		t.Fatalf("parse: %+v", res.Issues)
+	}
+	ps, _, err := cfg.ToDomain()
+	if err != nil || len(ps) != 1 || ps[0].Mode != domain.ModeTunnel || ps[0].Tunnel != "con3" {
+		t.Fatalf("to domain = %+v, %v", ps, err)
+	}
+	if back := FromDomain(ps, nil, nil, nil); back.Profiles[0].Tunnel != "con3" || back.Profiles[0].Mode != "tunnel" {
+		t.Errorf("round trip = %+v", back.Profiles[0])
+	}
+	if _, res := ParseBytes([]byte("version: 1\nprofiles:\n  - name: x\n    mode: tunnel\n"), FormatYAML, "linux"); !res.HasErrors() {
+		t.Error("a tunnel-mode profile without a tunnel parsed clean")
+	}
+}

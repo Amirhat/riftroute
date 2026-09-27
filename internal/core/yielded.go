@@ -39,11 +39,46 @@ func (s *Service) loadYielded() yielded {
 	return y
 }
 
-// ForgetYielded drops the record: a panic is about to flush what it
-// describes, and nothing may put it back. It runs right before the flush
-// (safety.PanicSteps.Flushing), once the changes the panic settles have
-// recorded theirs.
-func (s *Service) ForgetYielded() { s.saveYielded(yielded{}) }
+// ForgetRecords drops what full applies recorded for tunnel applies — what
+// yielded to the tunnels, and the tunnel-mode profiles' destinations: a
+// panic is about to flush what they describe, and nothing may put it back.
+// It runs right before the flush (safety.PanicSteps.Flushing), once the
+// changes the panic settles have recorded theirs.
+func (s *Service) ForgetRecords() {
+	s.saveYielded(yielded{})
+	s.saveProfileRoutes(nil)
+}
+
+// profileRoutesKey records the tunnel-mode profiles' destinations, by tunnel,
+// as the last committed full apply routed them (safety.Options.OnCommit).
+// Tunnel applies route those, never the profiles as stored: one saved but
+// not applied must not reach the kernel through a tunnel event.
+const profileRoutesKey = "tunnels.profile_routes"
+
+func (s *Service) loadProfileRoutes() map[string][]string {
+	var m map[string][]string
+	if s.store == nil {
+		return nil
+	}
+	if v, ok, err := s.store.GetSetting(profileRoutesKey); err == nil && ok {
+		_ = json.Unmarshal([]byte(v), &m)
+	}
+	return m
+}
+
+func (s *Service) saveProfileRoutes(m map[string][]string) {
+	if s.store == nil {
+		return
+	}
+	if m == nil {
+		m = map[string][]string{}
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	_ = s.store.SetSetting(profileRoutesKey, string(b))
+}
 
 func (s *Service) saveYielded(y yielded) {
 	if s.store == nil {

@@ -15,6 +15,10 @@ const (
 	// ModeInclude: nothing goes through the tunnel by default; only the
 	// profile's destinations are routed into it (Linux Model B).
 	ModeInclude Mode = "include"
+	// ModeTunnel: the profile's destinations go into one of RiftRoute's own
+	// tunnels (Profile.Tunnel) — they become that tunnel's routes, installed
+	// while it is up.
+	ModeTunnel Mode = "tunnel"
 )
 
 // RuleType is the kind of a profile rule (spec §5.1).
@@ -74,6 +78,8 @@ type Profile struct {
 	Rules       []Rule   `json:"rules"`
 	Lists       []string `json:"lists"`
 	IPVersion   []Family `json:"ip_version,omitempty"`
+	// Tunnel is the tunnel a ModeTunnel profile's destinations go into.
+	Tunnel string `json:"tunnel,omitempty"`
 }
 
 // List is a named, reusable set of rules; static (inline) or remote (spec §5.1).
