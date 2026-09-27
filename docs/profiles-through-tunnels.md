@@ -1,6 +1,7 @@
 # Profiles through a tunnel — design
 
-Status: design, for the release after 0.4.0.
+Status: implemented for the release after 0.4.0 (PR #26). Where the code
+differs from the plan below, it says so.
 
 ## What the user asked for
 
@@ -80,8 +81,11 @@ do then applies to them unchanged:
     This is a new record, `tunnels.profile_routes` (tunnel name →
     destinations). It is saved through the same `Options.OnCommit` as the
     yielded record, and cleared by a panic, in the same `Flushing` step.
-    Toggling a profile applies it, so the toggle takes effect at once in both
-    modes.
+    *As built:* the app's profile toggle saves, as it always has, and
+    "Apply changes" applies. The tunnel card's toggle does the same, and the
+    Tunnels page offers "Apply changes" too. So a toggle reaches the kernel
+    once it's applied and confirmed; a tunnel event before that routes
+    what's recorded.
 
 ## When the tunnel is down
 

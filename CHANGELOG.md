@@ -4,6 +4,23 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Profiles through a tunnel.** A profile has a third target next to
+  Exclude and Include: **Through a tunnel**. Everything it holds — CIDRs,
+  IPs, domains with wildcards, lists — goes into one of your tunnels
+  (OpenVPN or WireGuard) while it's connected, and takes its usual path
+  while it isn't. The tunnel's card lists the profiles sent into it, each
+  with its on/off toggle, and the lookup says "via tunnel <name>". In a
+  config file: `mode: tunnel` and `tunnel: <name>`.
+
+### Changed
+- **The route lookup names the tunnel** traffic goes into — "via tunnel
+  con3 · WireGuard", in the app and `riftroute route explain` — rather than
+  "via VPN" with a `tunnel:` profile tag. The routing table shows a tunnel's
+  routes as the tunnel's.
+
 ## [0.4.0] — 2026-09-27
 
 Tunnels: WireGuard, next to OpenVPN.
