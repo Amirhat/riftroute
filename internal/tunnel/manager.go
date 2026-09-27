@@ -1162,7 +1162,17 @@ func sameAddrs(a, b []netip.Addr) bool {
 // addressing.go) against this machine: its interfaces, the kernel's routes
 // into the tunnel, the protected addresses and the tunnel's own servers.
 func (m *Manager) vetAddressing(ctx context.Context, name, iface string, nets []netip.Prefix) string {
-	env := addressingEnv{iface: iface}
+	return m.vet(ctx, name, iface, nets, false)
+}
+
+// vetConfigured is vetAddressing for addresses from the tunnel's own
+// configuration (WireGuard's), checked before the interface holds them.
+func (m *Manager) vetConfigured(ctx context.Context, name, iface string, nets []netip.Prefix) string {
+	return m.vet(ctx, name, iface, nets, true)
+}
+
+func (m *Manager) vet(ctx context.Context, name, iface string, nets []netip.Prefix, configured bool) string {
+	env := addressingEnv{iface: iface, configured: configured}
 	if m.o.Ifaces != nil {
 		env.ifaces, _ = m.o.Ifaces(ctx)
 	}

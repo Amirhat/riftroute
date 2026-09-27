@@ -154,7 +154,7 @@ func (w wgDriver) run(ctx context.Context, m *Manager, name string, d *def, p *p
 	// the configuration: vet them before the interface holds them. One at the
 	// router, a LAN host or a resolver would cut this machine off at once —
 	// that's no route, so nothing would roll it back.
-	if why := m.vetAddressing(ctx, name, iface, hostPrefixes(hosts)); why != "" {
+	if why := m.vetConfigured(ctx, name, iface, hostPrefixes(hosts)); why != "" {
 		m.setErr(name, why)
 		return
 	}
@@ -232,12 +232,17 @@ type wgSession struct {
 	up             bool
 	lastNudge      time.Time
 	stale, resolve time.Time // when the tunnel went stale; the last re-resolve
-	// seen is the newest handshake the device reported (its wall-clock
-	// stamp), and shook when this session saw it change: every age is
+	// seen is each peer's last handshake as the device stamped it (wall
+	// clock), and shook when this session last saw one change: every age is
 	// measured on this machine's monotonic clock, so a clock step neither
 	// fails a live tunnel nor makes it flap.
-	seen, shook time.Time
-	endpoint    netip.AddrPort // the endpoint the device sends to now
+	seen  map[string]time.Time
+	shook time.Time
+	// endpoints are where the device sends to each peer now; server is the
+	// endpoint of the peer that shook hands last (serverKey).
+	endpoints map[string]netip.AddrPort
+	serverKey string
+	server    netip.AddrPort
 }
 
 func (w *wgSession) supervise(ctx context.Context) {
@@ -255,6 +260,7 @@ func (w *wgSession) supervise(ctx context.Context) {
 		st := readWGStats(w.dev)
 		w.m.update(w.name, func(r *live) { r.in, r.out = st.rx, st.tx })
 		w.observe(st, now)
+		w.follow(st)
 		if w.shook.IsZero() {
 			// Never shook hands in this session: WireGuard keeps retrying the
 			// handshake (every 5 s) until then.
@@ -264,7 +270,6 @@ func (w *wgSession) supervise(ctx context.Context) {
 			}
 			continue
 		}
-		w.follow(st.endpoint)
 		age := now.Sub(w.shook)
 		if age > wgRekeyAfter && now.Sub(w.lastNudge) >= wgNudgeEvery {
 			w.nudge(now)
@@ -287,49 +292,78 @@ func (w *wgSession) supervise(ctx context.Context) {
 	}
 }
 
-// observe notes a handshake newer than the last one seen, stamped now.
+// observe notes each peer's handshake that's newer than the last one seen
+// for it, stamped now.
 func (w *wgSession) observe(st wgStats, now time.Time) {
-	if !st.latest.IsZero() && !st.latest.Equal(w.seen) {
-		w.seen, w.shook = st.latest, now
+	if w.seen == nil {
+		w.seen = map[string]time.Time{}
+	}
+	for _, p := range st.peers {
+		if !p.stamp.IsZero() && !p.stamp.Equal(w.seen[p.key]) {
+			w.seen[p.key], w.shook, w.serverKey = p.stamp, now, p.key
+			if ap, ok := endpointOf(p.endpoint); ok {
+				w.server = ap
+			}
+		}
 	}
 }
 
-// follow keeps up with the endpoint the device sends to. WireGuard moves a
+// follow keeps up with the endpoints the device sends to. WireGuard moves a
 // peer's endpoint to wherever its authenticated packets come from (roaming:
-// a server with several addresses, or one that answers from another). The
+// a server with several addresses, or one that answers from another). Each
 // new address joins the tunnel's servers, so no tunnel's routes ever carry
 // it — WireGuard's own packets looping into a tunnel. It isn't pinned: the
 // address is the server's choice, and a pin routes it around the main VPN,
 // so it's reached through that instead.
-func (w *wgSession) follow(endpoint string) {
-	ap, err := netip.ParseAddrPort(endpoint)
-	if err != nil {
-		return
+func (w *wgSession) follow(st wgStats) {
+	if w.endpoints == nil {
+		w.endpoints = map[string]netip.AddrPort{}
 	}
-	ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
-	if ap == w.endpoint {
-		return
-	}
-	w.endpoint = ap
-	a := ap.Addr()
-	added := false
-	w.m.update(w.name, func(r *live) {
-		if r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting {
-			r.server = w.endpoint.String()
+	var fresh []netip.Addr
+	for _, p := range st.peers {
+		ap, ok := endpointOf(p.endpoint)
+		if !ok || ap == w.endpoints[p.key] {
+			continue
 		}
-		if !slices.Contains(r.servers, a) && len(r.servers) < 4*maxPins {
-			r.servers = append(r.servers, a)
-			added = true
+		w.endpoints[p.key] = ap
+		fresh = append(fresh, ap.Addr())
+		if p.key == w.serverKey {
+			w.server = ap
+		}
+	}
+	var added []netip.Addr
+	w.m.update(w.name, func(r *live) {
+		if w.server.IsValid() && (r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting) {
+			r.server = w.server.String()
+		}
+		for _, a := range fresh {
+			if !slices.Contains(r.servers, a) && len(r.servers) < 4*maxPins {
+				r.servers = append(r.servers, a)
+				added = append(added, a)
+			}
 		}
 	})
-	if added {
-		if w.d.Via == domain.TunnelViaDirect && !slices.Contains(pinsOf(w.m, w.name), a) {
+	if len(added) == 0 {
+		return
+	}
+	pins := pinsOf(w.m, w.name)
+	for _, a := range added {
+		if w.d.Via == domain.TunnelViaDirect && !slices.Contains(pins, a) {
 			w.m.o.Log.Warn("tunnel server answers from an address that isn't pinned; it's reached through the main VPN",
 				"tunnel", w.name, "addr", a)
 		}
-		w.m.requestApply()
 	}
+	w.m.requestApply()
 	w.m.changed()
+}
+
+// endpointOf parses an endpoint the device reports, unmapped.
+func endpointOf(s string) (netip.AddrPort, bool) {
+	ap, err := netip.ParseAddrPort(s)
+	if err != nil {
+		return netip.AddrPort{}, false
+	}
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), true
 }
 
 // pinsOf returns a tunnel's pinned server addresses.
@@ -355,8 +389,8 @@ func (w *wgSession) connected(now time.Time) {
 	w.m.update(w.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = w.iface, local, v6
-		if w.endpoint.IsValid() {
-			r.server = w.endpoint.String()
+		if w.server.IsValid() {
+			r.server = w.server.String()
 		}
 		r.since = &now
 	})
@@ -427,12 +461,17 @@ func (w *wgSession) reresolve(ctx context.Context) {
 	w.nudge(time.Now())
 }
 
-// wgStats is what the device reports: the newest handshake of any peer (and
-// that peer's endpoint), and the bytes through all of them.
+// wgStats is what the device reports: each peer's last handshake and
+// endpoint, and the bytes through all of them.
 type wgStats struct {
-	latest   time.Time
+	peers  []wgPeerStats
+	rx, tx uint64
+}
+
+type wgPeerStats struct {
+	key      string    // public_key, hex
+	stamp    time.Time // last handshake, as the device stamped it (zero: none)
 	endpoint string
-	rx, tx   uint64
 }
 
 func readWGStats(dev *device.Device) wgStats {
@@ -441,14 +480,11 @@ func readWGStats(dev *device.Device) wgStats {
 	if err != nil {
 		return st
 	}
+	var p *wgPeerStats
 	var sec, nsec int64
-	var endpoint string
 	flush := func() {
-		if sec == 0 && nsec == 0 {
-			return
-		}
-		if t := time.Unix(sec, nsec); t.After(st.latest) {
-			st.latest, st.endpoint = t, endpoint
+		if p != nil && (sec != 0 || nsec != 0) {
+			p.stamp = time.Unix(sec, nsec)
 		}
 	}
 	sc := bufio.NewScanner(strings.NewReader(text))
@@ -457,9 +493,12 @@ func readWGStats(dev *device.Device) wgStats {
 		switch k {
 		case "public_key":
 			flush()
-			sec, nsec, endpoint = 0, 0, ""
+			st.peers = append(st.peers, wgPeerStats{key: v})
+			p, sec, nsec = &st.peers[len(st.peers)-1], 0, 0
 		case "endpoint":
-			endpoint = v
+			if p != nil {
+				p.endpoint = v
+			}
 		case "last_handshake_time_sec":
 			sec, _ = strconv.ParseInt(v, 10, 64)
 		case "last_handshake_time_nsec":

@@ -421,7 +421,7 @@ func TestWireGuardVetsTheAddressBeforeTheInterfaceHoldsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := waitWG(t, m, "failed", func(s domain.TunnelStatus) bool { return s.State == domain.TunnelFailed })
-	if !strings.Contains(st.LastError, "192.168.1.1") {
+	if !strings.Contains(st.LastError, "the configuration's Address 192.168.1.1") {
 		t.Errorf("last error = %q", st.LastError)
 	}
 	if got := sys.configured(); len(got) != 0 {
@@ -518,22 +518,52 @@ func TestWireGuardFollowsARoamingServer(t *testing.T) {
 // — still counts, and an unchanged one never ages differently.
 func TestWireGuardTimesHandshakesByChange(t *testing.T) {
 	w := &wgSession{}
+	stamp := func(sec int64) wgStats { return wgStats{peers: []wgPeerStats{{key: "a", stamp: time.Unix(sec, 0)}}} }
 	t0 := time.Now()
-	w.observe(wgStats{}, t0)
+	w.observe(wgStats{peers: []wgPeerStats{{key: "a"}}}, t0)
 	if !w.shook.IsZero() {
 		t.Fatal("no handshake yet, but one was noted")
 	}
-	w.observe(wgStats{latest: time.Unix(100, 0)}, t0.Add(time.Second)) // a stamp in 1970
+	w.observe(stamp(100), t0.Add(time.Second)) // a stamp in 1970
 	if !w.shook.Equal(t0.Add(time.Second)) {
 		t.Fatalf("a handshake stamped before the session wasn't counted: %v", w.shook)
 	}
-	w.observe(wgStats{latest: time.Unix(100, 0)}, t0.Add(time.Minute))
+	w.observe(stamp(100), t0.Add(time.Minute))
 	if !w.shook.Equal(t0.Add(time.Second)) {
 		t.Fatalf("an unchanged handshake was renewed: %v", w.shook)
 	}
-	w.observe(wgStats{latest: time.Unix(50, 0)}, t0.Add(2*time.Minute)) // stepped back, but new
+	w.observe(stamp(50), t0.Add(2*time.Minute)) // stepped back, but new
 	if !w.shook.Equal(t0.Add(2 * time.Minute)) {
 		t.Fatalf("a new handshake wasn't noted: %v", w.shook)
+	}
+}
+
+// With several peers, each one's handshake and endpoint is followed on its
+// own: a peer whose stamp is older than another's still counts when it
+// changes, and its roam is followed at once.
+func TestWireGuardFollowsEveryPeer(t *testing.T) {
+	m := &Manager{o: Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, rt: map[string]*live{
+		"wg1": {state: domain.TunnelConnected, servers: []netip.Addr{netip.MustParseAddr("198.51.100.1"), netip.MustParseAddr("198.51.100.2")}},
+	}, ap: newApplier(func(context.Context) error { return nil }, slog.New(slog.NewTextHandler(io.Discard, nil)))}
+	t.Cleanup(m.ap.close)
+	w := &wgSession{m: m, name: "wg1", d: &def{Via: domain.TunnelViaDefault}}
+	t0 := time.Now()
+	st := wgStats{peers: []wgPeerStats{
+		{key: "a", stamp: time.Unix(2000, 0), endpoint: "198.51.100.1:51820"},
+		{key: "b", stamp: time.Unix(1000, 0), endpoint: "198.51.100.2:51820"},
+	}}
+	w.observe(st, t0)
+	w.follow(st)
+	st.peers[1].stamp = time.Unix(1500, 0) // b shook hands; still older than a's
+	st.peers[1].endpoint = "203.0.113.9:51820"
+	w.observe(st, t0.Add(time.Minute))
+	w.follow(st)
+	if !w.shook.Equal(t0.Add(time.Minute)) {
+		t.Errorf("b's handshake wasn't noted: %v", w.shook)
+	}
+	r := m.rt["wg1"]
+	if !slices.Contains(r.servers, netip.MustParseAddr("203.0.113.9")) || r.server != "203.0.113.9:51820" {
+		t.Errorf("b's roam: servers %v, server %q", r.servers, r.server)
 	}
 }
 
