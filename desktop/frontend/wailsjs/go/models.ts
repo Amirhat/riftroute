@@ -958,6 +958,8 @@ export namespace domain {
 	    owner?: string;
 	    profile?: string;
 	    via_vpn: boolean;
+	    tunnel?: string;
+	    tunnel_type?: string;
 	    reachable: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -975,6 +977,8 @@ export namespace domain {
 	        this.owner = source["owner"];
 	        this.profile = source["profile"];
 	        this.via_vpn = source["via_vpn"];
+	        this.tunnel = source["tunnel"];
+	        this.tunnel_type = source["tunnel_type"];
 	        this.reachable = source["reachable"];
 	    }
 	}

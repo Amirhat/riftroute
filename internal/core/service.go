@@ -988,9 +988,32 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 	}
 	vpnByIface := s.vpnByIface(ctx)
 	sim := routing.Simulate(overlay, addr, vpnByIface)
+	ts := s.TunnelStatuses(ctx)
+	markTunnel(&out.Kernel, ts)
+	markTunnel(&sim, ts)
 	out.Simulated = &sim
-	out.Drift = routing.Drift(dec, sim)
+	out.Drift = routing.Drift(out.Kernel, sim)
 	return out, nil
+}
+
+// markTunnel names the tunnel a decision sends traffic into: by its route's
+// tag (tunnel:<name>, the desired set), or by a live tunnel's interface (the
+// kernel's routes carry no tag on macOS).
+func markTunnel(d *domain.RouteDecision, ts []domain.TunnelStatus) {
+	if !d.Reachable {
+		return
+	}
+	name, tagged := strings.CutPrefix(d.Profile, routing.TunnelProfilePrefix)
+	for _, t := range ts {
+		live := t.Iface != "" && (t.State == domain.TunnelConnected || t.State == domain.TunnelReconnecting)
+		if (tagged && t.Name == name) || (!tagged && live && t.Iface == d.Iface) {
+			d.Tunnel, d.TunnelType = t.Name, t.Type
+			return
+		}
+	}
+	if tagged {
+		d.Tunnel = name
+	}
 }
 
 func (s *Service) vpnByIface(ctx context.Context) map[string]bool {

@@ -211,3 +211,33 @@ func TestDoctorChecksOpenVPNOnlyForOpenVPNTunnels(t *testing.T) {
 		t.Errorf("with an OpenVPN tunnel: tunnel-engine = %+v, want FAIL", c)
 	}
 }
+
+// A lookup names the tunnel the traffic goes into: by the route's tag in the
+// desired set, and by a live tunnel's interface in the kernel's decision
+// (macOS routes carry no tag) — not only "via VPN".
+func TestMarkTunnelNamesTheTunnel(t *testing.T) {
+	ts := []domain.TunnelStatus{
+		{Name: "con3", Type: domain.TunnelWireGuard, State: domain.TunnelConnected, Iface: "utun8"},
+		{Name: "old", Type: domain.TunnelOpenVPN, State: domain.TunnelDisconnected, Iface: "utun9"},
+	}
+	kernel := domain.RouteDecision{Reachable: true, Iface: "utun8", ViaVPN: true}
+	markTunnel(&kernel, ts)
+	if kernel.Tunnel != "con3" || kernel.TunnelType != domain.TunnelWireGuard {
+		t.Errorf("kernel decision = %+v", kernel)
+	}
+	desired := domain.RouteDecision{Reachable: true, Iface: "utun8", Profile: "tunnel:con3"}
+	markTunnel(&desired, ts)
+	if desired.Tunnel != "con3" || desired.TunnelType != domain.TunnelWireGuard {
+		t.Errorf("desired decision = %+v", desired)
+	}
+	for _, d := range []domain.RouteDecision{
+		{Reachable: true, Iface: "utun4", ViaVPN: true}, // the main VPN
+		{Reachable: true, Iface: "utun9"},               // a tunnel that's down
+		{Reachable: false, Iface: "utun8"},
+	} {
+		markTunnel(&d, ts)
+		if d.Tunnel != "" {
+			t.Errorf("%+v was taken for a tunnel", d)
+		}
+	}
+}
