@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, beforeAll } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RoutesView, filterRoutes } from './RoutesView'
 import { api } from '../lib/api'
@@ -116,6 +116,39 @@ describe('RoutesView', () => {
     expect(await screen.findByText('Now (kernel)')).toBeInTheDocument()
     expect(screen.getByText('After apply (desired)')).toBeInTheDocument()
     expect(mockApi.explain).toHaveBeenCalledWith('netflix.com')
+  })
+
+  it('names the tunnel a lookup goes into, not "via VPN" or a profile', async () => {
+    const d = {
+      target: '9.9.9.9',
+      source: 'kernel',
+      matched_cidr: '9.9.9.9/32',
+      iface: 'utun8',
+      family: 'v4',
+      via_vpn: true,
+      reachable: true,
+      profile: 'tunnel:con3',
+      tunnel: 'con3',
+      tunnel_type: 'wireguard',
+    }
+    mockApi.explain.mockResolvedValue({ target: '9.9.9.9', kernel: d, simulated: { ...d, source: 'simulated' }, drift: false })
+    renderView()
+    fireEvent.change(screen.getByLabelText('Lookup target'), { target: { value: '9.9.9.9' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }))
+    expect(await screen.findAllByText('via tunnel con3 · WireGuard')).toHaveLength(2)
+    const row = screen.getByText('Now (kernel)').parentElement as HTMLElement
+    expect(within(row).queryByText('via VPN')).not.toBeInTheDocument()
+    expect(within(row).queryByText(/profile: tunnel:con3/)).not.toBeInTheDocument()
+  })
+
+  it('shows a tunnel route as its tunnel’s, managed on the Tunnels page', async () => {
+    mockApi.routes.mockResolvedValue([
+      ...routes,
+      { dst_cidr: '9.9.9.9/32', iface: 'utun8', metric: 0, family: 'v4', owner: 'riftroute', profile: 'tunnel:con3' },
+    ])
+    renderView()
+    expect(await screen.findByText('tunnel con3')).toBeInTheDocument()
+    expect(screen.getByText('via tunnel')).toHaveAttribute('title', expect.stringContaining('Tunnels page'))
   })
 
   it('puts the cursor in the lookup box when asked (View → Explain)', async () => {

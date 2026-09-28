@@ -33,6 +33,16 @@ function isDefaultRoute(r: Route): boolean {
   return !r.table && (r.dst_cidr === '0.0.0.0/0' || r.dst_cidr === '::/0')
 }
 
+/** tunnelOf is the tunnel a route belongs to (its tag is tunnel:<name>), or "". */
+export function tunnelOf(profile?: string): string {
+  return profile?.startsWith('tunnel:') ? profile.slice('tunnel:'.length) : ''
+}
+
+/** tunnelTypeName is how a tunnel's protocol reads. */
+export function tunnelTypeName(t: string): string {
+  return t === 'wireguard' ? 'WireGuard' : t === 'openvpn' ? 'OpenVPN' : t
+}
+
 /** filterRoutes narrows the table by owner and free-text substring (destination,
  * gateway, interface, owner, profile, table). Pure — unit-tested directly. */
 export function filterRoutes(routes: Route[], q: string, owner: OwnerFilter): Route[] {
@@ -369,11 +379,18 @@ function DecisionRow({ label, d, drift }: { label: string; d: RouteDecision; dri
         <span className="text-muted">no route — unreachable</span>
       ) : (
         <>
-          <Badge tone={d.via_vpn ? 'vpn' : 'success'}>{d.via_vpn ? 'via VPN' : 'direct'}</Badge>
+          {d.tunnel ? (
+            <Badge tone="accent">
+              via tunnel {d.tunnel}
+              {d.tunnel_type ? ` · ${tunnelTypeName(d.tunnel_type)}` : ''}
+            </Badge>
+          ) : (
+            <Badge tone={d.via_vpn ? 'vpn' : 'success'}>{d.via_vpn ? 'via VPN' : 'direct'}</Badge>
+          )}
           <span className="ltr font-mono text-default">
             {d.matched_cidr || '—'} → {d.gateway || 'on-link'} <span className="text-muted">dev</span> {d.iface}
           </span>
-          {d.profile && <Badge tone="accent">profile: {d.profile}</Badge>}
+          {d.profile && !d.tunnel && <Badge tone="accent">profile: {d.profile}</Badge>}
         </>
       )}
       {drift && <Badge tone="warning">differs from current — drift</Badge>}
@@ -689,13 +706,23 @@ function RouteTable({
                   <div className="flex min-w-0 items-center gap-1.5">
                     <OwnerBadge owner={r.owner} />
                     {r.profile && (
-                      <span className="truncate text-xs text-muted" title={`managed by profile ${r.profile}`}>
-                        {r.profile}
+                      <span
+                        className="truncate text-xs text-muted"
+                        title={tunnelOf(r.profile) ? `a route of tunnel ${tunnelOf(r.profile)}` : `managed by profile ${r.profile}`}
+                      >
+                        {tunnelOf(r.profile) ? `tunnel ${tunnelOf(r.profile)}` : r.profile}
                       </span>
                     )}
                   </div>
                   <div className="flex items-center justify-end gap-1">
-                    {r.owner === 'riftroute' ? (
+                    {r.owner === 'riftroute' && tunnelOf(r.profile) ? (
+                      <span
+                        className="text-[11px] text-muted"
+                        title={`Managed by tunnel ${tunnelOf(r.profile)} — change its routes on the Tunnels page.`}
+                      >
+                        via tunnel
+                      </span>
+                    ) : r.owner === 'riftroute' ? (
                       <span className="text-[11px] text-muted" title={`Managed by profile ${r.profile || '—'} — edit it on the Profiles page (or under Manual routes above).`}>
                         via profile
                       </span>

@@ -127,6 +127,11 @@ type RouteDecision struct {
 	Owner       Owner  `json:"owner,omitempty"`
 	Profile     string `json:"profile,omitempty"`
 	ViaVPN      bool   `json:"via_vpn"`
+	// Tunnel names the RiftRoute tunnel the traffic goes into (its route, or
+	// its interface), and TunnelType its protocol: not the main VPN, though
+	// its interface is a VPN's too.
+	Tunnel     string     `json:"tunnel,omitempty"`
+	TunnelType TunnelType `json:"tunnel_type,omitempty"`
 	// Reachable is false when no matching route exists (blackhole/unreachable).
 	Reachable bool `json:"reachable"`
 }

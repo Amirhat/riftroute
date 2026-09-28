@@ -61,7 +61,12 @@ func renderDecision(cmd *cobra.Command, label string, d domain.RouteDecision) {
 		return
 	}
 	verdict := "DIRECT"
-	if d.ViaVPN {
+	switch {
+	case d.Tunnel != "" && d.TunnelType != "":
+		verdict = "via tunnel " + d.Tunnel + " (" + string(d.TunnelType) + ")"
+	case d.Tunnel != "":
+		verdict = "via tunnel " + d.Tunnel
+	case d.ViaVPN:
 		verdict = "via VPN"
 	}
 	gw := d.Gateway
