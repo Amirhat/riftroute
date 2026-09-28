@@ -67,7 +67,7 @@ func tunnelListCmd() *cobra.Command {
 				if server == "" {
 					server = strings.Join(t.Servers, ",")
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.Type, stateText(t), dash(t.Iface), server, t.Via, strings.Join(t.Routes, ", "))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.Type, stateText(t), dash(t.Iface), server, t.Via, routesText(t))
 			}
 			if err := tw.Flush(); err != nil {
 				return err
@@ -80,6 +80,23 @@ func tunnelListCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// routesText is a tunnel's own routes, then the profiles that send theirs in.
+func routesText(t domain.TunnelStatus) string {
+	parts := []string{}
+	if len(t.Routes) > 0 {
+		parts = append(parts, strings.Join(t.Routes, ", "))
+	}
+	for _, p := range t.Profiles {
+		if p.Enabled {
+			parts = append(parts, fmt.Sprintf("+ profile %s (%d)", p.Name, p.Routes))
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " ")
 }
 
 func stateText(t domain.TunnelStatus) string {

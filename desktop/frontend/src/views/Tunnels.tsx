@@ -4,10 +4,21 @@ import { api } from '../lib/api'
 import { stateKey, tunnelEngineKey, useStateQuery, useTunnelEngineQuery } from '../lib/queries'
 import { fmtBytes, fmtUptime, friendly } from '../lib/format'
 import { copyText, openURL } from '../lib/system'
-import { Addr, Badge, Card, Dot, Label, Skeleton } from '../components/ui'
+import { Addr, Badge, Card, Dot, Label, Skeleton, Toggle } from '../components/ui'
+import { CommitConfirm } from '../components/CommitConfirm'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { TunnelEditor } from '../components/TunnelEditor'
-import type { TunnelEngine, TunnelState, TunnelStatus, UpdateStatus } from '../types'
+import type {
+  ApplyResult,
+  TunnelEngine,
+  TunnelProfileRef,
+  TunnelState,
+  TunnelStatus,
+  UpdateStatus,
+} from '../types'
+
+const CONFIRM_SECONDS = 15
+const DAEMON_BACKSTOP_SEC = 60
 
 const stateTone: Record<TunnelState, 'success' | 'warning' | 'danger' | 'muted'> = {
   connected: 'success',
@@ -38,6 +49,11 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
   const engineProblemId = useId()
 
   const tunnels = stateQ.data?.tunnels ?? []
+  // A profile toggled here is saved, as on the Profiles page; "Apply
+  // changes" applies it, and the change is confirmed like any other.
+  const [pending, setPending] = useState<ApplyResult | null>(null)
+  const [applying, setApplying] = useState(false)
+  const drift = stateQ.data?.drift
   // openvpn matters to OpenVPN tunnels only — and before there's any
   // tunnel, to say what a first one would need. WireGuard is built in.
   const openvpnMatters = tunnels.length === 0 || tunnels.some((t) => (t.type || 'openvpn') === 'openvpn')
@@ -60,6 +76,47 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
       setError(friendly(e))
     } finally {
       setBusy(null)
+      refresh()
+    }
+  }
+
+  async function toggleProfile(p: TunnelProfileRef) {
+    setError(null)
+    setNotice(null)
+    try {
+      await api.setProfileEnabled(p.name, !p.enabled)
+    } catch (e) {
+      setError(friendly(e))
+    } finally {
+      refresh()
+    }
+  }
+
+  async function applyChanges() {
+    setError(null)
+    setApplying(true)
+    try {
+      const res = await api.apply(false /* interactive */, DAEMON_BACKSTOP_SEC)
+      if (res.violations && res.violations.length > 0) {
+        setError('Refused by guardrails: ' + res.violations.map((v) => v.rule).join(', '))
+      } else if (res.needs_confirm) {
+        setPending(res)
+      }
+    } catch (e) {
+      setError(friendly(e))
+    } finally {
+      setApplying(false)
+      refresh()
+    }
+  }
+
+  async function settle(keep: boolean) {
+    const tx = pending?.tx_id
+    setPending(null)
+    if (!tx) return
+    try {
+      await (keep ? api.confirm(tx) : api.rollback(tx))
+    } finally {
       refresh()
     }
   }
@@ -90,6 +147,23 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
           onRecheck={() => engineQ.refetch()}
           onOpenUpdates={onOpenUpdates}
         />
+      )}
+      {drift?.pending && tunnels.some((t) => (t.profiles ?? []).length > 0) && (
+        <Card tone="warning" className="flex items-center justify-between gap-3 p-3 text-sm">
+          <span>
+            <span className="font-semibold text-warning">Pending changes</span>
+            <span className="ms-2 text-muted">
+              {drift.adds ?? 0} to add · {drift.dels ?? 0} to remove
+            </span>
+          </span>
+          <button
+            onClick={applyChanges}
+            disabled={applying}
+            className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
+          >
+            {applying ? 'Applying…' : 'Apply changes'}
+          </button>
+        </Card>
       )}
       {error && (
         <Card tone="danger" className="p-3 text-sm text-danger">
@@ -146,6 +220,7 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
               onDisconnect={() => run(t.name, () => api.disconnectTunnel(t.name))}
               onEdit={() => setEditor({ mode: 'edit', tunnel: t })}
               onDelete={() => setDeleting(t)}
+              onToggleProfile={toggleProfile}
             />
           ),
         )
@@ -187,6 +262,14 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
         }}
         onCancel={() => setDeleting(null)}
       />
+      {pending && (
+        <CommitConfirm
+          result={pending}
+          seconds={CONFIRM_SECONDS}
+          onKeep={() => settle(true)}
+          onRevert={() => settle(false)}
+        />
+      )}
     </div>
   )
 }
@@ -430,6 +513,7 @@ function TunnelCard({
   onDisconnect,
   onEdit,
   onDelete,
+  onToggleProfile,
 }: {
   t: TunnelStatus
   busy: boolean
@@ -440,11 +524,13 @@ function TunnelCard({
   onDisconnect: () => void
   onEdit: () => void
   onDelete: () => void
+  onToggleProfile: (p: TunnelProfileRef) => void
 }) {
   const live = t.state === 'connected' || t.state === 'connecting' || t.state === 'reconnecting'
   const since = t.since ? Date.parse(t.since) : NaN
   const uptime = t.state === 'connected' && Number.isFinite(since)
   const routes = t.routes ?? []
+  const profilesOn = (t.profiles ?? []).some((p) => p.enabled)
   const blocked = new Map((t.blocked ?? []).map((b) => [b.route, b.reason]))
   const detail = t.detail && t.detail !== t.state ? t.detail : ''
   return (
@@ -535,7 +621,9 @@ function TunnelCard({
         </div>
         <div>
           <Label>Routed through this tunnel</Label>
-          {routes.length === 0 ? (
+          {routes.length === 0 && profilesOn ? (
+            <p className="mt-1 text-sm text-muted">Only what its profiles send in (below).</p>
+          ) : routes.length === 0 ? (
             <p className="mt-1 text-sm text-warning">Nothing yet — edit the tunnel to list the networks behind it.</p>
           ) : (
             <>
@@ -569,6 +657,29 @@ function TunnelCard({
             </>
           )}
         </div>
+        {(t.profiles ?? []).length > 0 && (
+          <div>
+            <Label>Profiles through this tunnel</Label>
+            <div className="mt-1.5 space-y-1.5">
+              {(t.profiles ?? []).map((p) => (
+                <div key={p.id} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="min-w-0 truncate">
+                    <span className="text-default">{p.name}</span>
+                    <span className="ms-2 text-xs text-muted">
+                      {p.enabled ? `${p.routes} destination${p.routes === 1 ? '' : 's'}` : 'off'}
+                    </span>
+                  </span>
+                  <Toggle
+                    on={p.enabled}
+                    onClick={() => onToggleProfile(p)}
+                    ariaLabel={`Send profile ${p.name} through ${t.name}`}
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="mt-1.5 text-xs text-muted">A change here is applied with “Apply changes”. Edit the profiles on the Profiles page.</p>
+          </div>
+        )}
         {(t.ignored ?? []).length > 0 && (
           <p className="text-xs text-muted">
             Ignored from the {t.type === 'wireguard' ? 'configuration' : 'profile'}:{' '}

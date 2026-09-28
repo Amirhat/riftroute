@@ -160,7 +160,7 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	// a panic must not put any of it back.
 	perr := s.proto.PanicWith(r.Context(), domain.ActorUI, safety.PanicSteps{
 		Before:   s.beforePanic,
-		Flushing: s.svc.ForgetYielded,
+		Flushing: s.svc.ForgetRecords,
 	})
 	// Restore the DNS baseline too: stop the wildcard learner and drop its
 	// resolver files (the protocol only owns routes/PF). A dangling resolver
@@ -379,6 +379,12 @@ func (s *Server) handleProfileSave(w http.ResponseWriter, r *http.Request) {
 	}
 	vres := config.ValidateProfile(p, s.svc.Platform(), known)
 	resp := ConfigResp{Issues: vres.Issues}
+	if p.Mode == domain.ModeTunnel && p.Tunnel != "" && s.tunnels != nil {
+		if _, ok := s.tunnels.Status(p.Tunnel); !ok {
+			resp.Issues = append(resp.Issues, config.Issue{Severity: config.SevWarning, Field: "tunnel",
+				Msg: fmt.Sprintf("there's no tunnel named %q yet; this profile routes nothing until there is", p.Tunnel)})
+		}
+	}
 	if vres.HasErrors() {
 		writeJSON(w, http.StatusBadRequest, resp)
 		return

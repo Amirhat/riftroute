@@ -888,6 +888,7 @@ export namespace domain {
 	    rules: Rule[];
 	    lists: string[];
 	    ip_version?: string[];
+	    tunnel?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Profile(source);
@@ -905,6 +906,7 @@ export namespace domain {
 	        this.rules = this.convertValues(source["rules"], Rule);
 	        this.lists = source["lists"];
 	        this.ip_version = source["ip_version"];
+	        this.tunnel = source["tunnel"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1090,6 +1092,24 @@ export namespace domain {
 	        this.port = source["port"];
 	    }
 	}
+	export class TunnelProfileRef {
+	    id: string;
+	    name: string;
+	    enabled: boolean;
+	    routes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelProfileRef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.enabled = source["enabled"];
+	        this.routes = source["routes"];
+	    }
+	}
 	export class TunnelBlocked {
 	    route: string;
 	    reason: string;
@@ -1117,6 +1137,7 @@ export namespace domain {
 	    ignored?: string[];
 	    blocked?: TunnelBlocked[];
 	    captured?: TunnelBlocked[];
+	    profiles?: TunnelProfileRef[];
 	    unreadable?: boolean;
 	    state: string;
 	    detail?: string;
@@ -1147,6 +1168,7 @@ export namespace domain {
 	        this.ignored = source["ignored"];
 	        this.blocked = this.convertValues(source["blocked"], TunnelBlocked);
 	        this.captured = this.convertValues(source["captured"], TunnelBlocked);
+	        this.profiles = this.convertValues(source["profiles"], TunnelProfileRef);
 	        this.unreadable = source["unreadable"];
 	        this.state = source["state"];
 	        this.detail = source["detail"];
@@ -1377,6 +1399,7 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
 	
 	export class TunnelSpec {
 	    name: string;

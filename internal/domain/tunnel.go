@@ -84,6 +84,9 @@ type TunnelStatus struct {
 	// another VPN, to these networks too. (Include rules for destinations
 	// yield to a live tunnel's networks; an app's can't.)
 	Captured []TunnelBlocked `json:"captured,omitempty"`
+	// Profiles are the tunnel-mode profiles that send their destinations
+	// into it (Profile.Tunnel), enabled or not.
+	Profiles []TunnelProfileRef `json:"profiles,omitempty"`
 
 	// Unreadable: the saved definition can't be read; the tunnel can only
 	// be deleted (and added again).
@@ -106,6 +109,16 @@ type TunnelStatus struct {
 type TunnelBlocked struct {
 	Route  string `json:"route"`
 	Reason string `json:"reason"`
+}
+
+// TunnelProfileRef is a tunnel-mode profile that sends its destinations
+// into a tunnel: what the tunnel's card lists, with the profile's toggle.
+type TunnelProfileRef struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+	// Routes is how many destinations it sends in (aggregated); 0 while off.
+	Routes int `json:"routes"`
 }
 
 // TunnelEngine reports whether the program tunnels run on (openvpn) is

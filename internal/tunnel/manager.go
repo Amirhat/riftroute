@@ -47,7 +47,13 @@ type Options struct {
 	OnChange func()
 	// WireGuard makes WireGuard's tun devices; nil is this OS's own.
 	WireGuard WGSystem
-	Log       *slog.Logger
+	// Owned reads the routes RiftRoute owns (the ownership map). A tunnel's
+	// own — tagged tunnel:<name>, on-link — include what tunnel-mode
+	// profiles send into it, which only the engine knows: on macOS they stay
+	// on the tunnel's interface across an openvpn restart, untagged, and
+	// mustn't be taken for routes the server pushed. nil: none.
+	Owned func() []domain.ManagedRoute
+	Log   *slog.Logger
 }
 
 // Manager runs the daemon's tunnels: it stores their definitions, runs one
@@ -1189,16 +1195,27 @@ func (m *Manager) vet(ctx context.Context, name, iface string, nets []netip.Pref
 	}
 	// Its own routes: on a reconnect they're still on the (persisted)
 	// interface, and macOS doesn't tag them as RiftRoute's.
+	var listed []netip.Prefix
 	if d := m.defs[name]; d != nil {
-		var listed []netip.Prefix
 		for _, s := range d.Routes {
 			if p, ok := routePrefix(s); ok {
 				listed = append(listed, p)
 			}
 		}
-		env.ours = routing.Aggregate(listed)
 	}
 	m.mu.Unlock()
+	// …and every route RiftRoute installed into it: a tunnel-mode profile's
+	// too (Owned).
+	if m.o.Owned != nil {
+		for _, o := range m.o.Owned() {
+			if o.ProfileID == routing.TunnelProfilePrefix+name && o.Route.Gateway == "" {
+				if p, ok := routePrefix(o.Route.DstCIDR); ok {
+					listed = append(listed, p)
+				}
+			}
+		}
+	}
+	env.ours = routing.Aggregate(listed)
 	var routes []domain.Route
 	if m.o.Routes != nil {
 		routes, _ = m.o.Routes(ctx)

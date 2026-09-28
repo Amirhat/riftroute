@@ -137,7 +137,7 @@ func TestPanicForgetsWhatYielded(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.setTunnels()
-	if err := h.proto.PanicWith(ctx, domain.ActorUI, safety.PanicSteps{Flushing: h.svc.ForgetYielded}); err != nil {
+	if err := h.proto.PanicWith(ctx, domain.ActorUI, safety.PanicSteps{Flushing: h.svc.ForgetRecords}); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.rec.ApplyTunnels(ctx); err != nil {
