@@ -50,6 +50,12 @@ since:
     `RollingBack`). The previous version may not know reject routes: its
     startup would forget their records, and on macOS leave them owned by
     nothing. Connected tunnels are still brought back.
+  - *As built:* the updater holds the apply lock from the swap until the
+    process exits, so neither of these final applies could run on the way
+    down (the review's second MEDIUM finding). The updater now **lends** its
+    lock to tunnel applies only (`Protocol.LendQuiesce`, applies marked
+    `Options.Lendable`) as it restarts the daemon. Every other change still
+    waits.
   - Known limit: a boot-guard rollback after a crash loop happens before
     this code runs. If a block-mode tunnel was blocking when the new version
     crashed, a version from before this feature can leave its reject route
