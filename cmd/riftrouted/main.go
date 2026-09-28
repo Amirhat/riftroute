@@ -157,7 +157,9 @@ func run() error {
 	// are stale: forget them before step 2 re-adds owned routes — by interface
 	// name, and after a reboot a tunnel's utun name may be another VPN's. Their
 	// server pins are withdrawn; one that won't delete is retried by the
-	// tunnels' resync below.
+	// tunnels' resync below. A block-mode tunnel's reject routes are kept for
+	// that resync to decide on: the block holds for a tunnel that's wanted
+	// again.
 	if n, terr := proto.DropTunnelRoutes(context.Background()); terr != nil {
 		logger.Warn("could not drop the previous run's tunnel routes", "err", terr)
 	} else if n > 0 {
@@ -653,9 +655,11 @@ func run() error {
 
 	// Tunnels first: their routes are withdrawn on the way down (tunnel
 	// applies commit at once). A restart the daemon does on its own (an
-	// update, a rollback) brings the connected ones back.
+	// update, a rollback) brings the connected ones back; an update keeps a
+	// block-mode tunnel's block meanwhile, a rollback withdraws it (the
+	// previous version may not know reject routes).
 	if restartCode.Load() != 0 {
-		tunnels.RememberForRestart()
+		tunnels.RememberForRestart(upd == nil || !upd.RollingBack())
 	}
 	tunnels.Shutdown()
 

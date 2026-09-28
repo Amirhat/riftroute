@@ -432,7 +432,7 @@ func TestTunnelsComeBackAfterAnUpdateRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, h.m, "infra", domain.TunnelConnected)
-	h.m.RememberForRestart()
+	h.m.RememberForRestart(true)
 	h.m.Shutdown()
 
 	m2, err := New(Options{Dir: h.dir, Launcher: h.fl, Ifaces: h.m.o.Ifaces, Resolve: h.m.o.Resolve,

@@ -105,6 +105,7 @@ type Updater struct {
 	wantNow    bool              // the user asked to install: the mode doesn't apply to it
 	wantMode   domain.UpdateMode // the mode when they asked (switching to Off later cancels)
 	installing bool              // swapped (or rolling back): nothing more until we exit
+	rollback   bool              // the restart is into the previous version (RequestRollback)
 	probation  bool              // this start is an update the boot guard hasn't confirmed
 	kick       chan struct{}
 	busy       sync.Mutex  // one check/stage/install at a time
@@ -558,6 +559,15 @@ func (u *Updater) keepOpenVPN(s *staged) (string, error) {
 	return how, nil
 }
 
+// RollingBack reports whether the daemon is restarting into the previous
+// version (RequestRollback) rather than a new one: what it leaves behind for
+// the next start must be something an older build understands.
+func (u *Updater) RollingBack() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.rollback
+}
+
 // RequestRollback asks for the previous binary back. It waits for a quiet
 // moment like an install does; the restore itself runs in BootGuard on the
 // next start (the database can't be replaced while it's open).
@@ -587,7 +597,7 @@ func (u *Updater) RequestRollback() error {
 		return err
 	}
 	u.mu.Lock()
-	u.installing = true
+	u.installing, u.rollback = true, true
 	u.mu.Unlock()
 	u.dropStaged()
 	u.env.Log.Warn("rollback requested by the user", "from", u.env.Current)

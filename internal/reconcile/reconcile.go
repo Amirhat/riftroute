@@ -105,6 +105,7 @@ func (r *Reconciler) applyTunnels(ctx context.Context) (safety.Result, error) {
 	opts.VetChangesOnly = true
 	opts.Unguarded = true
 	opts.BuiltOnRecord = true // it puts back what the last full apply made yield
+	opts.Lendable = true      // it runs under a restarting updater's lock (LendQuiesce)
 	return r.proto.ApplyBuilt(ctx, func(ctx context.Context, owned []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 		desired, rules, physGW, record, err := r.svc.TunnelsForApply(ctx, owned)
 		o.UseGateway(physGW)

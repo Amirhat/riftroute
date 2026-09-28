@@ -51,6 +51,11 @@ type Route struct {
 	// real route for the same destination replaces it, so it never "occupies"
 	// a destination.
 	Cloned bool `json:"cloned,omitempty"`
+	// Reject marks a route that refuses its destination: the sender gets
+	// "no route to host" (macOS RTF_REJECT via lo0, Linux type unreachable).
+	// It has no gateway and no interface. RiftRoute installs one for each
+	// destination of a tunnel set to block while it's down.
+	Reject bool `json:"reject,omitempty"`
 }
 
 // PolicyRule is a policy-routing selector: a Linux `ip rule` entry (Model B) or
@@ -134,6 +139,9 @@ type RouteDecision struct {
 	TunnelType TunnelType `json:"tunnel_type,omitempty"`
 	// Reachable is false when no matching route exists (blackhole/unreachable).
 	Reachable bool `json:"reachable"`
+	// Rejected: a reject route matches, so the traffic is refused. With
+	// Tunnel set, it's that tunnel's while it's down (block when down).
+	Rejected bool `json:"rejected,omitempty"`
 }
 
 // Capabilities lets the UI honestly enable/disable features the OS can't do

@@ -223,9 +223,11 @@ export function Profiles() {
                   priority {p.priority}
                   {!tunnelOf(p)
                     ? ` · there's no tunnel named ${p.tunnel} — this profile routes nothing`
-                    : tunnelOf(p)?.state !== 'connected' && tunnelOf(p)?.state !== 'reconnecting'
-                      ? ` · ${p.tunnel} isn't connected — its targets take their usual path`
-                      : ''}
+                    : tunnelOf(p)?.blocking
+                      ? ` · ${p.tunnel} is down — its targets are blocked until it's back`
+                      : tunnelOf(p)?.state !== 'connected'
+                        ? ` · ${p.tunnel} isn't connected — its targets take their usual path`
+                        : ''}
                 </div>
               ) : (
                 <div className="text-xs text-muted">

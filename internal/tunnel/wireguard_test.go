@@ -224,7 +224,8 @@ func TestWireGuardSession(t *testing.T) {
 }
 
 // A server that stops answering makes the tunnel reconnecting — its routes
-// stay — and one that comes back connects it again, without a restart.
+// leave it (fallback: they take the usual path) — and one that comes back
+// connects it again, without a restart.
 func TestWireGuardStaleHandshakeReconnects(t *testing.T) {
 	fastWG(t)
 	client, server := newWGKeys(t), newWGKeys(t)
@@ -244,8 +245,8 @@ func TestWireGuardStaleHandshakeReconnects(t *testing.T) {
 	if st.Detail != "waiting for a handshake" {
 		t.Errorf("reconnecting detail = %q", st.Detail)
 	}
-	if in := m.Inputs(); len(in) != 1 || in[0].Iface == "" {
-		t.Errorf("a reconnecting tunnel's routes went: %+v", in)
+	if in := m.Inputs(); len(in) != 1 || in[0].Iface != "" || in[0].Block {
+		t.Errorf("a reconnecting tunnel's routes stayed in it: %+v", in)
 	}
 
 	startWGServer(t, server, client, srv.port)

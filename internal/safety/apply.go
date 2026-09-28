@@ -108,6 +108,12 @@ type Options struct {
 	// that changes nothing records nothing, as it was built from a record
 	// that change is about to replace.
 	BuiltOnRecord bool
+	// Lendable marks a tunnel apply: one the quiesce holder lets through
+	// under its lock once it has lent it (LendQuiesce) — the last tunnel
+	// applies on the way into a restart, which leave the kernel as the next
+	// start expects (a block-mode tunnel's reject routes kept for an update,
+	// withdrawn for a rollback).
+	Lendable bool
 }
 
 // UseGateway points the guardrails and the watchdog at physGW, the physical
@@ -285,6 +291,12 @@ type Protocol struct {
 
 	panicking atomic.Int32 // panics in progress: every apply is refused
 
+	// quiesced: TryQuiesce's holder has the apply lock; lent: it lets
+	// Lendable applies through under it (LendQuiesce), one at a time
+	// (lentMu).
+	quiesced, lent atomic.Bool
+	lentMu         sync.Mutex
+
 	onSettled atomic.Pointer[func()] // see SetOnSettled
 }
 
@@ -309,7 +321,25 @@ func (p *Protocol) TryQuiesce(quiet time.Duration) (release func(), ok bool, why
 		return nil, false, fmt.Sprintf("a change was made in the last %s", quiet.Round(time.Minute))
 	}
 	var once sync.Once
-	return func() { once.Do(p.applyMu.Unlock) }, true, ""
+	p.quiesced.Store(true)
+	return func() {
+		once.Do(func() {
+			p.lent.Store(false)
+			p.quiesced.Store(false)
+			p.applyMu.Unlock()
+		})
+	}, true, ""
+}
+
+// LendQuiesce lets Lendable applies (the tunnels') through under the lock
+// TryQuiesce's holder keeps: the updater, restarting the daemon, calls it
+// so the tunnels' last applies on the way down can run — anything else
+// still waits for the lock, which is held until the process exits. A no-op
+// unless the lock is held that way.
+func (p *Protocol) LendQuiesce() {
+	if p.quiesced.Load() {
+		p.lent.Store(true)
+	}
 }
 
 // Busy reports whether a change is being applied or is still on probation
@@ -402,6 +432,17 @@ type Build func(ctx context.Context, owned []domain.ManagedRoute, opts *Options)
 // (a tunnel transition and an auto-apply racing would otherwise each revert
 // the other). A build error aborts before anything is touched.
 func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
+	if opts.Lendable && p.lent.Load() {
+		// The quiesce holder's lock covers it (LendQuiesce): nothing else
+		// applies meanwhile, and nothing is on probation (TryQuiesce
+		// checked).
+		if p.panicking.Load() > 0 {
+			return Result{Status: domain.TxFailed, Error: ErrPanicking.Error()}, ErrPanicking
+		}
+		p.lentMu.Lock()
+		defer p.lentMu.Unlock()
+		return p.applyBuilt(context.WithoutCancel(ctx), build, opts, nil)
+	}
 	if err := p.lockApply(ctx); err != nil {
 		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
@@ -1012,6 +1053,13 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 // and outlives its tunnel, so it is withdrawn from the kernel too; one that
 // won't delete keeps its record, for the tunnels' startup resync to withdraw
 // through the Apply Protocol. A tunnel re-pins when it connects.
+//
+// A reject route (a block-mode tunnel's, while it was down) is kept, record
+// and all: it names no interface, and whether it stays is the tunnel's to
+// say — the startup resync (which runs because it's recorded) keeps it for a
+// tunnel that's wanted again, so the block holds across a restart, and
+// withdraws it otherwise. Forgetting it would leave it in the kernel owned
+// by nothing (macOS tags no route), past a panic.
 func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	if p.store == nil {
 		return 0, nil
@@ -1025,7 +1073,7 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	ctx = provider.WithTableCache(ctx)
 	n := 0
 	for _, o := range owned {
-		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) || o.Reject {
 			continue
 		}
 		if o.Gateway != "" {
@@ -1050,11 +1098,12 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 // would go into whatever interface has the recorded name now
 // (DropTunnelRoutes then drops their records); in a guard's rollback the
 // tunnel may be gone too, and the tunnels re-apply what they still route
-// once it has settled (SetOnSettled).
+// once it has settled (SetOnSettled). A reject route names no interface: it
+// is put back like any other route.
 func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
 	out := ops[:0:0]
 	for _, op := range ops {
-		if op.Kind == domain.OpAddRoute && op.Route != nil && op.Route.Gateway == "" &&
+		if op.Kind == domain.OpAddRoute && op.Route != nil && op.Route.Gateway == "" && !op.Route.Reject &&
 			strings.HasPrefix(op.Route.ProfileID, routing.TunnelProfilePrefix) {
 			continue
 		}

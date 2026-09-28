@@ -78,6 +78,12 @@ func (p *Provider) ListRoutes(_ context.Context, family domain.Family) ([]domain
 		if vpnByName[ifName] {
 			owner = domain.OwnerVPN
 		}
+		// A reject (or blackhole) route refuses its destination; its
+		// loopback gateway is only how route(8) spells that.
+		reject := rm.Flags&(unix.RTF_REJECT|unix.RTF_BLACKHOLE) != 0
+		if reject {
+			gw, ifName, owner = "", "", domain.OwnerSystem
+		}
 
 		out = append(out, domain.Route{
 			DstCIDR: pfx.Masked().String(),
@@ -86,6 +92,7 @@ func (p *Provider) ListRoutes(_ context.Context, family domain.Family) ([]domain
 			Family:  family,
 			Owner:   owner,
 			Cloned:  rm.Flags&unix.RTF_WASCLONED != 0,
+			Reject:  reject,
 		})
 	}
 	return out, nil
@@ -200,6 +207,10 @@ func (p *Provider) LookupRoute(ctx context.Context, dst netip.Addr) (domain.Rout
 		return dec, nil
 	}
 	gw, ifn := parseRouteGet(out)
+	if routeGetRejects(out) {
+		dec.Rejected = true // refused by a reject route: nowhere to go
+		return dec, nil
+	}
 	dec.Gateway = gw
 	dec.Iface = ifn
 	dec.Reachable = ifn != ""
@@ -207,6 +218,24 @@ func (p *Provider) LookupRoute(ctx context.Context, dst netip.Addr) (domain.Rout
 		dec.ViaVPN = true
 	}
 	return dec, nil
+}
+
+// routeGetRejects reports whether `route -n get` matched a reject or
+// blackhole route (its flags line: "flags: <UP,DONE,REJECT,STATIC>").
+func routeGetRejects(out string) bool {
+	sc := bufio.NewScanner(strings.NewReader(out))
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if flags, ok := strings.CutPrefix(line, "flags:"); ok {
+			flags = strings.Trim(strings.TrimSpace(flags), "<>")
+			for _, f := range strings.Split(flags, ",") {
+				if f == "REJECT" || f == "BLACKHOLE" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // --- helpers ---

@@ -56,7 +56,18 @@ func renderExplain(cmd *cobra.Command, ex domain.RouteExplain) {
 
 func renderDecision(cmd *cobra.Command, label string, d domain.RouteDecision) {
 	out := cmd.OutOrStdout()
-	if !d.Reachable {
+	matched := d.MatchedCIDR
+	if matched != "" {
+		matched = " matches " + matched
+	}
+	switch {
+	case d.Rejected && d.Tunnel != "":
+		fmt.Fprintf(out, "  [%s]%s → blocked: tunnel %s is down (it's set to block when down)\n", label, matched, d.Tunnel)
+		return
+	case d.Rejected:
+		fmt.Fprintf(out, "  [%s]%s → blocked (a reject route refuses it)\n", label, matched)
+		return
+	case !d.Reachable:
 		fmt.Fprintf(out, "  [%s] unreachable (no matching route)\n", label)
 		return
 	}
@@ -72,10 +83,6 @@ func renderDecision(cmd *cobra.Command, label string, d domain.RouteDecision) {
 	gw := d.Gateway
 	if gw == "" {
 		gw = "on-link"
-	}
-	matched := d.MatchedCIDR
-	if matched != "" {
-		matched = " matches " + matched
 	}
 	fmt.Fprintf(out, "  [%s]%s → via %s dev %s — %s\n", label, matched, gw, d.Iface, verdict)
 }

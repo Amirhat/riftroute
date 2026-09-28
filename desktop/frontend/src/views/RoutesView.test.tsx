@@ -141,6 +141,40 @@ describe('RoutesView', () => {
     expect(within(row).queryByText(/profile: tunnel:con3/)).not.toBeInTheDocument()
   })
 
+  it('says a lookup is blocked while its tunnel is down, not unreachable', async () => {
+    const d = {
+      target: '9.9.9.9',
+      source: 'kernel',
+      matched_cidr: '9.9.9.9/32',
+      iface: '',
+      family: 'v4',
+      via_vpn: false,
+      reachable: false,
+      rejected: true,
+      profile: 'tunnel:con3',
+      tunnel: 'con3',
+    }
+    mockApi.explain.mockResolvedValue({ target: '9.9.9.9', kernel: d, simulated: { ...d, source: 'simulated' }, drift: false })
+    renderView()
+    fireEvent.change(screen.getByLabelText('Lookup target'), { target: { value: '9.9.9.9' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Look up' }))
+    expect(await screen.findAllByText('blocked · tunnel con3 is down')).toHaveLength(2)
+    const row = screen.getByText('Now (kernel)').parentElement as HTMLElement
+    expect(within(row).getByText('9.9.9.9/32 → reject')).toBeInTheDocument()
+    expect(within(row).queryByText(/unreachable/)).not.toBeInTheDocument()
+  })
+
+  it('shows a down tunnel’s reject route as blocked', async () => {
+    mockApi.routes.mockResolvedValue([
+      ...routes,
+      { dst_cidr: '9.9.9.9/32', iface: '', metric: 0, family: 'v4', owner: 'riftroute', profile: 'tunnel:con3', reject: true },
+    ])
+    renderView()
+    expect(await screen.findByText('tunnel con3')).toBeInTheDocument()
+    expect(screen.getByText('reject')).toBeInTheDocument()
+    expect(screen.getByText('blocked')).toHaveAttribute('title', expect.stringMatching(/Tunnel con3 is down and set to block/))
+  })
+
   it('shows a tunnel route as its tunnel’s, managed on the Tunnels page', async () => {
     mockApi.routes.mockResolvedValue([
       ...routes,

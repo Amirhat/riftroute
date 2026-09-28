@@ -284,3 +284,59 @@ func TestTunnelAddWireGuard(t *testing.T) {
 		t.Fatalf("an .ovpn for a WireGuard tunnel: %v", err)
 	}
 }
+
+// --when-down is set on add and changed by edit (and kept by an edit that
+// doesn't pass it); list shows it, and a value that isn't one is refused
+// before anything is sent.
+func TestTunnelWhenDown(t *testing.T) {
+	sock := tunnelDaemon(t)
+	if _, _, err := runCLI(t, sock, "", "tunnel", "add", "infra", writeProfile(t, plainProfile), "--when-down", "drop"); err == nil ||
+		!strings.Contains(err.Error(), `--when-down takes "fallback" or "block"`) {
+		t.Fatalf("a bad value: %v", err)
+	}
+	if _, errOut, err := runCLI(t, sock, "", "tunnel", "add", "infra", writeProfile(t, plainProfile), "--route", "10.20.0.0/24", "--when-down", "block"); err != nil {
+		t.Fatalf("add: %v\n%s", err, errOut)
+	}
+	whenDown := func() domain.TunnelWhenDown {
+		t.Helper()
+		out, _, err := runCLI(t, sock, "", "tunnel", "list", "--json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ts []domain.TunnelStatus
+		oneJSON(t, out, &ts)
+		return ts[0].WhenDown
+	}
+	if got := whenDown(); got != domain.TunnelBlock {
+		t.Fatalf("after add: %q", got)
+	}
+	out, _, err := runCLI(t, sock, "", "tunnel", "list")
+	if err != nil || !strings.Contains(out, "WHEN DOWN") || !strings.Contains(out, "block") {
+		t.Fatalf("list: %v\n%s", err, out)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "edit", "infra", "--route", "10.30.0.0/24"); err != nil {
+		t.Fatal(err)
+	}
+	if got := whenDown(); got != domain.TunnelBlock {
+		t.Fatalf("an edit without --when-down changed it: %q", got)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "edit", "infra", "--when-down", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if got := whenDown(); got != domain.TunnelFallback {
+		t.Fatalf("after edit: %q", got)
+	}
+}
+
+// explain says a destination is blocked by its down tunnel, not unreachable.
+func TestExplainSaysBlocked(t *testing.T) {
+	var out bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&out)
+	renderDecision(cmd, "kernel", domain.RouteDecision{Rejected: true, MatchedCIDR: "9.9.9.9/32", Tunnel: "con3"})
+	renderDecision(cmd, "simulated", domain.RouteDecision{Rejected: true})
+	if got := out.String(); !strings.Contains(got, "[kernel] matches 9.9.9.9/32 → blocked: tunnel con3 is down") ||
+		!strings.Contains(got, "[simulated] → blocked (a reject route refuses it)") || strings.Contains(got, "unreachable") {
+		t.Fatalf("explain:\n%s", got)
+	}
+}

@@ -22,10 +22,16 @@ func (p *Provider) AddRoute(ctx context.Context, mr domain.ManagedRoute) error {
 		return err
 	}
 	args := []string{"route", "add", mr.Route.DstCIDR}
-	if mr.Route.Gateway != "" {
-		args = append(args, "via", mr.Route.Gateway)
+	switch {
+	case mr.Route.Reject:
+		// A reject route refuses its destination ("no route to host"):
+		// no next hop, no device.
+		args = []string{"route", "add", "unreachable", mr.Route.DstCIDR, "proto", protoArg(mr.Route.Proto)}
+	case mr.Route.Gateway != "":
+		args = append(args, "via", mr.Route.Gateway, "dev", mr.Route.Iface, "proto", protoArg(mr.Route.Proto))
+	default:
+		args = append(args, "dev", mr.Route.Iface, "proto", protoArg(mr.Route.Proto))
 	}
-	args = append(args, "dev", mr.Route.Iface, "proto", protoArg(mr.Route.Proto))
 	if mr.Route.Metric > 0 {
 		args = append(args, "metric", fmt.Sprint(mr.Route.Metric))
 	}
@@ -51,6 +57,11 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 		return fmt.Errorf("linux: invalid destination CIDR %q", mr.Route.DstCIDR)
 	}
 	args := []string{"route", "del", mr.Route.DstCIDR, "proto", protoArg(mr.Route.Proto)}
+	if mr.Route.Reject {
+		// Only the reject route: a route of another type for the same
+		// destination isn't this one.
+		args = []string{"route", "del", "unreachable", mr.Route.DstCIDR, "proto", protoArg(mr.Route.Proto)}
+	}
 	if mr.Route.Table != "" {
 		args = append(args, "table", mr.Route.Table)
 	}
@@ -168,6 +179,12 @@ func validateManaged(mr domain.ManagedRoute) error {
 		if _, err := netip.ParseAddr(mr.Route.Gateway); err != nil {
 			return fmt.Errorf("linux: invalid gateway %q", mr.Route.Gateway)
 		}
+	}
+	if mr.Route.Reject {
+		if mr.Route.Gateway != "" || mr.Route.Iface != "" {
+			return fmt.Errorf("linux: a reject route has no gateway or interface")
+		}
+		return nil
 	}
 	if strings.TrimSpace(mr.Route.Iface) == "" {
 		return fmt.Errorf("linux: empty interface")

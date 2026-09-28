@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -269,5 +270,70 @@ func TestTunnelStatusListsItsProfiles(t *testing.T) {
 	got := ts[0].Profiles
 	if len(got) != 2 || got[0].Name != "off" || got[0].Enabled || got[0].Routes != 0 || got[1].Name != "via con3" || !got[1].Enabled || got[1].Routes != 2 {
 		t.Fatalf("profiles of con3 = %+v", got)
+	}
+}
+
+// On macOS the kernel's refusal carries no tag: the lookup finds whose it
+// is by the most specific owned reject route holding the target, and names
+// that tunnel. Routes that aren't reject routes, or don't hold it, don't.
+func TestRefusalIsAttributedToItsTunnel(t *testing.T) {
+	owned := []domain.ManagedRoute{
+		{Route: domain.Route{DstCIDR: "9.0.0.0/8", Family: domain.FamilyV4, Reject: true}, ProfileID: "tunnel:wide"},
+		{Route: domain.Route{DstCIDR: "9.9.9.0/24", Family: domain.FamilyV4, Reject: true}, ProfileID: "tunnel:con3"},
+		{Route: domain.Route{DstCIDR: "9.9.9.9/32", Gateway: "192.168.1.1", Family: domain.FamilyV4}, ProfileID: "p1"},
+	}
+	if got := rejectedBy(netip.MustParseAddr("9.9.9.9"), owned); got != "tunnel:con3" {
+		t.Errorf("rejectedBy = %q", got)
+	}
+	if got := rejectedBy(netip.MustParseAddr("8.8.8.8"), owned); got != "" {
+		t.Errorf("rejectedBy(8.8.8.8) = %q", got)
+	}
+	d := domain.RouteDecision{Rejected: true, Profile: "tunnel:con3"}
+	markTunnel(&d, []domain.TunnelStatus{{Name: "con3", Type: domain.TunnelWireGuard, State: domain.TunnelReconnecting}})
+	if d.Tunnel != "con3" || d.TunnelType != domain.TunnelWireGuard {
+		t.Errorf("marked = %+v", d)
+	}
+	// A refusal isn't a live tunnel's interface match.
+	d = domain.RouteDecision{Rejected: true, Iface: "utun8"}
+	markTunnel(&d, []domain.TunnelStatus{{Name: "con3", State: domain.TunnelConnected, Iface: "utun8"}})
+	if d.Tunnel != "" {
+		t.Errorf("an untagged refusal was taken for a live tunnel: %+v", d)
+	}
+}
+
+// The doctor warns about a tunnel that's down and blocking — how many of
+// its destinations are refused, and which aren't yet — and says how to stop
+// it; a failed one's check says so beside its error.
+func TestDoctorReportsABlockingTunnel(t *testing.T) {
+	svc := newSvc(t)
+	ctx := context.Background()
+	in := routing.TunnelInput{Name: "con3", Block: true, Routes: []string{"9.9.9.9", "10.20.0.0/24"}}
+	svc.SetTunnels(func() []routing.TunnelInput { return []routing.TunnelInput{in} }, func() []domain.TunnelStatus {
+		return []domain.TunnelStatus{{Name: "con3", Routes: in.Routes, State: domain.TunnelReconnecting, WhenDown: domain.TunnelBlock, Blocking: true}}
+	})
+	desired, _, _, err := svc.DesiredTunnelsOnly(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range desired {
+		if d.DstCIDR == "9.9.9.9/32" {
+			if err := svc.Provider().AddRoute(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	c := tunnelCheck(t, svc, "con3")
+	if c.Status != domain.CheckWarn || !strings.Contains(c.Detail, "1 destination(s) blocked") ||
+		!strings.Contains(c.Detail, "not blocked yet") || !strings.Contains(c.Detail, "10.20.0.0/24") ||
+		!strings.Contains(c.Fix, "tunnel down con3") {
+		t.Errorf("check = %+v", c)
+	}
+
+	svc.tunnelStatus = func() []domain.TunnelStatus {
+		return []domain.TunnelStatus{{Name: "con3", Routes: in.Routes, State: domain.TunnelFailed, LastError: "gave up", Blocking: true}}
+	}
+	if c := tunnelCheck(t, svc, "con3"); c.Status != domain.CheckFail || !strings.Contains(c.Detail, "gave up; 1 destination(s) blocked") ||
+		!strings.Contains(c.Fix, "to stop blocking") {
+		t.Errorf("failed check = %+v", c)
 	}
 }

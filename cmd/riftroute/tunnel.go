@@ -61,13 +61,14 @@ func tunnelListCmd() *cobra.Command {
 				return nil
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tTYPE\tSTATE\tIFACE\tSERVER\tVIA\tROUTES")
+			fmt.Fprintln(tw, "NAME\tTYPE\tSTATE\tIFACE\tSERVER\tVIA\tWHEN DOWN\tROUTES")
 			for _, t := range ts {
 				server := t.Server
 				if server == "" {
 					server = strings.Join(t.Servers, ",")
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.Type, stateText(t), dash(t.Iface), server, t.Via, routesText(t))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", t.Name, t.Type, stateText(t), dash(t.Iface), server, t.Via,
+					orStr(string(t.WhenDown), string(domain.TunnelFallback)), routesText(t))
 			}
 			if err := tw.Flush(); err != nil {
 				return err
@@ -75,6 +76,9 @@ func tunnelListCmd() *cobra.Command {
 			for _, t := range ts {
 				if t.LastError != "" {
 					fmt.Fprintf(cmd.OutOrStdout(), "\n%s: %s\n", t.Name, t.LastError)
+				}
+				if t.Blocking {
+					fmt.Fprintf(cmd.OutOrStdout(), "\n%s is down and set to block: its destinations are refused until it's back (`riftroute tunnel down %s` stops that)\n", t.Name, t.Name)
 				}
 			}
 			return nil
@@ -120,6 +124,7 @@ type tunnelFlags struct {
 	routes        []string
 	via           string
 	autoConnect   bool
+	whenDown      string
 	connect       bool
 }
 
@@ -132,7 +137,17 @@ func (f *tunnelFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().StringArrayVar(&f.routes, "route", nil, "a CIDR or IP to send into the tunnel (repeatable)")
 	cmd.Flags().StringVar(&f.via, "via", "", `how to reach the server: "direct" (bypass other VPNs, default) or "default" (through them)`)
 	cmd.Flags().BoolVar(&f.autoConnect, "auto-connect", false, "connect whenever the daemon starts")
+	cmd.Flags().StringVar(&f.whenDown, "when-down", "", `while it's down: "fallback" (its destinations take the usual path, default) or "block" (they're refused until it's back)`)
 	cmd.Flags().BoolVar(&f.connect, "connect", false, "connect right after saving")
+}
+
+// checkWhenDown vets --when-down before anything is read or sent.
+func (f *tunnelFlags) checkWhenDown() error {
+	switch domain.TunnelWhenDown(f.whenDown) {
+	case "", domain.TunnelFallback, domain.TunnelBlock:
+		return nil
+	}
+	return fmt.Errorf("--when-down takes %q or %q, not %q", domain.TunnelFallback, domain.TunnelBlock, f.whenDown)
 }
 
 // stdinTerminal reports whether a command's stdin is a terminal, with its
@@ -171,10 +186,13 @@ func tunnelAddCmd() *cobra.Command {
 		Short: "Import an OpenVPN profile or a WireGuard configuration as a tunnel",
 		Example: "  riftroute tunnel add infra ~/Downloads/office.ovpn \\\n" +
 			"    --route 192.168.70.0/24 --route 192.168.72.11 --connect\n" +
-			"  riftroute tunnel add lab ~/Downloads/lab-wg0.conf --route 10.20.0.0/16",
+			"  riftroute tunnel add lab ~/Downloads/lab-wg0.conf --route 10.20.0.0/16 --when-down block",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := f.checkPasswordStdin(cmd); err != nil {
+				return err
+			}
+			if err := f.checkWhenDown(); err != nil {
 				return err
 			}
 			if _, err := findTunnel(cmd.Context(), args[0]); err == nil && !replace {
@@ -189,7 +207,7 @@ func tunnelAddCmd() *cobra.Command {
 				}
 				spec := domain.TunnelSpec{
 					Name: args[0], Type: domain.TunnelWireGuard, Config: raw, Routes: f.routes,
-					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect,
+					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
 				}
 				if len(f.routes) == 0 {
 					fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes (its AllowedIPs never become routes)")
@@ -207,6 +225,7 @@ func tunnelAddCmd() *cobra.Command {
 			spec := domain.TunnelSpec{
 				Name: args[0], Type: domain.TunnelOpenVPN, Config: text, Routes: f.routes,
 				Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, Username: f.username,
+				WhenDown: domain.TunnelWhenDown(f.whenDown),
 			}
 			if creds != nil {
 				spec.Username, spec.Password = orStr(spec.Username, creds.Username), creds.Password
@@ -250,9 +269,12 @@ func tunnelEditCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if err := f.checkWhenDown(); err != nil {
+				return err
+			}
 			spec := domain.TunnelSpec{
 				Name: cur.Name, Type: cur.Type, Routes: cur.Routes, Via: cur.Via, AutoConnect: cur.AutoConnect,
-				Username: f.username,
+				WhenDown: cur.WhenDown, Username: f.username,
 			}
 			if profile != "" {
 				raw, err := tunnel.ReadProfileFile(profile)
@@ -288,6 +310,9 @@ func tunnelEditCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("auto-connect") {
 				spec.AutoConnect = f.autoConnect
+			}
+			if cmd.Flags().Changed("when-down") {
+				spec.WhenDown = domain.TunnelWhenDown(f.whenDown)
 			}
 			if f.passwordStdin || askPass {
 				// A replaced profile decides; otherwise the saved one does.

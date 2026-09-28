@@ -177,6 +177,10 @@ func newUpdater(ctx context.Context, st *store.Store, proto *safety.Protocol, cu
 			return nil
 		},
 		Restart: func() {
+			// The updater keeps the apply lock until the process exits; the
+			// tunnels' last applies on the way down still go through (see
+			// Manager.RememberForRestart), nothing else does.
+			proto.LendQuiesce()
 			restart.Store(updater.RestartExitCode)
 			stop()
 		},

@@ -545,6 +545,7 @@ function TunnelCard({
             {detail && t.state !== 'connected' ? ` · ${detail.replace(/_/g, ' ')}` : ''}
           </Badge>
           {t.auto_connect && <Badge tone="muted">auto-connect</Badge>}
+          {t.when_down === 'block' && <Badge tone="muted">blocks when down</Badge>}
         </div>
         <div className="flex items-center gap-2">
           {/* Every card has these buttons: the names say which tunnel. */}
@@ -574,21 +575,41 @@ function TunnelCard({
               {busy ? 'Disconnecting…' : 'Disconnect'}
             </button>
           ) : (
-            <button
-              onClick={onConnect}
-              disabled={busy || !canConnect}
-              aria-label={`${busy ? 'Connecting' : 'Connect'} ${t.name}`}
-              aria-describedby={canConnect ? undefined : whyNotId}
-              title={canConnect ? undefined : "OpenVPN isn't usable yet (see above)"}
-              className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
-            >
-              {busy ? 'Connecting…' : 'Connect'}
-            </button>
+            <>
+              {t.blocking && (
+                // Down and still blocking (it failed): disconnecting is
+                // what lets its networks take the usual path again.
+                <button
+                  onClick={onDisconnect}
+                  disabled={busy}
+                  aria-label={`Stop blocking ${t.name}`}
+                  className="rounded-lg border border-line px-3 py-1.5 text-sm text-default hover:bg-elevated disabled:opacity-50"
+                >
+                  Stop blocking
+                </button>
+              )}
+              <button
+                onClick={onConnect}
+                disabled={busy || !canConnect}
+                aria-label={`${busy ? 'Connecting' : 'Connect'} ${t.name}`}
+                aria-describedby={canConnect ? undefined : whyNotId}
+                title={canConnect ? undefined : "OpenVPN isn't usable yet (see above)"}
+                className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
+              >
+                {busy ? 'Connecting…' : 'Connect'}
+              </button>
+            </>
           )}
         </div>
       </div>
       <div className="space-y-4 p-4">
         {t.last_error && <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{t.last_error}</div>}
+        {t.blocking && (
+          <div role="status" className="rounded-lg bg-warning/15 px-3 py-2 text-sm text-warning">
+            Its networks are blocked until it's back — it's set to block when down.
+            {live ? ' Disconnect it to let them take the usual path.' : ' Stop blocking lets them take the usual path.'}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <Field label="Server">
             <Addr>{t.server || (t.servers ?? []).join(', ') || '—'}</Addr>

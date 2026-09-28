@@ -79,7 +79,8 @@ func (p *Provider) DelRoute(ctx context.Context, mr domain.ManagedRoute) error {
 }
 
 // stillOurs reports whether the kernel's route for r's destination is r: the
-// same gateway or, on-link, the same interface. Clone entries don't count.
+// same gateway or, on-link, the same interface; a reject route for a reject
+// route. Clone entries don't count.
 func (p *Provider) stillOurs(ctx context.Context, r domain.Route) (bool, error) {
 	dst, err := netip.ParsePrefix(r.DstCIDR)
 	if err != nil {
@@ -102,11 +103,16 @@ func (p *Provider) stillOurs(ctx context.Context, r domain.Route) (bool, error) 
 		if err != nil || k.Cloned || kp.Masked() != dst.Masked() {
 			continue
 		}
-		if r.Gateway != "" {
+		switch {
+		case r.Reject || k.Reject:
+			if r.Reject && k.Reject {
+				return true, nil
+			}
+		case r.Gateway != "":
 			if k.Gateway != "" && routing.SameGateway(k.Gateway, r.Gateway) {
 				return true, nil
 			}
-		} else if k.Iface == r.Iface {
+		case k.Iface == r.Iface:
 			return true, nil
 		}
 	}
@@ -127,11 +133,13 @@ func (p *Provider) route(ctx context.Context, args ...string) (string, error) {
 // restore pf.conf — see FlushOwned in pf.go.
 
 // macRouteArgs builds a validated arg-array for `route -n <action> ...`.
-// Routes RiftRoute manages always carry an IP gateway. EXTERNAL routes (user
-// edits from the routing table) may not: the RIB reports on-link routes with
-// "link#N" or MAC gateways, which route(8) doesn't accept as arguments —
-// those become `-interface <iface>` adds, and deletes (which never need a
-// gateway) drop it entirely.
+// Routes RiftRoute manages carry an IP gateway, or an interface (into a
+// tunnel), or are reject routes: those go to the loopback address with
+// -reject, since lo0 is what refuses them ("host unreachable"). EXTERNAL
+// routes (user edits from the routing table) may carry neither: the RIB
+// reports on-link routes with "link#N" or MAC gateways, which route(8)
+// doesn't accept as arguments — those become `-interface <iface>` adds, and
+// deletes (which never need a gateway) drop it entirely.
 func macRouteArgs(action string, mr domain.ManagedRoute) ([]string, error) {
 	pfx, err := netip.ParsePrefix(mr.Route.DstCIDR)
 	if err != nil {
@@ -153,6 +161,17 @@ func macRouteArgs(action string, mr domain.ManagedRoute) ([]string, error) {
 		args = append(args, "-net", pfx.Masked().String())
 	}
 	switch {
+	case action == "delete" && mr.Route.Reject:
+		// route delete matches by destination alone.
+	case mr.Route.Reject:
+		if hasGW || mr.Route.Iface != "" {
+			return nil, fmt.Errorf("macos: a reject route has no gateway or interface")
+		}
+		lo := "127.0.0.1"
+		if pfx.Addr().Is6() {
+			lo = "::1"
+		}
+		args = append(args, lo, "-reject")
 	case hasGW:
 		args = append(args, gw.String())
 	case action == "delete":

@@ -75,8 +75,13 @@ type Manager struct {
 	// broken are saved definitions that can't be read: listed as failed, so
 	// the user sees them and can delete them.
 	broken map[string]error
-	closed chan struct{}
-	shut   sync.Once
+	// resume are the tunnels the previous run asked to bring back
+	// (RememberForRestart), until StartAuto does; restarting are the ones
+	// this run will bring back after its own restart. Both stay wanted
+	// while they're down, so a block-mode one keeps blocking.
+	resume, restarting map[string]bool
+	closed             chan struct{}
+	shut               sync.Once
 }
 
 type live struct {
@@ -103,6 +108,12 @@ type live struct {
 	// failures counts attempts that ended before connecting, since the last
 	// successful connection (or the start of the session).
 	failures int
+	// want: someone asked for the tunnel to be up (Connect, auto-connect, a
+	// resume) and nobody has taken it down since (Disconnect, a panic,
+	// Delete). A session that ends on its own leaves it set. While it's
+	// set and the tunnel isn't connected, a block-mode tunnel refuses its
+	// destinations.
+	want bool
 }
 
 type session struct {
@@ -190,6 +201,15 @@ func New(o Options) (*Manager, error) {
 	for name, err := range broken {
 		o.Log.Warn("tunnel definition unreadable; skipped", "tunnel", name, "err", err)
 		m.broken[name] = err
+	}
+	// The tunnels StartAuto will bring up are wanted from the start: the
+	// first apply (the startup Resync) must not withdraw a block the
+	// previous run left for them, only for StartAuto to put it back.
+	m.resume = m.takeResume()
+	for n, d := range m.defs {
+		if d.AutoConnect || m.resume[n] {
+			m.rt[n].want = true
+		}
 	}
 	return m, nil
 }
@@ -283,7 +303,8 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	d, p, r := m.defs[name], m.parsed[name], m.rt[name]
 	s := domain.TunnelStatus{
 		Name: d.Name, Type: d.Type, Via: d.Via, Routes: append([]string{}, d.Routes...),
-		AutoConnect: d.AutoConnect, Username: d.Username, HasPassword: d.Password != "",
+		AutoConnect: d.AutoConnect, WhenDown: whenDown(d), Blocking: blocking(d, r),
+		Username: d.Username, HasPassword: d.Password != "",
 		State: r.state, Detail: r.detail, Iface: r.iface, LocalIP: r.localIP, Server: r.server,
 		Since: r.since, LastError: r.lastErr, BytesIn: r.in, BytesOut: r.out, Servers: []string{},
 	}
@@ -297,28 +318,78 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 }
 
 // Inputs is what the engine routes: for every tunnel with a live session, its
-// server addresses (while pinned) and, once its interface is up, its
-// destinations.
+// server addresses (while pinned) and, while it's connected, its
+// destinations; and every block-mode tunnel that's wanted, so its
+// destinations are refused while it isn't connected (Block).
 func (m *Manager) Inputs() []routing.TunnelInput {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []routing.TunnelInput
 	for name, r := range m.rt {
-		if r.sess == nil {
+		d := m.defs[name]
+		block := d.blocks() && r.want
+		if r.sess == nil && !block {
 			continue
 		}
-		in := routing.TunnelInput{Name: name, V6: r.v6, Bypass: append([]netip.Addr(nil), r.bypass...),
+		in := routing.TunnelInput{Name: name, V6: r.v6, Block: block, Bypass: append([]netip.Addr(nil), r.bypass...),
 			Servers: append([]netip.Addr(nil), r.servers...)}
-		if r.state == domain.TunnelConnected || r.state == domain.TunnelReconnecting {
+		if r.sess == nil {
+			// No session to say where it connects: the last one's
+			// addresses and the config's own, so no reject route holds
+			// the server it'll need when it's connected again.
+			in.Servers = addAddrs(in.Servers, configServers(m.parsed[name])...)
+		}
+		// Into the tunnel only while it's connected: a reconnecting one
+		// keeps its interface (persist-tun; WireGuard's device lives with
+		// the session), but traffic into it goes nowhere.
+		if r.sess != nil && r.state == domain.TunnelConnected {
 			in.Iface = r.iface
 		}
-		if d := m.defs[name]; d != nil {
+		if d != nil {
 			in.Routes = append([]string(nil), d.Routes...)
 		}
 		out = append(out, in)
 	}
 	slices.SortFunc(out, func(a, b routing.TunnelInput) int { return strings.Compare(a.Name, b.Name) })
 	return out
+}
+
+// whenDown is a definition's setting, fallback when unset.
+func whenDown(d *def) domain.TunnelWhenDown {
+	if d.blocks() {
+		return domain.TunnelBlock
+	}
+	return domain.TunnelFallback
+}
+
+// blocking reports whether a tunnel refuses its destinations now: set to
+// block, wanted, and not connected.
+func blocking(d *def, r *live) bool {
+	return d.blocks() && r.want && (r.sess == nil || r.state != domain.TunnelConnected)
+}
+
+// configServers are the literal server addresses in a tunnel's config.
+func configServers(p *parsed) []netip.Addr {
+	if p == nil {
+		return nil
+	}
+	var out []netip.Addr
+	for _, rm := range p.remotes {
+		if a, err := netip.ParseAddr(rm.Host); err == nil {
+			out = addAddrs(out, a.Unmap())
+		}
+	}
+	return out
+}
+
+// addAddrs appends the addresses as isn't already there.
+func addAddrs(to []netip.Addr, as ...netip.Addr) []netip.Addr {
+	for _, a := range as {
+		if !slices.Contains(to, a) {
+			to = append(to, a)
+		}
+	}
+	return to
 }
 
 // Log returns openvpn's recent output for a tunnel: the running session's,
@@ -385,6 +456,11 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if spec.Via != domain.TunnelViaDirect && spec.Via != domain.TunnelViaDefault {
 		bad("via", fmt.Sprintf("via must be %q or %q", domain.TunnelViaDirect, domain.TunnelViaDefault))
 	}
+	switch spec.WhenDown {
+	case "", domain.TunnelFallback, domain.TunnelBlock:
+	default:
+		bad("when_down", fmt.Sprintf("when_down must be %q or %q", domain.TunnelFallback, domain.TunnelBlock))
+	}
 	routes, rerrs := normalizeRoutes(spec.Routes)
 	for _, e := range rerrs {
 		bad("routes", e)
@@ -406,7 +482,13 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	d := &def{
 		Name: spec.Name, Type: spec.Type, Config: spec.Config, Username: spec.Username,
 		Password: spec.Password, Via: spec.Via, Routes: routes, AutoConnect: spec.AutoConnect,
-		UpdatedAt: time.Now(),
+		WhenDown: spec.WhenDown, UpdatedAt: time.Now(),
+	}
+	if d.WhenDown == "" && prev != nil {
+		d.WhenDown = prev.WhenDown // a client from before the setting keeps it
+	}
+	if d.WhenDown == domain.TunnelFallback {
+		d.WhenDown = "" // the default, stored as a definition from before it
 	}
 	keptPassword := false
 	if prev != nil && prev.Type == d.Type {
@@ -465,18 +547,28 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	m.mu.Lock()
 	delete(m.broken, d.Name) // a new definition replaces an unreadable one
 	m.cache(d)
-	live := m.rt[d.Name].sess != nil
+	running := m.rt[d.Name].sess != nil
+	wanted := m.rt[d.Name].want
 	m.mu.Unlock()
 	switch {
-	case live && prev != nil && (prev.Config != d.Config || prev.Username != d.Username ||
+	case running && prev != nil && (prev.Config != d.Config || prev.Username != d.Username ||
 		prev.Password != d.Password || prev.Via != d.Via):
-		if err := m.Disconnect(ctx, d.Name); err != nil {
+		// Reconnect; still wanted meanwhile, so a block-mode tunnel keeps
+		// blocking.
+		if err := m.stop(ctx, d.Name, true); err != nil {
 			return domain.TunnelStatus{}, err
 		}
 		if err := m.Connect(d.Name); err != nil {
+			m.update(d.Name, func(r *live) {
+				if r.sess == nil {
+					r.state, r.lastErr = domain.TunnelFailed, err.Error()
+				}
+			})
+			m.changed()
 			return domain.TunnelStatus{}, err
 		}
-	case live:
+	case running || wanted:
+		// Its routes (or what it does while down) may have changed.
 		_ = m.applyAndWait(ctx, 10*time.Second)
 	}
 	m.changed()
@@ -631,8 +723,14 @@ func (m *Manager) Connect(name string) error {
 		cancel()
 		return nil
 	}
-	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s}
+	// The last session's addresses stay the tunnel's servers until this
+	// one resolves its own: a block-mode tunnel's reject routes must not
+	// hold them meanwhile.
+	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers}
 	m.mu.Unlock()
+	if d.blocks() {
+		m.requestApply() // refuse its networks from now, not from the session's first apply
+	}
 	m.changed()
 	go func() {
 		defer close(s.done)
@@ -642,19 +740,34 @@ func (m *Manager) Connect(name string) error {
 	return nil
 }
 
-// Disconnect stops a tunnel and waits for it to go down. Disconnecting a
-// tunnel that isn't running clears a failed state.
+// Disconnect stops a tunnel and waits for it to go down: it's no longer
+// wanted, so a block-mode tunnel stops blocking. Disconnecting a tunnel that
+// isn't running clears a failed state (and its block).
 func (m *Manager) Disconnect(ctx context.Context, name string) error {
+	return m.stop(ctx, name, false)
+}
+
+// stop is Disconnect; keepWant leaves the tunnel wanted — it's coming back
+// (a reconnect with new settings, a restart), so a block-mode one keeps
+// blocking meanwhile.
+func (m *Manager) stop(ctx context.Context, name string, keepWant bool) error {
 	m.mu.Lock()
 	r := m.rt[name]
 	if r == nil {
 		m.mu.Unlock()
 		return fmt.Errorf("no tunnel named %q", name)
 	}
+	wasBlocking := blocking(m.defs[name], r)
+	if !keepWant {
+		r.want = false
+	}
 	s := r.sess
 	if s == nil {
 		r.state, r.lastErr, r.detail = domain.TunnelDisconnected, "", ""
 		m.mu.Unlock()
+		if wasBlocking && !keepWant {
+			_ = m.applyAndWait(ctx, 10*time.Second) // lift its block
+		}
 		m.changed()
 		return nil
 	}
@@ -689,8 +802,9 @@ func (m *Manager) StartAuto() {
 	if m.isClosed() {
 		return
 	}
-	resume := m.takeResume()
 	m.mu.Lock()
+	resume := m.resume
+	m.resume = nil
 	var names []string
 	for n, d := range m.defs {
 		if d.AutoConnect || resume[n] {
@@ -706,7 +820,7 @@ func (m *Manager) StartAuto() {
 			m.o.Log.Warn("tunnel auto-connect failed", "tunnel", n, "err", err)
 			m.update(n, func(r *live) { // it may have been deleted meanwhile
 				if r.sess == nil {
-					r.state, r.lastErr = domain.TunnelFailed, err.Error()
+					r.state, r.lastErr, r.want = domain.TunnelFailed, err.Error(), true
 				}
 			})
 			m.changed()
@@ -721,13 +835,23 @@ const resumeFile = "resume.list"
 
 // RememberForRestart records the tunnels that are up, so the start after
 // this restart brings them back: an automatic update must not quietly drop a
-// connection the user made. Call it before Shutdown.
-func (m *Manager) RememberForRestart() {
+// connection the user made. With keepBlocks, a block-mode tunnel that's
+// blocking is brought back too — tried again, rather than unblocked by an
+// update — and each of these keeps blocking while the daemon is gone
+// (Shutdown). Without it (a rollback: the previous version may not know
+// reject routes, and would leave them owned by nothing) every block is
+// withdrawn on the way down. Call it before Shutdown.
+func (m *Manager) RememberForRestart(keepBlocks bool) {
 	m.mu.Lock()
 	var names []string
+	m.restarting = map[string]bool{}
 	for n, r := range m.rt {
-		if r.sess != nil && !r.sess.stopping.Load() {
+		up := r.sess != nil && !r.sess.stopping.Load()
+		if up || (keepBlocks && blocking(m.defs[n], r)) {
 			names = append(names, n)
+			if keepBlocks {
+				m.restarting[n] = true
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -776,7 +900,9 @@ func (m *Manager) isClosed() bool {
 // interface.
 func (m *Manager) Resync(ctx context.Context) { _ = m.ap.wait(ctx, m.ap.request()) }
 
-// Shutdown stops every tunnel (daemon exit) and withdraws their routes. The
+// Shutdown stops every tunnel (daemon exit) and withdraws their routes —
+// but for the reject routes of the block-mode tunnels the restart will
+// bring back (RememberForRestart), which stay while the daemon is gone. The
 // withdrawal is waited for only briefly: when something holds the Apply
 // Protocol (the updater does, until the process exits) the routes are left
 // for the next start to clean up rather than stalling the exit.
@@ -804,13 +930,25 @@ func (m *Manager) applyAndWait(ctx context.Context, d time.Duration) error {
 	return m.ap.wait(ctx, m.ap.request())
 }
 
-// DisconnectAll stops every running tunnel (panic, shutdown).
+// DisconnectAll stops every running tunnel (panic, shutdown); none is
+// wanted afterwards, so none blocks — but on the way into a restart, the
+// ones it will bring back (RememberForRestart).
 func (m *Manager) DisconnectAll() {
 	m.mu.Lock()
+	keep := map[string]bool{}
+	if m.isClosed() {
+		keep = m.restarting
+	}
 	var names []string
 	for n, r := range m.rt {
-		if r.sess != nil {
+		switch {
+		case r.sess != nil:
 			names = append(names, n)
+		case r.want && !keep[n]:
+			r.want = false
+			if r.state == domain.TunnelFailed {
+				r.state, r.lastErr, r.detail = domain.TunnelDisconnected, "", ""
+			}
 		}
 	}
 	m.mu.Unlock()
@@ -821,10 +959,11 @@ func (m *Manager) DisconnectAll() {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
-			_ = m.Disconnect(ctx, n)
+			_ = m.stop(ctx, n, keep[n])
 		}()
 	}
 	wg.Wait()
+	m.changed()
 }
 
 func (m *Manager) sockPath(name string) string { return filepath.Join(m.runDir, name+".sock") }
@@ -844,8 +983,11 @@ func (m *Manager) runOpenVPN(ctx context.Context, name string, d *def, p *Profil
 		servers = m.serverAddrs(ctx, p.Remotes)
 	}
 	m.update(name, func(r *live) { r.bypass, r.servers, r.detail = bypass, servers, "starting openvpn" })
-	if len(bypass) > 0 {
-		// Pin the server to the physical gateway before the first packet.
+	if len(bypass) > 0 || d.blocks() {
+		// Pin the server to the physical gateway before the first packet —
+		// and, set to block, refuse its networks, now that a reject route
+		// can leave out the network holding the server (one put before its
+		// name resolved, at startup, would refuse the connection itself).
 		if err := m.applyAndWait(ctx, 10*time.Second); err != nil {
 			m.o.Log.Warn("tunnel server not pinned yet; connecting anyway", "tunnel", name, "err", err)
 		}
@@ -961,8 +1103,9 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 			if p, ok := s.proc.Load().(Process); ok {
 				tail = p.Tail()
 			}
-			var giveUp, reresolve bool
+			var giveUp, reresolve, wasUp bool
 			m.update(name, func(r *live) {
+				wasUp = r.state == domain.TunnelConnected
 				r.state, r.detail = domain.TunnelReconnecting, st.desc
 				r.failures++
 				if r.since == nil { // never got through: explain why, if openvpn's output says
@@ -974,6 +1117,9 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 					reresolve = r.failures%reresolveAfter == 0
 				}
 			})
+			if wasUp {
+				m.requestApply() // its destinations leave it (or are refused) until it's back
+			}
 			if giveUp {
 				m.update(name, func(r *live) {
 					if r.lastErr == "" {
@@ -1227,7 +1373,10 @@ func (m *Manager) vet(ctx context.Context, name, iface string, nets []netip.Pref
 func (m *Manager) finish(name string, s *session) {
 	m.mu.Lock()
 	if r := m.rt[name]; r != nil && r.sess == s {
-		r.sess, r.iface, r.bypass, r.servers, r.detail = nil, "", nil, nil, ""
+		r.sess, r.iface, r.bypass, r.detail = nil, "", nil, ""
+		if !r.want {
+			r.servers = nil // kept while it's wanted: see Inputs
+		}
 		if p, ok := s.proc.Load().(Process); ok {
 			r.tail = p.Tail()
 		}

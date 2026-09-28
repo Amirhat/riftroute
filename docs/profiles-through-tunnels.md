@@ -89,13 +89,13 @@ do then applies to them unchanged:
 
 ## When the tunnel is down
 
-The profile's destinations are not installed, so they take whatever path
-they would without it. Usually that's the main VPN. This is how tunnel routes
-behave today: they're never blackholed into a dead interface.
+By default the profile's destinations are not installed, so they take
+whatever path they would without it. Usually that's the main VPN.
 
-**Open question for the user:** some will want "only through the tunnel, or
-not at all" for a profile (a leak guard). That could be a per-profile option
-later: block those destinations while the tunnel is down.
+*As built:* the user answered the open question here. It's a per-tunnel
+setting, not a per-profile one, and it covers the tunnel's own routes and
+its profiles alike: **When it's down: use the usual path, or block** (see
+`docs/tunnel-when-down.md`).
 
 ## Status, API and UI
 
@@ -136,6 +136,5 @@ later: block those destinations while the tunnel is down.
 - `app` rules through a tunnel: an include-style policy rule pointed at the
   tunnel's interface instead of the main VPN (Linux fwmark table, macOS
   route-to).
-- "Only through the tunnel": block while the tunnel is down (above).
 - `vetAddressing`'s `ours` exemption could count the profile destinations as
   the user's own routes. Without that, it is stricter, never looser.

@@ -375,7 +375,14 @@ function DecisionRow({ label, d, drift }: { label: string; d: RouteDecision; dri
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-line bg-elevated/50 px-3 py-2 text-sm">
       <span className="w-36 shrink-0 text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
-      {!answered ? (
+      {d.rejected ? (
+        <>
+          <Badge tone="warning">{d.tunnel ? `blocked · tunnel ${d.tunnel} is down` : 'blocked'}</Badge>
+          <span className="ltr font-mono text-default">
+            {d.matched_cidr ? `${d.matched_cidr} → ` : ''}reject
+          </span>
+        </>
+      ) : !answered ? (
         <span className="text-muted">no route — unreachable</span>
       ) : (
         <>
@@ -700,7 +707,7 @@ function RouteTable({
                     <span className="truncate font-mono text-default">{r.dst_cidr}</span>
                     {r.table && <Badge tone="muted">table {r.table}</Badge>}
                   </div>
-                  <div className="truncate font-mono text-muted">{r.gateway || '—'}</div>
+                  <div className="truncate font-mono text-muted">{r.reject ? 'reject' : r.gateway || '—'}</div>
                   <div className="truncate font-mono text-muted">{r.iface}</div>
                   <div className="text-right font-mono text-muted">{r.metric || '—'}</div>
                   <div className="flex min-w-0 items-center gap-1.5">
@@ -718,9 +725,13 @@ function RouteTable({
                     {r.owner === 'riftroute' && tunnelOf(r.profile) ? (
                       <span
                         className="text-[11px] text-muted"
-                        title={`Managed by tunnel ${tunnelOf(r.profile)} — change its routes on the Tunnels page.`}
+                        title={
+                          r.reject
+                            ? `Tunnel ${tunnelOf(r.profile)} is down and set to block its networks until it's back — see the Tunnels page.`
+                            : `Managed by tunnel ${tunnelOf(r.profile)} — change its routes on the Tunnels page.`
+                        }
                       >
-                        via tunnel
+                        {r.reject ? 'blocked' : 'via tunnel'}
                       </span>
                     ) : r.owner === 'riftroute' ? (
                       <span className="text-[11px] text-muted" title={`Managed by profile ${r.profile || '—'} — edit it on the Profiles page (or under Manual routes above).`}>

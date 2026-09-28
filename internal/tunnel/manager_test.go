@@ -86,7 +86,8 @@ func (h *harness) lastApply() []routing.TunnelInput {
 
 func waitState(t *testing.T, m *Manager, name string, want domain.TunnelState) domain.TunnelStatus {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// Generous: a refusal can take findIface's 3 s wait, on a loaded -race run.
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		st, _ := m.Status(name)
 		if st.State == want {

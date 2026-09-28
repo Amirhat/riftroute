@@ -172,3 +172,44 @@ func TestClassifyIface(t *testing.T) {
 		}
 	}
 }
+
+// A route that refuses its destination (type unreachable — what RiftRoute
+// adds for a down tunnel set to block — prohibit, blackhole) reads as a
+// reject route with no next hop, in JSON and in text; ours by its proto tag.
+func TestParseRejectRoutes(t *testing.T) {
+	js := `[
+  {"type":"unreachable","dst":"9.9.9.9","protocol":"152","flags":[]},
+  {"type":"blackhole","dst":"10.1.0.0/16","flags":[]},
+  {"dst":"10.2.0.0/16","dev":"wg0","protocol":"152","flags":[]}
+]`
+	routes, err := parseRoutesJSON([]byte(js), domain.FamilyV4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := routes[0]; !r.Reject || r.DstCIDR != "9.9.9.9/32" || r.Iface != "" || r.Owner != domain.OwnerRiftRoute {
+		t.Errorf("unreachable = %+v", r)
+	}
+	if r := routes[1]; !r.Reject || r.DstCIDR != "10.1.0.0/16" || r.Owner == domain.OwnerRiftRoute {
+		t.Errorf("blackhole = %+v", r)
+	}
+	if routes[2].Reject {
+		t.Errorf("unicast read as reject: %+v", routes[2])
+	}
+
+	text := routesText("unreachable 9.9.9.9 proto 152\nunicast 10.2.0.0/16 dev wg0 proto 152\nprohibit 2001:db8::/32 proto static metric 1024\n")
+	if r := text[0]; !r.Reject || r.DstCIDR != "9.9.9.9/32" || r.Owner != domain.OwnerRiftRoute {
+		t.Errorf("text unreachable = %+v", r)
+	}
+	if r := text[1]; r.Reject || r.DstCIDR != "10.2.0.0/16" || r.Iface != "wg0" {
+		t.Errorf("text unicast = %+v", r)
+	}
+	if r := text[2]; !r.Reject || r.DstCIDR != "2001:db8::/32" {
+		t.Errorf("text prohibit = %+v", r)
+	}
+
+	if !rejectedLookup("RTNETLINK answers: No route to host\n") || rejectedLookup("RTNETLINK answers: Network is unreachable\n") {
+		t.Error("rejectedLookup tells a refusal from no route")
+	}
+}
+
+func routesText(s string) []domain.Route { return parseRoutesText(s, domain.FamilyV4) }

@@ -175,6 +175,9 @@ export interface Route {
   proto?: string
   table?: string // non-main Linux routing table (Model B); absent on macOS
   profile?: string
+  // Refuses its destination (no gateway, no interface): a down tunnel's,
+  // while it's set to block.
+  reject?: boolean
 }
 
 export interface RouteDecision {
@@ -193,6 +196,9 @@ export interface RouteDecision {
   tunnel?: string
   tunnel_type?: string
   reachable: boolean
+  // A reject route refuses it. With tunnel set: that tunnel is down and set
+  // to block (absent from daemons before 0.5.0).
+  rejected?: boolean
 }
 
 export interface RouteExplain {
@@ -390,6 +396,9 @@ export interface ConfigImportResult {
 export type TunnelState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'failed'
 // direct: reach the server around the main VPN; default: through it.
 export type TunnelVia = 'direct' | 'default'
+// What happens to a tunnel's destinations while it's down: they take the
+// usual path, or they're refused until it's back.
+export type TunnelWhenDown = 'fallback' | 'block'
 
 // TunnelStatus mirrors domain.TunnelStatus (never carries the profile or password).
 export interface TunnelStatus {
@@ -398,6 +407,11 @@ export interface TunnelStatus {
   via: TunnelVia
   routes: string[] | null
   auto_connect: boolean
+  // Absent from daemons before 0.5.0 (fallback).
+  when_down?: TunnelWhenDown
+  // Its destinations are refused right now: set to block, and down while
+  // it should be up.
+  blocking?: boolean
   username?: string
   has_password: boolean
   needs_auth: boolean
@@ -442,6 +456,7 @@ export interface TunnelSpec {
   via: TunnelVia
   routes: string[]
   auto_connect: boolean
+  when_down?: TunnelWhenDown
 }
 
 // TunnelProfileRef is a tunnel-mode profile routed into a tunnel: its toggle

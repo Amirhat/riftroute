@@ -30,6 +30,19 @@ const (
 	TunnelViaDefault TunnelVia = "default"
 )
 
+// TunnelWhenDown is what happens to a tunnel's destinations while it is down.
+type TunnelWhenDown string
+
+const (
+	// TunnelFallback lets them take the path they'd take without the
+	// tunnel (usually the main VPN). Default.
+	TunnelFallback TunnelWhenDown = "fallback"
+	// TunnelBlock refuses them while the tunnel should be up but isn't —
+	// connecting, reconnecting, or failed until it's disconnected — so
+	// nothing meant for the tunnel leaves another way.
+	TunnelBlock TunnelWhenDown = "block"
+)
+
 // TunnelState is a managed tunnel's connection state.
 type TunnelState string
 
@@ -56,18 +69,25 @@ type TunnelSpec struct {
 	// and pushed DNS are all ignored.
 	Routes      []string `json:"routes"`
 	AutoConnect bool     `json:"auto_connect"`
+	// WhenDown: fallback (default) or block. A client that doesn't send it
+	// (one from before it) keeps the tunnel's.
+	WhenDown TunnelWhenDown `json:"when_down,omitempty"`
 }
 
 // TunnelStatus is a tunnel as reported over the API. It never carries the
 // profile text or the password.
 type TunnelStatus struct {
-	Name        string     `json:"name"`
-	Type        TunnelType `json:"type"`
-	Via         TunnelVia  `json:"via"`
-	Routes      []string   `json:"routes"`
-	AutoConnect bool       `json:"auto_connect"`
-	Username    string     `json:"username,omitempty"`
-	HasPassword bool       `json:"has_password"`
+	Name        string         `json:"name"`
+	Type        TunnelType     `json:"type"`
+	Via         TunnelVia      `json:"via"`
+	Routes      []string       `json:"routes"`
+	AutoConnect bool           `json:"auto_connect"`
+	WhenDown    TunnelWhenDown `json:"when_down"`
+	// Blocking: its destinations are refused right now — it's set to block
+	// and is down while it should be up.
+	Blocking    bool   `json:"blocking,omitempty"`
+	Username    string `json:"username,omitempty"`
+	HasPassword bool   `json:"has_password"`
 	// NeedsAuth reports that the profile asks for a username/password.
 	NeedsAuth bool `json:"needs_auth"`
 	// Servers are the profile's remotes ("host:port/proto").

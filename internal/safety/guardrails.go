@@ -131,6 +131,9 @@ func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []dom
 	for _, d := range all {
 		k := string(d.Family) + "|" + d.Table + "|" + d.DstCIDR
 		nh := d.Gateway + "|" + d.Iface
+		if d.Reject {
+			nh = "reject"
+		}
 		prev, ok := nextHop[k]
 		if !ok {
 			nextHop[k] = &hop{nh: nh, vetted: vetted(d)}
