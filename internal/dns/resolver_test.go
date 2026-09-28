@@ -94,3 +94,17 @@ func TestCacheRemembersAFailureBriefly(t *testing.T) {
 		t.Fatalf("the re-resolver didn't try it: %d lookups", r.n)
 	}
 }
+
+// A lookup whose caller gave up (a closed request) isn't remembered as the
+// name's failure: the next caller tries it.
+func TestCacheDoesntBlameTheNameForACanceledCaller(t *testing.T) {
+	r := &countingResolver{}
+	c := NewCache(r, time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.Lookup(ctx, "corp.internal")
+	c.Lookup(context.Background(), "corp.internal")
+	if r.n != 2 {
+		t.Fatalf("%d lookups, want the second caller to try again", r.n)
+	}
+}

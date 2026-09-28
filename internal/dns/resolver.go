@@ -73,11 +73,15 @@ func (c *Cache) Lookup(ctx context.Context, host string) []netip.Addr {
 	addrs, err := c.resolver.Resolve(ctx, host)
 	if err != nil {
 		// On failure keep the last good answer (fail-safe — don't drop a route
-		// because one lookup timed out).
+		// because one lookup timed out). The failure is remembered only when
+		// it's the name's: a caller that gave up (a closed request) says
+		// nothing about it, and must not keep it unresolved for the next.
 		c.mu.Lock()
 		e = c.entries[host]
-		e.failed = c.now()
-		c.entries[host] = e
+		if ctx.Err() == nil {
+			e.failed = c.now()
+			c.entries[host] = e
+		}
 		c.mu.Unlock()
 		return e.addrs
 	}
