@@ -728,6 +728,9 @@ func (m *Manager) Connect(name string) error {
 	// hold them meanwhile.
 	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers}
 	m.mu.Unlock()
+	if d.blocks() {
+		m.requestApply() // refuse its networks from now, not from the session's first apply
+	}
 	m.changed()
 	go func() {
 		defer close(s.done)
@@ -975,8 +978,11 @@ func (m *Manager) runOpenVPN(ctx context.Context, name string, d *def, p *Profil
 		servers = m.serverAddrs(ctx, p.Remotes)
 	}
 	m.update(name, func(r *live) { r.bypass, r.servers, r.detail = bypass, servers, "starting openvpn" })
-	if len(bypass) > 0 {
-		// Pin the server to the physical gateway before the first packet.
+	if len(bypass) > 0 || d.blocks() {
+		// Pin the server to the physical gateway before the first packet —
+		// and, set to block, refuse its networks, now that a reject route
+		// can leave out the network holding the server (one put before its
+		// name resolved, at startup, would refuse the connection itself).
 		if err := m.applyAndWait(ctx, 10*time.Second); err != nil {
 			m.o.Log.Warn("tunnel server not pinned yet; connecting anyway", "tunnel", name, "err", err)
 		}

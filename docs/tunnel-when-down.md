@@ -50,6 +50,13 @@ since:
   run's block isn't withdrawn and then put back.
 - **A crash** leaves the block in the kernel (fail closed). The next start
   keeps it for tunnels that come back, and withdraws it for the others.
+  *As built:* at startup `DropTunnelRoutes` leaves a reject route alone,
+  both the route and its record. It names no interface. Being recorded
+  makes the tunnels' startup resync run, and that decides whether to keep
+  it or withdraw it. A panic can still remove it by its record. (Forgetting
+  the record would leave it in the kernel owned by nothing, because macOS
+  tags no route: the review's HIGH finding.) Crash recovery puts a reject
+  route back like any other route.
 
 **Change to `fallback`:** today a *reconnecting* tunnel keeps its routes on
 its interface: openvpn keeps the tun across a reconnect (persist-tun), and
@@ -133,6 +140,15 @@ next-hop check doesn't. Two routes to one destination conflict, as before.
   session's addresses and the literal IPs in its config, so a reject route
   never blocks its own server. Connect keeps the last addresses until the
   new session resolves its own.
+  - *As built:* the last addresses live in memory only. At startup, a
+    via-default server given by name is unknown until its session resolves
+    it, so the first apply may refuse the network that holds it.
+  - A block-mode session therefore applies once its servers are resolved,
+    before openvpn or WireGuard starts, as it already did for pins. That
+    network is then left out, and the connection can reach its server (the
+    review's MEDIUM finding).
+  - Connect also asks for an apply at once, so the block starts at Connect,
+    not at the session's first apply.
 - Save applies when a wanted tunnel's routes or When down change, not only
   a live one's.
 - `TunnelStatus.Blocking`: its destinations are refused right now.

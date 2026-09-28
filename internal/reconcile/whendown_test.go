@@ -2,9 +2,13 @@ package reconcile_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/reconcile"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 )
@@ -133,6 +137,81 @@ func TestPanicFlushesTheBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.setTunnels() // the panic takes the tunnels down first (no longer wanted)
+	if err := h.proto.PanicWith(ctx, domain.ActorUI, safety.PanicSteps{Flushing: h.svc.ForgetRecords}); err != nil {
+		t.Fatal(err)
+	}
+	if r := h.refused(t); len(r) != 0 {
+		t.Errorf("refused after the panic: %v", r)
+	}
+}
+
+// restartAfterCrash starts a new Protocol over the same kernel and store —
+// the daemon back after a crash, with no tunnel running — and runs the
+// startup recovery (cmd/riftrouted's order).
+func (h *tunnelHarness) restartAfterCrash(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	h.setTunnels()
+	h.proto = safety.NewProtocol(h.prov, h.st, safety.NewFakeClock(time.Unix(0, 0)), func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	h.rec = reconcile.New(h.svc, h.proto, slog.New(slog.NewTextHandler(io.Discard, nil)), 0, h.autoApply.Load)
+	if _, err := h.proto.RecoverPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.proto.DropTunnelRoutes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.proto.ReconcileOwnership(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// After a crash, a block-mode tunnel's reject route stays — recorded, so
+// the tunnels' startup resync runs and decides: kept for a tunnel that's
+// wanted again (the block holds across the restart), withdrawn for one
+// that isn't. On macOS the table tags nothing as RiftRoute's; forgetting
+// the record would leave the route owned by nothing, past a panic.
+func TestRejectRoutesOutliveACrashForTheResyncToDecide(t *testing.T) {
+	for _, wanted := range []bool{true, false} {
+		t.Run(map[bool]string{true: "wanted again", false: "not wanted"}[wanted], func(t *testing.T) {
+			h := newTunnelHarness(t)
+			ctx := context.Background()
+			h.prov.untagged = true
+			h.setTunnels(con3Blocked)
+			if err := h.rec.ApplyTunnels(ctx); err != nil {
+				t.Fatal(err)
+			}
+
+			h.restartAfterCrash(t)
+			if !h.refused(t)["9.9.9.9/32"] || !h.svc.OwnsTunnelRoutes(ctx) {
+				t.Fatalf("startup dropped the block: refused %v, recorded %v", h.refused(t), h.ownedTunnelRoutes(t))
+			}
+
+			if wanted {
+				h.setTunnels(con3Blocked)
+			}
+			if err := h.rec.ApplyTunnels(ctx); err != nil { // tunnels.Resync
+				t.Fatal(err)
+			}
+			if got := h.refused(t)["9.9.9.9/32"]; got != wanted {
+				t.Fatalf("refused after the resync = %v, want %v", got, wanted)
+			}
+			if !wanted && len(h.ownedTunnelRoutes(t)) != 0 {
+				t.Errorf("still recorded: %+v", h.ownedTunnelRoutes(t))
+			}
+		})
+	}
+}
+
+// ...and a panic right after that startup still removes it.
+func TestPanicAfterACrashRemovesTheBlock(t *testing.T) {
+	h := newTunnelHarness(t)
+	ctx := context.Background()
+	h.prov.untagged = true
+	h.setTunnels(con3Blocked)
+	if err := h.rec.ApplyTunnels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.restartAfterCrash(t)
 	if err := h.proto.PanicWith(ctx, domain.ActorUI, safety.PanicSteps{Flushing: h.svc.ForgetRecords}); err != nil {
 		t.Fatal(err)
 	}

@@ -28,8 +28,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - **A reconnecting tunnel carries nothing.** Its networks used to stay on
-  its interface while it reconnected — into a tunnel that was down. Now they
-  take the usual path, or are blocked, as its "When it's down" setting says.
+  its interface while it reconnected — into a tunnel that was down, which in
+  effect blocked them. Now, by default, they take the usual path during
+  every reconnect (an OpenVPN ping-restart, a WireGuard stall) until it's
+  back; set the tunnel to block to keep them from leaving another way.
 - **The route lookup names the tunnel** traffic goes into — "via tunnel
   con3 · WireGuard", in the app and `riftroute route explain` — rather than
   "via VPN" with a `tunnel:` profile tag. The routing table shows a tunnel's

@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/netip"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,5 +253,59 @@ func TestDeleteLiftsTheBlock(t *testing.T) {
 	}
 	if in := h.lastApply(); len(in) != 0 {
 		t.Fatalf("the deleted tunnel still blocks: %+v", in)
+	}
+}
+
+// At startup a block-mode via-default tunnel whose server is a name is
+// wanted before anyone knows the server's address, so the first apply may
+// refuse the network that holds it. Its session applies again once the name
+// resolves — before openvpn starts — so that network is left out and the
+// connection can reach its server.
+func TestBlockModeAppliesWithTheResolvedServerBeforeStarting(t *testing.T) {
+	h := newHarness(t)
+	s := domain.TunnelSpec{
+		Name: "infra", Config: strings.Replace(pushProfile, "remote 198.51.100.7 1194 tcp", "remote vpn.example.net 1194 tcp", 1),
+		Username: "alice", Password: "pw", Via: domain.TunnelViaDefault, AutoConnect: true,
+		WhenDown: domain.TunnelBlock, Routes: []string{"192.0.2.0/24"},
+	}
+	if _, err := h.m.Save(context.Background(), s); err != nil {
+		t.Fatal(err)
+	}
+	h.m.Shutdown()
+
+	var mu sync.Mutex
+	var beforeStart [][]netip.Addr // the servers each apply saw before openvpn started
+	var m2 *Manager
+	// The name takes a moment to resolve, as it does: an apply requested at
+	// Connect has run by then.
+	resolve := func(ctx context.Context, host string) ([]netip.Addr, error) {
+		time.Sleep(50 * time.Millisecond)
+		return h.m.o.Resolve(ctx, host)
+	}
+	m2, err := New(Options{Dir: h.dir, Launcher: h.fl, Ifaces: h.m.o.Ifaces, Resolve: resolve,
+		Apply: func(context.Context) error {
+			if h.fl.Running() == 0 {
+				for _, in := range m2.Inputs() {
+					mu.Lock()
+					beforeStart = append(beforeStart, in.Servers)
+					mu.Unlock()
+				}
+			}
+			return nil
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m2.Shutdown)
+	if in := m2.Inputs(); len(in) != 1 || !in[0].Block || len(in[0].Servers) != 0 {
+		t.Fatalf("at start = %+v", in)
+	}
+	m2.StartAuto()
+	waitState(t, m2, "infra", domain.TunnelConnected)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(beforeStart) == 0 || !slices.Contains(beforeStart[len(beforeStart)-1], netip.MustParseAddr("192.0.2.44")) {
+		t.Fatalf("the last apply before openvpn started didn't know the server: %v", beforeStart)
 	}
 }

@@ -1012,6 +1012,13 @@ func (p *Protocol) RecoverPending(ctx context.Context) (int, error) {
 // and outlives its tunnel, so it is withdrawn from the kernel too; one that
 // won't delete keeps its record, for the tunnels' startup resync to withdraw
 // through the Apply Protocol. A tunnel re-pins when it connects.
+//
+// A reject route (a block-mode tunnel's, while it was down) is kept, record
+// and all: it names no interface, and whether it stays is the tunnel's to
+// say — the startup resync (which runs because it's recorded) keeps it for a
+// tunnel that's wanted again, so the block holds across a restart, and
+// withdraws it otherwise. Forgetting it would leave it in the kernel owned
+// by nothing (macOS tags no route), past a panic.
 func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	if p.store == nil {
 		return 0, nil
@@ -1025,7 +1032,7 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 	ctx = provider.WithTableCache(ctx)
 	n := 0
 	for _, o := range owned {
-		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) {
+		if !strings.HasPrefix(o.ProfileID, routing.TunnelProfilePrefix) || o.Reject {
 			continue
 		}
 		if o.Gateway != "" {
@@ -1050,11 +1057,12 @@ func (p *Protocol) DropTunnelRoutes(ctx context.Context) (int, error) {
 // would go into whatever interface has the recorded name now
 // (DropTunnelRoutes then drops their records); in a guard's rollback the
 // tunnel may be gone too, and the tunnels re-apply what they still route
-// once it has settled (SetOnSettled).
+// once it has settled (SetOnSettled). A reject route names no interface: it
+// is put back like any other route.
 func withoutTunnelLinks(ops []domain.PlanOp) []domain.PlanOp {
 	out := ops[:0:0]
 	for _, op := range ops {
-		if op.Kind == domain.OpAddRoute && op.Route != nil && op.Route.Gateway == "" &&
+		if op.Kind == domain.OpAddRoute && op.Route != nil && op.Route.Gateway == "" && !op.Route.Reject &&
 			strings.HasPrefix(op.Route.ProfileID, routing.TunnelProfilePrefix) {
 			continue
 		}

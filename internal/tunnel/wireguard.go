@@ -105,8 +105,10 @@ func (w wgDriver) run(ctx context.Context, m *Manager, name string, d *def, p *p
 		return
 	}
 	m.update(name, func(r *live) { r.bypass, r.servers, r.detail = bypass, servers, "starting WireGuard" })
-	if len(bypass) > 0 {
-		// Pin the endpoints to the physical gateway before the first packet.
+	if len(bypass) > 0 || d.blocks() {
+		// Pin the endpoints to the physical gateway before the first packet
+		// (and, set to block, refuse its networks, leaving out the one that
+		// holds an endpoint: see runOpenVPN).
 		if err := m.applyAndWait(ctx, 10*time.Second); err != nil {
 			m.o.Log.Warn("tunnel endpoints not pinned yet; connecting anyway", "tunnel", name, "err", err)
 		}

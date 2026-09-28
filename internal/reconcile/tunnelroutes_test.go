@@ -42,6 +42,9 @@ type hookProvider struct {
 	*fake.Provider
 	mu                sync.Mutex
 	onRules, onIfaces func()
+	// untagged reads the table as macOS does: no route carries RiftRoute's
+	// tag, so ownership is the store's alone.
+	untagged bool
 	// afterGateway runs once a gateway read has returned — the network
 	// moving right after it.
 	afterGateway func()
@@ -53,6 +56,21 @@ func (p *hookProvider) DefaultGateway(ctx context.Context, fam domain.Family) (n
 		f()
 	}
 	return gw, iface, err
+}
+
+func (p *hookProvider) ListRoutes(ctx context.Context, fam domain.Family) ([]domain.Route, error) {
+	rs, err := p.Provider.ListRoutes(ctx, fam)
+	p.mu.Lock()
+	untagged := p.untagged
+	p.mu.Unlock()
+	if untagged {
+		for i := range rs {
+			if rs[i].Owner == domain.OwnerRiftRoute {
+				rs[i].Owner, rs[i].Proto, rs[i].Profile = domain.OwnerSystem, "", ""
+			}
+		}
+	}
+	return rs, err
 }
 
 func (p *hookProvider) take(fn *func()) func() {
