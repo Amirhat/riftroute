@@ -63,6 +63,26 @@ describe('Profiles view — through a tunnel', () => {
     expect(screen.queryByText(/gateway auto/)).not.toBeInTheDocument()
   })
 
+  it('says its targets are blocked while a block-mode tunnel is down', async () => {
+    mockApi.profiles.mockResolvedValue([viaCon3])
+    mockApi.state.mockResolvedValue({
+      tunnels: [{ name: 'con3', type: 'wireguard', state: 'reconnecting', when_down: 'block', blocking: true }],
+      capabilities: { platform: 'darwin' },
+    } as unknown as State)
+    renderView()
+    expect(await screen.findByText(/con3 is down — its targets are blocked until it's back/)).toBeInTheDocument()
+  })
+
+  it('says a reconnecting tunnel carries nothing, so its targets take their usual path', async () => {
+    mockApi.profiles.mockResolvedValue([viaCon3])
+    mockApi.state.mockResolvedValue({
+      tunnels: [{ name: 'con3', type: 'wireguard', state: 'reconnecting' }],
+      capabilities: { platform: 'darwin' },
+    } as unknown as State)
+    renderView()
+    expect(await screen.findByText(/con3 isn't connected — its targets take their usual path/)).toBeInTheDocument()
+  })
+
   it('says when the tunnel it names does not exist', async () => {
     mockApi.profiles.mockResolvedValue([viaCon3])
     mockApi.state.mockResolvedValue({ tunnels: [], capabilities: { platform: 'darwin' } } as unknown as State)

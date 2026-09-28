@@ -181,6 +181,7 @@ export namespace domain {
 	    table?: string;
 	    profile?: string;
 	    cloned?: boolean;
+	    reject?: boolean;
 	    profile_id: string;
 	    // Go type: time
 	    created_at: any;
@@ -201,6 +202,7 @@ export namespace domain {
 	        this.table = source["table"];
 	        this.profile = source["profile"];
 	        this.cloned = source["cloned"];
+	        this.reject = source["reject"];
 	        this.profile_id = source["profile_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
 	    }
@@ -478,6 +480,7 @@ export namespace domain {
 	    table?: string;
 	    profile?: string;
 	    cloned?: boolean;
+	    reject?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Route(source);
@@ -495,6 +498,7 @@ export namespace domain {
 	        this.table = source["table"];
 	        this.profile = source["profile"];
 	        this.cloned = source["cloned"];
+	        this.reject = source["reject"];
 	    }
 	}
 	export class DiffEntry {
@@ -963,6 +967,7 @@ export namespace domain {
 	    tunnel?: string;
 	    tunnel_type?: string;
 	    reachable: boolean;
+	    rejected?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new RouteDecision(source);
@@ -982,6 +987,7 @@ export namespace domain {
 	        this.tunnel = source["tunnel"];
 	        this.tunnel_type = source["tunnel_type"];
 	        this.reachable = source["reachable"];
+	        this.rejected = source["rejected"];
 	    }
 	}
 	export class RouteExplain {
@@ -1130,6 +1136,8 @@ export namespace domain {
 	    via: string;
 	    routes: string[];
 	    auto_connect: boolean;
+	    when_down: string;
+	    blocking?: boolean;
 	    username?: string;
 	    has_password: boolean;
 	    needs_auth: boolean;
@@ -1161,6 +1169,8 @@ export namespace domain {
 	        this.via = source["via"];
 	        this.routes = source["routes"];
 	        this.auto_connect = source["auto_connect"];
+	        this.when_down = source["when_down"];
+	        this.blocking = source["blocking"];
 	        this.username = source["username"];
 	        this.has_password = source["has_password"];
 	        this.needs_auth = source["needs_auth"];
@@ -1410,6 +1420,7 @@ export namespace domain {
 	    via: string;
 	    routes: string[];
 	    auto_connect: boolean;
+	    when_down?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelSpec(source);
@@ -1425,6 +1436,7 @@ export namespace domain {
 	        this.via = source["via"];
 	        this.routes = source["routes"];
 	        this.auto_connect = source["auto_connect"];
+	        this.when_down = source["when_down"];
 	    }
 	}
 	

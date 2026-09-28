@@ -4,7 +4,7 @@ import { Badge, Label, Toggle, fieldCls } from './ui'
 import { api } from '../lib/api'
 import { friendly } from '../lib/format'
 import { validateRouteTarget } from '../lib/validate'
-import type { ConfigIssue, TunnelProfileFile, TunnelStatus, TunnelVia } from '../types'
+import type { ConfigIssue, TunnelProfileFile, TunnelStatus, TunnelVia, TunnelWhenDown } from '../types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
 
@@ -55,6 +55,7 @@ export function TunnelEditor({
   // || not ??: a via of "" (a definition saved before it existed) is direct.
   const [via, setVia] = useState<TunnelVia>(existing?.via || 'direct')
   const [autoConnect, setAutoConnect] = useState(existing?.auto_connect ?? false)
+  const [whenDown, setWhenDown] = useState<TunnelWhenDown>(existing?.when_down || 'fallback')
   const [issues, setIssues] = useState<ConfigIssue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -80,7 +81,7 @@ export function TunnelEditor({
   const errorFor = (field: string) => issuesFor(field).find((i) => i.severity === 'error')?.msg ?? null
   // Issues for a field this form doesn't show (or doesn't show right now)
   // go under the form, so a refused save never looks like a no-op.
-  const shownFields = ['config', 'name', 'routes', ...(needsAuth ? ['username', 'password'] : [])]
+  const shownFields = ['config', 'name', 'routes', 'when_down', ...(needsAuth ? ['username', 'password'] : [])]
   const otherIssues = issues.filter((i) => !i.field || !shownFields.includes(i.field))
   const parsed = parseRoutes(routesText)
   const files = profile?.files ?? []
@@ -119,6 +120,7 @@ export function TunnelEditor({
         via,
         routes: parsed.routes,
         auto_connect: autoConnect,
+        when_down: whenDown,
       })
       const errs = (res.issues ?? []).filter((i) => i.severity === 'error')
       if (errs.length > 0 || !res.tunnel) {
@@ -319,6 +321,40 @@ export function TunnelEditor({
               </span>
             </label>
           ))}
+        </fieldset>
+
+        <fieldset className="space-y-2">
+          <legend className="text-[11px] font-medium uppercase tracking-wider text-muted">When it's down</legend>
+          {(
+            [
+              [
+                'fallback',
+                'Use the usual path',
+                'Its networks go the way they would without it — usually your main VPN.',
+              ],
+              [
+                'block',
+                'Block its networks',
+                "Refused while it's connecting, reconnecting or failed — until it's back, or you disconnect it — so nothing meant for it leaves another way.",
+              ],
+            ] as const
+          ).map(([v, title, hint]) => (
+            <label key={v} className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="radio"
+                name="when_down"
+                checked={whenDown === v}
+                onChange={() => setWhenDown(v)}
+                className="mt-1"
+              />
+              <span>
+                <span className="text-sm text-default">{title}</span>
+                <span className="block text-xs text-muted">{hint}</span>
+              </span>
+            </label>
+          ))}
+          <p className="text-xs text-muted">This covers the profiles routed through it too.</p>
+          <IssueList issues={issuesFor('when_down')} />
         </fieldset>
 
         <div className="flex items-center justify-between">

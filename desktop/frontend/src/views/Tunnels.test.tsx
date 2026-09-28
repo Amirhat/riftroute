@@ -153,6 +153,7 @@ describe('Tunnels view', () => {
         via: 'direct',
         routes: ['192.168.70.0/24', '192.168.72.11'],
         auto_connect: false,
+        when_down: 'fallback',
       }),
     )
     await waitFor(() => expect(mockApi.connectTunnel).toHaveBeenCalledWith('office'))
@@ -447,6 +448,49 @@ describe('Tunnels view — a definition the daemon can’t read', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(edit).toHaveFocus()
+  })
+
+  it('sets a tunnel to block its networks while it is down', async () => {
+    withTunnels([{ ...connected, state: 'disconnected' }])
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...connected, state: 'disconnected', when_down: 'block' } })
+    renderView()
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit infra' }))
+    const down = screen.getByRole('group', { name: "When it's down" })
+    // A daemon from before the setting sends none: the usual path.
+    expect(within(down).getByRole('radio', { name: /Use the usual path/ })).toBeChecked()
+    fireEvent.click(within(down).getByRole('radio', { name: /Block its networks/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalledWith(expect.objectContaining({ when_down: 'block' })))
+  })
+
+  it('says a block-mode tunnel that is down blocks its networks, and stops that on request', async () => {
+    withTunnels([
+      {
+        ...connected,
+        state: 'failed',
+        iface: '',
+        since: undefined,
+        last_error: 'gave up after 6 attempts',
+        when_down: 'block',
+        blocking: true,
+      },
+    ])
+    mockApi.disconnectTunnel.mockResolvedValue({ ...connected, state: 'disconnected', when_down: 'block' })
+    renderView()
+    expect(await screen.findByText('blocks when down')).toBeInTheDocument()
+    expect(screen.getByText(/Its networks are blocked until it's back/)).toHaveTextContent(/Stop blocking lets them/)
+    // Connect is still offered beside it.
+    expect(screen.getByRole('button', { name: 'Connect infra' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop blocking infra' }))
+    await waitFor(() => expect(mockApi.disconnectTunnel).toHaveBeenCalledWith('infra'))
+  })
+
+  it('offers no Stop blocking for a tunnel that is not blocking', async () => {
+    withTunnels([{ ...connected, state: 'failed', iface: '', since: undefined, when_down: 'block' }])
+    renderView()
+    expect(await screen.findByText('blocks when down')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Stop blocking/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/blocked until it's back/)).not.toBeInTheDocument()
   })
 
   it('edits a tunnel saved without a via as direct', async () => {
