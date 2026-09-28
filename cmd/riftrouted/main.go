@@ -241,6 +241,10 @@ func run() error {
 		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher:  launcher,
 		WireGuard: wireguard,
+		Owned: func() []domain.ManagedRoute {
+			owned, _ := st.ListOwned()
+			return owned
+		},
 		Ifaces:    prov.Interfaces,
 		Protected: svc.TunnelProtected,
 		Routes: func(ctx context.Context) ([]domain.Route, error) {

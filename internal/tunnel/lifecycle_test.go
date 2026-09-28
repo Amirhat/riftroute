@@ -373,6 +373,48 @@ func TestOwnRoutesOnTheTunnelAreNotStray(t *testing.T) {
 	waitState(t, h.m, "infra", domain.TunnelConnected)
 }
 
+// On macOS a tunnel-mode profile's routes stay on the tunnel's interface
+// across an openvpn restart, untagged: they're RiftRoute's own (the
+// ownership map says so), not routes the server pushed — the tunnel isn't
+// refused on its reconnect. One RiftRoute didn't install still is.
+func TestProfileRoutesOnTheTunnelAreNotStray(t *testing.T) {
+	h := newHarness(t)
+	h.m.o.Routes = func(context.Context) ([]domain.Route, error) {
+		return []domain.Route{
+			{DstCIDR: "192.168.70.0/24", Iface: "utun9", Family: domain.FamilyV4, Owner: domain.OwnerVPN},
+			{DstCIDR: "10.50.0.0/16", Iface: "utun9", Family: domain.FamilyV4, Owner: domain.OwnerVPN},
+		}, nil
+	}
+	h.m.o.Owned = func() []domain.ManagedRoute {
+		return []domain.ManagedRoute{
+			{Route: domain.Route{DstCIDR: "10.50.0.0/16", Iface: "utun9", Family: domain.FamilyV4}, ProfileID: "tunnel:infra"},
+			// Another tunnel's, and a pin (via a gateway), don't count.
+			{Route: domain.Route{DstCIDR: "10.60.0.0/16", Iface: "utun7", Family: domain.FamilyV4}, ProfileID: "tunnel:other"},
+			{Route: domain.Route{DstCIDR: "10.70.0.0/16", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "tunnel:infra"},
+		}
+	}
+	if _, err := h.m.Save(context.Background(), infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	if err := h.m.Disconnect(context.Background(), "infra"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A route on the tunnel RiftRoute didn't install is still the server's.
+	h.m.o.Owned = func() []domain.ManagedRoute { return nil }
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, h.m, "infra", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "10.50.0.0/16") {
+		t.Errorf("last error = %q", st.LastError)
+	}
+}
+
 // Tunnels up when the daemon restarts into an update come back after it;
 // ones the user disconnected don't.
 func TestTunnelsComeBackAfterAnUpdateRestart(t *testing.T) {

@@ -41,7 +41,16 @@ type Cache struct {
 type cacheEntry struct {
 	addrs []netip.Addr
 	at    time.Time
+	// failed is when the last lookup failed: for failTTL no lookup of that
+	// name is tried again (the last good answer, or none, stands), so a name
+	// that can't resolve right now — an internal one behind a tunnel that's
+	// down — doesn't cost a resolver timeout on every desired-state build.
+	failed time.Time
 }
+
+// failTTL is how long a failed lookup stands. The re-resolver (Refresh)
+// doesn't wait for it.
+const failTTL = 30 * time.Second
 
 // NewCache builds a TTL cache over a resolver.
 func NewCache(r Resolver, ttl time.Duration) *Cache {
@@ -55,7 +64,8 @@ func NewCache(r Resolver, ttl time.Duration) *Cache {
 func (c *Cache) Lookup(ctx context.Context, host string) []netip.Addr {
 	c.mu.Lock()
 	e, ok := c.entries[host]
-	fresh := ok && c.now().Sub(e.at) < c.ttl
+	now := c.now()
+	fresh := ok && (now.Sub(e.at) < c.ttl || now.Sub(e.failed) < failTTL)
 	c.mu.Unlock()
 	if fresh {
 		return e.addrs
@@ -64,6 +74,11 @@ func (c *Cache) Lookup(ctx context.Context, host string) []netip.Addr {
 	if err != nil {
 		// On failure keep the last good answer (fail-safe — don't drop a route
 		// because one lookup timed out).
+		c.mu.Lock()
+		e = c.entries[host]
+		e.failed = c.now()
+		c.entries[host] = e
+		c.mu.Unlock()
 		return e.addrs
 	}
 	sortAddrs(addrs)
