@@ -53,7 +53,7 @@ type Options struct {
 	// on the tunnel's interface across an openvpn restart, untagged, and
 	// mustn't be taken for routes the server pushed. nil: none.
 	Owned func() []domain.ManagedRoute
-	Log       *slog.Logger
+	Log   *slog.Logger
 }
 
 // Manager runs the daemon's tunnels: it stores their definitions, runs one
