@@ -190,7 +190,7 @@ func TestBlockSurvivesAnUpdateRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, h.m, "infra", domain.TunnelConnected)
-	h.m.RememberForRestart()
+	h.m.RememberForRestart(true)
 	h.m.Shutdown()
 	if !blocked(h.lastApply(), "infra") {
 		t.Fatalf("the restart dropped the block: %+v", h.lastApply())
@@ -308,4 +308,59 @@ func TestBlockModeAppliesWithTheResolvedServerBeforeStarting(t *testing.T) {
 	if len(beforeStart) == 0 || !slices.Contains(beforeStart[len(beforeStart)-1], netip.MustParseAddr("192.0.2.44")) {
 		t.Fatalf("the last apply before openvpn started didn't know the server: %v", beforeStart)
 	}
+}
+
+// Restarting into a rollback withdraws every block on the way down — the
+// previous version may not know reject routes, and would leave them owned
+// by nothing — but still brings the connected tunnels back.
+func TestRollbackRestartWithdrawsTheBlocks(t *testing.T) {
+	h := failingHarness(t)
+	ctx := context.Background()
+	if _, err := h.m.Save(ctx, blockSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelFailed) // blocking
+	h.m.RememberForRestart(false)
+	h.m.Shutdown()
+	if in := h.lastApply(); len(in) != 0 {
+		t.Fatalf("a rollback kept the block: %+v", in)
+	}
+	m2, err := New(Options{Dir: h.dir, Launcher: h.fl, Ifaces: h.m.o.Ifaces, Resolve: h.m.o.Resolve,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m2.Shutdown)
+	if in := m2.Inputs(); len(in) != 0 {
+		t.Fatalf("a failed tunnel was resumed after a rollback: %+v", in)
+	}
+}
+
+// ...and a connected block-mode tunnel is still brought back after it.
+func TestRollbackRestartResumesConnectedTunnels(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.m.Save(ctx, blockSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	h.m.RememberForRestart(false)
+	h.m.Shutdown()
+	if in := h.lastApply(); len(in) != 0 {
+		t.Fatalf("a rollback kept the block: %+v", in)
+	}
+	m2, err := New(Options{Dir: h.dir, Launcher: h.fl, Ifaces: h.m.o.Ifaces, Resolve: h.m.o.Resolve,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(m2.Shutdown)
+	m2.StartAuto()
+	waitState(t, m2, "infra", domain.TunnelConnected)
 }

@@ -655,9 +655,11 @@ func run() error {
 
 	// Tunnels first: their routes are withdrawn on the way down (tunnel
 	// applies commit at once). A restart the daemon does on its own (an
-	// update, a rollback) brings the connected ones back.
+	// update, a rollback) brings the connected ones back; an update keeps a
+	// block-mode tunnel's block meanwhile, a rollback withdraws it (the
+	// previous version may not know reject routes).
 	if restartCode.Load() != 0 {
-		tunnels.RememberForRestart()
+		tunnels.RememberForRestart(upd == nil || !upd.RollingBack())
 	}
 	tunnels.Shutdown()
 

@@ -439,8 +439,14 @@ func TestUserRollback(t *testing.T) {
 	if !u2.Status().CanRollBack {
 		t.Fatal("rollback not offered while .prev is kept")
 	}
+	if u2.RollingBack() {
+		t.Fatal("rolling back before it was asked for")
+	}
 	if err := u2.RequestRollback(); err != nil || h.restarts.Load() != 2 {
 		t.Fatalf("request: %v restarts=%d", err, h.restarts.Load())
+	}
+	if !u2.RollingBack() {
+		t.Fatal("the restart isn't known to be a rollback")
 	}
 	g2, err := BootGuard(guardEnv(h, "0.2.7"))
 	if err != nil || !g2.RestartNow {

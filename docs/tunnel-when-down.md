@@ -45,6 +45,15 @@ since:
   afterwards) keeps the block. The tunnel is going to come back, so its
   destinations stay blocked while the daemon is gone. A plain daemon stop
   lifts it.
+  - *As built:* **a rollback** lifts it too
+    (`RememberForRestart(keepBlocks: false)` when the updater says
+    `RollingBack`). The previous version may not know reject routes: its
+    startup would forget their records, and on macOS leave them owned by
+    nothing. Connected tunnels are still brought back.
+  - Known limit: a boot-guard rollback after a crash loop happens before
+    this code runs. If a block-mode tunnel was blocking when the new version
+    crashed, a version from before this feature can leave its reject route
+    until reboot. That takes two faults at once.
 - **At daemon start**, auto-connect and resumed block-mode tunnels count as
   wanted from the first apply, before they're started. So the previous
   run's block isn't withdrawn and then put back.

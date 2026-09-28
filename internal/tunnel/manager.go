@@ -835,18 +835,23 @@ const resumeFile = "resume.list"
 
 // RememberForRestart records the tunnels that are up, so the start after
 // this restart brings them back: an automatic update must not quietly drop a
-// connection the user made. A block-mode tunnel that's blocking is brought
-// back too — tried again, rather than unblocked by an update — and each
-// of these keeps blocking while the daemon is gone (Shutdown). Call it
-// before Shutdown.
-func (m *Manager) RememberForRestart() {
+// connection the user made. With keepBlocks, a block-mode tunnel that's
+// blocking is brought back too — tried again, rather than unblocked by an
+// update — and each of these keeps blocking while the daemon is gone
+// (Shutdown). Without it (a rollback: the previous version may not know
+// reject routes, and would leave them owned by nothing) every block is
+// withdrawn on the way down. Call it before Shutdown.
+func (m *Manager) RememberForRestart(keepBlocks bool) {
 	m.mu.Lock()
 	var names []string
 	m.restarting = map[string]bool{}
 	for n, r := range m.rt {
-		if (r.sess != nil && !r.sess.stopping.Load()) || blocking(m.defs[n], r) {
+		up := r.sess != nil && !r.sess.stopping.Load()
+		if up || (keepBlocks && blocking(m.defs[n], r)) {
 			names = append(names, n)
-			m.restarting[n] = true
+			if keepBlocks {
+				m.restarting[n] = true
+			}
 		}
 	}
 	m.mu.Unlock()
