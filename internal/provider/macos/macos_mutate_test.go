@@ -140,3 +140,57 @@ func TestManagedDeletesShareOneTableRead(t *testing.T) {
 		t.Fatalf("outside a batch: %d read(s), want 3", reads)
 	}
 }
+
+// A reject route goes to the loopback address with -reject (lo0 is what
+// refuses it); deleting it takes the destination alone, and only while the
+// kernel's route for it is still a reject route — a route into the tunnel
+// for the same destination isn't it.
+func TestRejectRouteArgs(t *testing.T) {
+	v4 := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.9/32", Family: domain.FamilyV4, Reject: true}, ProfileID: "tunnel:con3"}
+	v6 := domain.ManagedRoute{Route: domain.Route{DstCIDR: "2620:fe::/48", Family: domain.FamilyV6, Reject: true}, ProfileID: "tunnel:con3"}
+	for _, c := range []struct {
+		action string
+		mr     domain.ManagedRoute
+		want   string
+	}{
+		{"add", v4, "-n add -host 9.9.9.9 127.0.0.1 -reject"},
+		{"add", v6, "-n add -inet6 -net 2620:fe::/48 ::1 -reject"},
+		{"delete", v4, "-n delete -host 9.9.9.9"},
+	} {
+		args, err := macRouteArgs(c.action, c.mr)
+		if err != nil || strings.Join(args, " ") != c.want {
+			t.Errorf("%s %s = %q, %v; want %q", c.action, c.mr.DstCIDR, args, err, c.want)
+		}
+	}
+	bad := v4
+	bad.Route.Iface = "utun6"
+	if _, err := macRouteArgs("add", bad); err == nil {
+		t.Error("a reject route with an interface was accepted")
+	}
+
+	p, ran := fakeRoutes([]domain.Route{{DstCIDR: "9.9.9.9/32", Family: domain.FamilyV4, Reject: true}}, nil)
+	if err := p.DelRoute(context.Background(), v4); err != nil || strings.Join(*ran, "; ") != "-n delete -host 9.9.9.9" {
+		t.Fatalf("ours: err %v, ran %q", err, *ran)
+	}
+	p, ran = fakeRoutes([]domain.Route{{DstCIDR: "9.9.9.9/32", Iface: "utun6", Family: domain.FamilyV4}}, nil)
+	if err := p.DelRoute(context.Background(), v4); err != nil || len(*ran) != 0 {
+		t.Fatalf("a live route there now: err %v, ran %q", err, *ran)
+	}
+	live := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.9/32", Iface: "utun6", Family: domain.FamilyV4}, ProfileID: "tunnel:con3"}
+	p, ran = fakeRoutes([]domain.Route{{DstCIDR: "9.9.9.9/32", Family: domain.FamilyV4, Reject: true}}, nil)
+	if err := p.DelRoute(context.Background(), live); err != nil || len(*ran) != 0 {
+		t.Fatalf("the live route's delete took the reject route: err %v, ran %q", err, *ran)
+	}
+}
+
+// `route -n get` for a destination a reject route holds prints REJECT in
+// its flags.
+func TestRouteGetRejects(t *testing.T) {
+	out := "   route to: 9.9.9.9\ndestination: 9.9.9.9\n    gateway: 127.0.0.1\n  interface: lo0\n      flags: <UP,GATEWAY,HOST,DONE,REJECT,STATIC>\n"
+	if !routeGetRejects(out) {
+		t.Error("REJECT not seen")
+	}
+	if routeGetRejects(strings.Replace(out, "REJECT,", "", 1)) {
+		t.Error("a plain route read as reject")
+	}
+}

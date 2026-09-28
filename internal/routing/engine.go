@@ -633,6 +633,9 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 		}
 		switch kind {
 		case domain.OpAddRoute:
+			if r.Reject {
+				return []string{"route", "-n", "add", scope, r.DstCIDR, loopbackFor(r), "-reject"}
+			}
 			if r.Gateway == "" { // on-link, e.g. into a tunnel interface
 				return []string{"route", "-n", "add", scope, r.DstCIDR, "-interface", r.Iface}
 			}
@@ -651,6 +654,10 @@ func commandForRoute(kind domain.OpKind, r domain.Route, platform string) []stri
 	args := []string{"ip", "route"}
 	switch kind {
 	case domain.OpAddRoute:
+		if r.Reject {
+			args = append(args, "add", "unreachable", r.DstCIDR, "proto", proto)
+			break
+		}
 		args = append(args, "add", r.DstCIDR)
 		if r.Gateway != "" {
 			args = append(args, "via", r.Gateway) // omit for an on-link tunnel default
@@ -697,6 +704,9 @@ func humanForRoute(kind domain.OpKind, r domain.Route) string {
 	if r.Table != "" {
 		t = " table " + r.Table
 	}
+	if r.Reject {
+		return fmt.Sprintf("%s %s reject%s", verb, r.DstCIDR, t)
+	}
 	if r.Gateway == "" {
 		return fmt.Sprintf("%s %s dev %s%s", verb, r.DstCIDR, r.Iface, t)
 	}
@@ -722,7 +732,20 @@ func humanForRule(kind domain.OpKind, r domain.PolicyRule) string {
 
 // RouteKey identifies a route for set membership: family|table|dst|gateway|iface.
 func RouteKey(r domain.Route) string {
-	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
+	k := string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
+	if r.Reject {
+		k += "|reject"
+	}
+	return k
+}
+
+// loopbackFor is the gateway a macOS reject route takes: lo0 is what
+// honors RTF_REJECT, answering "host unreachable".
+func loopbackFor(r domain.Route) string {
+	if r.Family == domain.FamilyV6 {
+		return "::1"
+	}
+	return "127.0.0.1"
 }
 
 // dstKey is what the kernel keeps one route per: family|table|dst.

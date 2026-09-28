@@ -90,7 +90,10 @@ func renderRoutes(cmd *cobra.Command, routes []domain.Route) {
 	fmt.Fprintln(tw, "DESTINATION\tGATEWAY\tINTERFACE\tMETRIC\tOWNER")
 	for _, r := range routes {
 		gw := r.Gateway
-		if gw == "" {
+		switch {
+		case r.Reject:
+			gw = "reject"
+		case gw == "":
 			gw = "-"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.DstCIDR, gw, r.Iface, r.Metric, r.Owner)

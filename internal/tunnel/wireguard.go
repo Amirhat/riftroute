@@ -284,6 +284,7 @@ func (w *wgSession) supervise(ctx context.Context) {
 				r.state, r.detail = domain.TunnelReconnecting, "waiting for a handshake"
 				r.failures++
 			})
+			w.m.requestApply() // its destinations leave it (or are refused) until it's back
 			w.m.changed()
 		case age >= wgStaleAfter && now.Sub(w.stale) >= wgReresolveEvery && now.Sub(w.resolve) >= wgReresolveEvery:
 			w.resolve = now

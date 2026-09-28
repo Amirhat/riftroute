@@ -133,3 +133,32 @@ func TestFlushOwnedLeavesForeignRoutes(t *testing.T) {
 		}
 	}
 }
+
+// A reject route refuses its destination: the lookup says so (not merely
+// unreachable), a policy delete removes it, and a route into a tunnel for
+// the same destination is a different route.
+func TestRejectRoute(t *testing.T) {
+	p := New()
+	ctx := context.Background()
+	mr := domain.ManagedRoute{
+		Route:     domain.Route{DstCIDR: "9.9.9.9/32", Family: domain.FamilyV4, Reject: true},
+		ProfileID: "tunnel:con3",
+	}
+	if err := p.AddRoute(ctx, mr); err != nil {
+		t.Fatal(err)
+	}
+	dec, _ := p.LookupRoute(ctx, netip.MustParseAddr("9.9.9.9"))
+	if dec.Reachable || !dec.Rejected || dec.Profile != "tunnel:con3" || dec.MatchedCIDR != "9.9.9.9/32" {
+		t.Fatalf("lookup = %+v", dec)
+	}
+	live := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.9/32", Iface: "utun6", Family: domain.FamilyV4}, ProfileID: "tunnel:con3"}
+	if err := p.DelRoute(ctx, live); err == nil {
+		t.Fatal("deleted the reject route as if it were the live one")
+	}
+	if err := p.DelRoute(ctx, mr); err != nil {
+		t.Fatal(err)
+	}
+	if dec, _ := p.LookupRoute(ctx, netip.MustParseAddr("9.9.9.9")); dec.Rejected || dec.MatchedCIDR != "0.0.0.0/0" {
+		t.Fatalf("after the delete = %+v", dec)
+	}
+}

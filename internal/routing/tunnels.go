@@ -17,13 +17,19 @@ const TunnelProfilePrefix = "tunnel:"
 // TunnelInput is one managed tunnel's contribution to desired state.
 type TunnelInput struct {
 	Name string
-	// Iface is the tunnel's interface while it is up; empty otherwise, in
-	// which case its Routes are not installed (they stay on whatever path
-	// they had — never blackholed into a dead interface).
+	// Iface is the tunnel's interface while it is connected; empty
+	// otherwise, in which case its Routes are not installed — they take
+	// whatever path they'd take without it — unless it's set to Block.
 	Iface string
 	// V6 reports that the tunnel carries IPv6; its v6 routes are left out
-	// (and reported blocked) without it.
+	// (and reported blocked) without it — refused, with Block.
 	V6 bool
+	// Block: the tunnel is set to block while it's down, and should be up
+	// (the manager sets it only then). While Iface is empty, each of its
+	// destinations gets a reject route instead of going into it, so none
+	// leaves another way; while it's up, so does a v6 destination it can't
+	// carry.
+	Block bool
 	// Routes are the CIDR/IP destinations sent into the tunnel.
 	Routes []string
 	// Bypass are the tunnel's own server addresses, pinned to the physical
@@ -41,13 +47,15 @@ type TunnelInput struct {
 // TunnelPlan is what the managed tunnels contribute on the current network.
 type TunnelPlan struct {
 	// Routes are the tunnels' routes: each server pin via the physical
-	// gateway, and each live tunnel's destinations on-link into its
-	// interface (aggregated). No two share a destination.
+	// gateway, each live tunnel's destinations on-link into its interface,
+	// and each blocking tunnel's reject routes (aggregated). No two share a
+	// destination.
 	Routes []domain.ManagedRoute
 	// Blocked are the listed routes left out, by tunnel name, and why.
 	Blocked map[string][]domain.TunnelBlocked
-	// nets are the destinations live tunnels route (exclude routes yield
-	// inside them).
+	// nets are the destinations live tunnels route or blocking tunnels
+	// refuse (exclude routes yield inside them, include rules are cut
+	// around them).
 	nets []netip.Prefix
 }
 
@@ -55,6 +63,7 @@ type TunnelPlan struct {
 type claim struct {
 	tunnel string
 	pin    bool // a server pin rather than a destination into the tunnel
+	refuse bool // a reject route: the tunnel is down and set to block
 }
 
 // PlanTunnels decides every tunnel route on the current network, and why the
@@ -62,13 +71,17 @@ type claim struct {
 // route per destination, and the guardrails refuse a WHOLE apply over a
 // destination with two next hops, so one tunnel's routes must never be able to
 // stall every other change. Server pins claim first (a tunnel's connection
-// depends on them), then live tunnels in name order; tunnels that aren't up
-// install nothing, but their routes are still checked against this network,
-// so their status can say what would be left out.
+// depends on them), then live tunnels in name order, then blocking ones;
+// other tunnels that aren't up install nothing, but their routes are still
+// checked against this network, so their status can say what would be left
+// out.
 //
-// A tunnel that is down contributes no destination routes; a missing physical
-// gateway drops only the pin. Neither is an error, so one tunnel's state can
-// never make the rest of the desired set unappliable.
+// A tunnel that is down contributes no destination routes — unless it's set
+// to block (TunnelInput.Block), when each destination gets a reject route,
+// through the same checks: a reject route holding the router or a tunnel's
+// server cuts the connection as surely as a route into a tunnel. A missing
+// physical gateway drops only the pin. None of these is an error, so one
+// tunnel's state can never make the rest of the desired set unappliable.
 func PlanTunnels(in DesiredInput) TunnelPlan {
 	tp := TunnelPlan{Blocked: map[string][]domain.TunnelBlocked{}}
 	ts := append([]TunnelInput(nil), in.Tunnels...)
@@ -117,7 +130,8 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			}
 			pfx = pfx.Masked()
 			why := ""
-			if t.Iface != "" && fam == domain.FamilyV6 && !t.V6 {
+			noV6 := t.Iface != "" && fam == domain.FamilyV6 && !t.V6
+			if noV6 && !t.Block {
 				why = "the tunnel has no IPv6 address"
 			}
 			if why == "" {
@@ -142,20 +156,33 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 					}
 				}
 			}
+			if why == "" && noV6 {
+				// Set to block: refused rather than left to leak — a name
+				// with both addresses would otherwise go out over v6.
+				why = "the tunnel has no IPv6 address, so it's refused (block when down)"
+				byFamily[fam] = append(byFamily[fam], pfx)
+			}
 			if why != "" {
 				tp.Blocked[t.Name] = append(tp.Blocked[t.Name], domain.TunnelBlocked{Route: v, Reason: why})
 				continue
 			}
 			byFamily[fam] = append(byFamily[fam], pfx)
 		}
-		if t.Iface == "" {
+		if t.Iface == "" && !t.Block {
 			continue // not up: nothing goes into it
 		}
 		for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+			// Up: into the tunnel, but for v6 it can't carry. Down (and set
+			// to block): all of it refused.
+			refuse := t.Iface == "" || (fam == domain.FamilyV6 && !t.V6)
 			for _, pfx := range unclaimedAggregate(byFamily[fam], taken) {
-				taken[prefixKey(pfx)] = claim{tunnel: t.Name}
+				taken[prefixKey(pfx)] = claim{tunnel: t.Name, refuse: refuse}
 				tp.nets = append(tp.nets, pfx)
-				tp.add(domain.Route{DstCIDR: pfx.String(), Iface: t.Iface, Family: fam}, tag, in)
+				if refuse {
+					tp.add(domain.Route{DstCIDR: pfx.String(), Family: fam, Reject: true}, tag, in)
+				} else {
+					tp.add(domain.Route{DstCIDR: pfx.String(), Iface: t.Iface, Family: fam}, tag, in)
+				}
 			}
 		}
 	}
@@ -168,6 +195,8 @@ func (c claim) reason(tunnel string) string {
 		return "it's the tunnel's own server, pinned to your physical gateway"
 	case c.pin:
 		return fmt.Sprintf("it's tunnel %s's server, pinned to your physical gateway", c.tunnel)
+	case c.refuse:
+		return fmt.Sprintf("already blocked for tunnel %s while it's down", c.tunnel)
 	}
 	return fmt.Sprintf("already routed into tunnel %s", c.tunnel)
 }
@@ -487,6 +516,10 @@ func IndexInstalled(kernel []domain.Route) Installed {
 		if k.Cloned {
 			continue
 		}
+		if k.Reject {
+			in[maskedDstKey(k)+"|reject"] = true
+			continue
+		}
 		in[maskedDstKey(k)+"|dev "+k.Iface] = true
 		if k.Gateway != "" {
 			in[maskedDstKey(k)+"|via "+gatewayKey(k.Gateway)] = true
@@ -496,8 +529,12 @@ func IndexInstalled(kernel []domain.Route) Installed {
 }
 
 // Has reports whether the kernel holds r: its destination through its
-// gateway — or, for an on-link route, on its interface.
+// gateway — or, for an on-link route, on its interface; refused, for a
+// reject route.
 func (in Installed) Has(r domain.Route) bool {
+	if r.Reject {
+		return in[maskedDstKey(r)+"|reject"]
+	}
 	if r.Gateway != "" {
 		return in[maskedDstKey(r)+"|via "+gatewayKey(r.Gateway)]
 	}
@@ -514,7 +551,11 @@ func SameGateway(a, b string) bool { return gatewayKey(a) == gatewayKey(b) }
 // on macOS a gateway is recorded as `route get` prints it (fe80::1%en0), and
 // the table lists it without the zone or in KAME form (fe80:4::1).
 func KernelKey(r domain.Route) string {
-	return maskedDstKey(r) + "|" + gatewayKey(r.Gateway) + "|" + r.Iface
+	k := maskedDstKey(r) + "|" + gatewayKey(r.Gateway) + "|" + r.Iface
+	if r.Reject {
+		k += "|reject"
+	}
+	return k
 }
 
 // gatewayKey spells a gateway one way whichever source it came from: a

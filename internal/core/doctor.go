@@ -77,10 +77,18 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 				if t.Type == domain.TunnelWireGuard {
 					what = "the configuration"
 				}
-				add(name, domain.CheckFail, t.LastError, "fix "+what+", then `riftroute tunnel up "+t.Name+"`")
+				detail, fix := t.LastError, "fix "+what+", then `riftroute tunnel up "+t.Name+"`"
+				if t.Blocking {
+					detail += "; " + blockingDetail(expected[t.Name], installed)
+					fix += " — or `riftroute tunnel down " + t.Name + "` to stop blocking"
+				}
+				add(name, domain.CheckFail, detail, fix)
 			case t.State == domain.TunnelConnected:
 				status, detail, fix := connectedTunnelCheck(t, expected[t.Name], installed)
 				add(name, status, detail, fix)
+			case t.Blocking:
+				add(name, domain.CheckWarn, string(t.State)+"; "+blockingDetail(expected[t.Name], installed),
+					"it's set to block when down: they're back once it connects, or `riftroute tunnel down "+t.Name+"` stops blocking")
 			case len(t.Blocked) > 0:
 				add(name, domain.CheckWarn, "not installed on this network: "+blockedList(t.Blocked),
 					"narrow those routes, or ignore this while on this network")
@@ -186,7 +194,7 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 			missing = append(missing, r.DstCIDR+" (its server's pin)")
 		case !installed.Has(r.Route):
 			missing = append(missing, r.DstCIDR)
-		case r.Gateway == "":
+		case r.Gateway == "" && !r.Reject:
 			through++
 		}
 	}
@@ -208,6 +216,27 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 		fixes = append(fixes, "use destination rules instead of app rules in the include profile, or disable it while the tunnel is up")
 	}
 	return status, detail, strings.Join(fixes, "; ")
+}
+
+// blockingDetail says how many of a down tunnel's destinations its reject
+// routes refuse, and which aren't refused yet.
+func blockingDetail(expected []domain.ManagedRoute, installed routing.Installed) string {
+	refused := 0
+	var missing []string
+	for _, r := range expected {
+		switch {
+		case !r.Reject:
+		case installed.Has(r.Route):
+			refused++
+		default:
+			missing = append(missing, r.DstCIDR)
+		}
+	}
+	detail := fmt.Sprintf("%d destination(s) blocked until it's back", refused)
+	if len(missing) > 0 {
+		detail += "; not blocked yet (missing from the routing table): " + strings.Join(missing, ", ")
+	}
+	return detail
 }
 
 func blockedList(bs []domain.TunnelBlocked) string {

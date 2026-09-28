@@ -175,6 +175,11 @@ func (p *Provider) LookupRoute(_ context.Context, dst netip.Addr) (domain.RouteD
 	if best >= 0 {
 		r := routes[best]
 		dec.MatchedCIDR = r.DstCIDR
+		if r.Reject {
+			dec.Reachable, dec.Rejected = false, true
+			dec.Owner, dec.Profile = r.Owner, r.Profile
+			return dec, nil
+		}
 		dec.Gateway = r.Gateway
 		dec.Iface = r.Iface
 		dec.Owner = r.Owner
@@ -434,7 +439,7 @@ func (p *Provider) indexOf(rt domain.Route) int {
 		routes = p.routesV6
 	}
 	for i, r := range routes {
-		if r.DstCIDR == rt.DstCIDR && r.Gateway == rt.Gateway && r.Iface == rt.Iface && r.Table == rt.Table {
+		if r.DstCIDR == rt.DstCIDR && r.Gateway == rt.Gateway && r.Iface == rt.Iface && r.Table == rt.Table && r.Reject == rt.Reject {
 			return i
 		}
 	}
@@ -471,7 +476,11 @@ func filterOwned(in []domain.Route) []domain.Route {
 }
 
 func routeKey(r domain.Route) string {
-	return string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
+	k := string(r.Family) + "|" + r.Table + "|" + r.DstCIDR + "|" + r.Gateway + "|" + r.Iface
+	if r.Reject {
+		k += "|reject"
+	}
+	return k
 }
 
 func ifaceIsVPN(ifaces []domain.Iface, name string) bool {

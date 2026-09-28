@@ -5,6 +5,7 @@ package linux
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -90,7 +91,12 @@ func (p *Provider) LookupRoute(ctx context.Context, dst netip.Addr) (domain.Rout
 	}
 	out, err := run(ctx, "ip", "route", "get", dst.String())
 	if err != nil {
-		return domain.RouteDecision{Target: dst.String(), Source: "kernel", Family: family, Reachable: false}, nil
+		dec := domain.RouteDecision{Target: dst.String(), Source: "kernel", Family: family, Reachable: false}
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			dec.Rejected = rejectedLookup(string(ee.Stderr))
+		}
+		return dec, nil
 	}
 	return parseRouteGetText(out, dst.String(), family), nil
 }

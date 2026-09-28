@@ -27,6 +27,10 @@ func diffCmd() *cobra.Command {
 			fmt.Fprintf(out, "%d to add, %d to remove, %d to change:\n", d.Adds, d.Dels, d.Changes)
 			for _, e := range d.Entries {
 				sign := map[string]string{"add": "+", "del": "-", "change": "~"}[string(e.Action)]
+				if e.Route.Reject {
+					fmt.Fprintf(out, "  %s %s reject\n", sign, e.Route.DstCIDR)
+					continue
+				}
 				fmt.Fprintf(out, "  %s %s via %s dev %s\n", sign, e.Route.DstCIDR, e.Route.Gateway, e.Route.Iface)
 			}
 			return nil

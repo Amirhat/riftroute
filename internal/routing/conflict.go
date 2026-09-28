@@ -33,7 +33,7 @@ func DetectConflicts(routes []domain.ManagedRoute) []domain.Conflict {
 			if !a.pfx.Overlaps(b.pfx) {
 				continue
 			}
-			if a.r.Route.Gateway == b.r.Route.Gateway && a.r.Route.Iface == b.r.Route.Iface {
+			if a.r.Route.Gateway == b.r.Route.Gateway && a.r.Route.Iface == b.r.Route.Iface && a.r.Route.Reject == b.r.Route.Reject {
 				continue // same next hop → harmless
 			}
 			kind := "overlap"
@@ -61,6 +61,9 @@ func label(r domain.ManagedRoute) string {
 	prof := r.ProfileID
 	if prof == "" {
 		prof = r.Route.Profile
+	}
+	if r.Route.Reject {
+		return fmt.Sprintf("%s reject (%s)", r.Route.DstCIDR, prof)
 	}
 	return fmt.Sprintf("%s via %s dev %s (%s)", r.Route.DstCIDR, r.Route.Gateway, r.Route.Iface, prof)
 }

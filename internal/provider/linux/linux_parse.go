@@ -15,6 +15,7 @@ import (
 
 // ipRoute mirrors one element of `ip -j route show` / `ip -j route get`.
 type ipRoute struct {
+	Type     string `json:"type"` // absent for unicast
 	Dst      string `json:"dst"`
 	Gateway  string `json:"gateway"`
 	Dev      string `json:"dev"`
@@ -112,7 +113,7 @@ func parseRoutesJSON(data []byte, family domain.Family) ([]domain.Route, error) 
 	}
 	out := make([]domain.Route, 0, len(raw))
 	for _, r := range raw {
-		out = append(out, domain.Route{
+		rt := domain.Route{
 			DstCIDR: normalizeDst(r.Dst, family),
 			Gateway: r.Gateway,
 			Iface:   r.Dev,
@@ -120,9 +121,25 @@ func parseRoutesJSON(data []byte, family domain.Family) ([]domain.Route, error) 
 			Family:  family,
 			Owner:   ownerForLinux(r.Protocol, r.Dev),
 			Proto:   canonicalProto(r.Protocol),
-		})
+		}
+		if rejectType[r.Type] {
+			rt.Reject, rt.Gateway, rt.Iface = true, "", ""
+		}
+		out = append(out, rt)
 	}
 	return out, nil
+}
+
+// rejectType are the route types that refuse their destination rather than
+// forward it: a reject route (domain.Route.Reject). RiftRoute adds
+// unreachable ones.
+var rejectType = map[string]bool{"unreachable": true, "prohibit": true, "blackhole": true}
+
+// rejectedLookup reports whether `ip route get`'s error says a route refused
+// the destination (unreachable: "No route to host"; prohibit: "Permission
+// denied") rather than that no route matched ("Network is unreachable").
+func rejectedLookup(stderr string) bool {
+	return strings.Contains(stderr, "No route to host") || strings.Contains(stderr, "Permission denied")
 }
 
 // parseRulesJSON parses `ip -j rule show` output for one family.
@@ -195,7 +212,13 @@ func parseRoutesText(text string, family domain.Family) []domain.Route {
 		if len(f) == 0 {
 			continue
 		}
-		r := domain.Route{Family: family, DstCIDR: normalizeDst(f[0], family)}
+		reject := rejectType[f[0]]
+		if reject || f[0] == "unicast" {
+			if f = f[1:]; len(f) == 0 {
+				continue
+			}
+		}
+		r := domain.Route{Family: family, DstCIDR: normalizeDst(f[0], family), Reject: reject}
 		var proto string
 		for i := 1; i < len(f)-1; i++ {
 			switch f[i] {

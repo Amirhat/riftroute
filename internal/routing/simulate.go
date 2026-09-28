@@ -35,6 +35,11 @@ func Simulate(routes []domain.Route, target netip.Addr, vpnByIface map[string]bo
 	if best >= 0 {
 		r := routes[best]
 		dec.MatchedCIDR = r.DstCIDR
+		if r.Reject {
+			dec.Reachable, dec.Rejected = false, true
+			dec.Owner, dec.Profile = r.Owner, r.Profile
+			return dec
+		}
 		dec.Gateway = r.Gateway
 		dec.Iface = r.Iface
 		dec.Owner = r.Owner
@@ -51,7 +56,7 @@ func Simulate(routes []domain.Route, target netip.Addr, vpnByIface map[string]bo
 // Drift reports whether the kernel's real decision diverges from the simulated
 // (desired) one — meaning reconciliation is pending (spec §7.2/§7.3).
 func Drift(kernel, simulated domain.RouteDecision) bool {
-	if kernel.Reachable != simulated.Reachable {
+	if kernel.Reachable != simulated.Reachable || kernel.Rejected != simulated.Rejected {
 		return true
 	}
 	if !kernel.Reachable {

@@ -234,7 +234,11 @@ func (s *Service) occupied(ctx context.Context, owned []domain.ManagedRoute) map
 				continue
 			}
 			if pfx, err := netip.ParsePrefix(r.DstCIDR); err == nil && pfx.Bits() > 0 {
-				out[pfx.Masked().String()] = r.Iface
+				via := r.Iface
+				if r.Reject {
+					via = "a reject route"
+				}
+				out[pfx.Masked().String()] = via
 			}
 		}
 	}
@@ -1036,6 +1040,13 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 	vpnByIface := s.vpnByIface(ctx)
 	sim := routing.Simulate(overlay, addr, vpnByIface)
 	ts := s.TunnelStatuses(ctx)
+	if (out.Kernel.Rejected || !out.Kernel.Reachable) && out.Kernel.Profile == "" {
+		// The kernel's refusal carries no tag: whose reject route is it? A
+		// kernel that answers it as no route at all is refusing it too.
+		if tag := rejectedBy(addr, s.actualManagedRoutes(ctx)); tag != "" {
+			out.Kernel.Rejected, out.Kernel.Profile = true, tag
+		}
+	}
 	markTunnel(&out.Kernel, ts)
 	markTunnel(&sim, ts)
 	out.Simulated = &sim
@@ -1043,16 +1054,17 @@ func (s *Service) Explain(ctx context.Context, target string) (domain.RouteExpla
 	return out, nil
 }
 
-// markTunnel names the tunnel a decision sends traffic into: by its route's
-// tag (tunnel:<name>, the desired set), or by a live tunnel's interface (the
+// markTunnel names the tunnel a decision sends traffic into — or, refused,
+// the down tunnel whose destinations are blocked: by its route's tag
+// (tunnel:<name>, the desired set), or by a live tunnel's interface (the
 // kernel's routes carry no tag on macOS).
 func markTunnel(d *domain.RouteDecision, ts []domain.TunnelStatus) {
-	if !d.Reachable {
+	if !d.Reachable && !d.Rejected {
 		return
 	}
 	name, tagged := strings.CutPrefix(d.Profile, routing.TunnelProfilePrefix)
 	for _, t := range ts {
-		live := t.Iface != "" && (t.State == domain.TunnelConnected || t.State == domain.TunnelReconnecting)
+		live := d.Reachable && t.Iface != "" && (t.State == domain.TunnelConnected || t.State == domain.TunnelReconnecting)
 		if (tagged && t.Name == name) || (!tagged && live && t.Iface == d.Iface) {
 			d.Tunnel, d.TunnelType = t.Name, t.Type
 			return
@@ -1061,6 +1073,20 @@ func markTunnel(d *domain.RouteDecision, ts []domain.TunnelStatus) {
 	if tagged {
 		d.Tunnel = name
 	}
+}
+
+// rejectedBy is the tag of the owned reject route that refuses target (the
+// most specific one), or "".
+func rejectedBy(target netip.Addr, owned []domain.ManagedRoute) string {
+	best, tag := -1, ""
+	for _, o := range owned {
+		pfx, err := netip.ParsePrefix(o.DstCIDR)
+		if err != nil || !o.Reject || o.Table != "" || !pfx.Contains(target) || pfx.Bits() <= best {
+			continue
+		}
+		best, tag = pfx.Bits(), o.ProfileID
+	}
+	return tag
 }
 
 func (s *Service) vpnByIface(ctx context.Context) map[string]bool {

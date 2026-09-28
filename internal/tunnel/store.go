@@ -26,8 +26,15 @@ type def struct {
 	Via         domain.TunnelVia  `json:"via"`
 	Routes      []string          `json:"routes"`
 	AutoConnect bool              `json:"auto_connect"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// WhenDown is block or fallback; empty (a definition from before it) is
+	// fallback.
+	WhenDown  domain.TunnelWhenDown `json:"when_down,omitempty"`
+	UpdatedAt time.Time             `json:"updated_at"`
 }
+
+// blocks reports whether the tunnel refuses its destinations while it's
+// down.
+func (d *def) blocks() bool { return d != nil && d.WhenDown == domain.TunnelBlock }
 
 var reName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
