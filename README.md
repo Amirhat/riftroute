@@ -263,6 +263,12 @@ Or use the **Tunnels** page in the app. How it works:
   server through there (Windscribe: split tunneling → exclude its IP), or set
   that firewall to manual and use RiftRoute's kill switch instead. A connection
   stuck in `tcp_connect` says so in `riftroute tunnel list`.
+- **When it's down**, its networks take their usual path (usually the main
+  VPN). With `--when-down block` (or "Block its networks" in the app) they're
+  refused instead while it should be up but isn't — connecting,
+  reconnecting, or failed — so nothing meant for it leaves another way.
+  `riftroute tunnel down <name>` (or the panic button) lifts the block. This
+  covers the profiles routed through the tunnel too.
 - A tunnel's networks win over exclude profiles: while it's up, an exclude
   rule can't pull a host inside them back out (e.g. `*.example.com` resolving
   `gitlab.example.com` to `192.168.70.42`, which sits behind the tunnel).

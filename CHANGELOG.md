@@ -14,8 +14,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   while it isn't. The tunnel's card lists the profiles sent into it, each
   with its on/off toggle, and the lookup says "via tunnel <name>". In a
   config file: `mode: tunnel` and `tunnel: <name>`.
+- **When a tunnel is down: use the usual path, or block.** Each tunnel has a
+  "When it's down" setting. **Use the usual path** (the default) lets its
+  networks go the way they would without it. **Block its networks** refuses
+  them while the tunnel should be up but isn't — connecting, reconnecting,
+  or failed — so nothing meant for it leaves another way; apps get "no
+  route to host" at once. It covers the profiles routed through it too.
+  Disconnecting it (**Stop blocking** on a failed one) lifts the block, and
+  so does the panic button; a restart into an update keeps it. Up without
+  IPv6, a blocking tunnel refuses its v6 destinations rather than let them
+  out. The lookup says "blocked · tunnel <name> is down". On the command
+  line: `riftroute tunnel add|edit … --when-down block|fallback`.
 
 ### Changed
+- **A reconnecting tunnel carries nothing.** Its networks used to stay on
+  its interface while it reconnected — into a tunnel that was down. Now they
+  take the usual path, or are blocked, as its "When it's down" setting says.
 - **The route lookup names the tunnel** traffic goes into — "via tunnel
   con3 · WireGuard", in the app and `riftroute route explain` — rather than
   "via VPN" with a `tunnel:` profile tag. The routing table shows a tunnel's
