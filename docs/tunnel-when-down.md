@@ -56,10 +56,18 @@ since:
     lock to tunnel applies only (`Protocol.LendQuiesce`, applies marked
     `Options.Lendable`) as it restarts the daemon. Every other change still
     waits.
-  - Known limit: a boot-guard rollback after a crash loop happens before
-    this code runs. If a block-mode tunnel was blocking when the new version
-    crashed, a version from before this feature can leave its reject route
-    until reboot. That takes two faults at once.
+  - Known limits, each needing a second fault:
+    - a boot-guard rollback after a crash loop happens before this code
+      runs. If a block-mode tunnel was blocking when the new version
+      crashed, a version from before this feature can leave its reject
+      route until reboot;
+    - the swap's database backup predates the lent applies. A boot guard
+      that restores it (only after a failed update whose schema change the
+      previous version can't read) loses the reject routes recorded on the
+      way down;
+    - a lent apply cut off by the exit is journaled, so the next start's
+      crash recovery reverts it. The block lifts briefly, until the
+      tunnels' startup resync puts it back.
 - **At daemon start**, auto-connect and resumed block-mode tunnels count as
   wanted from the first apply, before they're started. So the previous
   run's block isn't withdrawn and then put back.
