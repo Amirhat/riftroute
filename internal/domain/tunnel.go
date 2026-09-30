@@ -162,6 +162,9 @@ type TunnelEngine struct {
 	// unsafe permissions, unsupported OS); empty when Available.
 	Problem string         `json:"problem,omitempty"`
 	Install *TunnelInstall `json:"install,omitempty"`
+	// IKEv2 is the same report for IKEv2 tunnels' strongSwan (charon-cmd),
+	// beside openvpn's; absent from daemons without IKEv2.
+	IKEv2 *TunnelEngine `json:"ikev2,omitempty"`
 }
 
 // TunnelInstall is how to install (or fix) openvpn on this system: on macOS,

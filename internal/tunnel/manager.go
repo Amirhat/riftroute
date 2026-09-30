@@ -1636,8 +1636,14 @@ func stopProcess(pid int, ours func(int) bool) bool {
 }
 
 // Engine reports whether tunnels can run on this machine, and if not, how
-// to install what's missing.
-func (m *Manager) Engine() domain.TunnelEngine { return m.o.Launcher.Engine() }
+// to install what's missing: openvpn's, with IKEv2's (strongSwan) beside it.
+// WireGuard is built in.
+func (m *Manager) Engine() domain.TunnelEngine {
+	e := m.o.Launcher.Engine()
+	ike := m.drivers[domain.TunnelIKEv2].engine()
+	e.IKEv2 = &ike
+	return e
+}
 
 // ourCommandLine reports whether a process's command line is an openvpn or
 // charon-cmd we started: the binary recorded with its pid (any openvpn by

@@ -36,6 +36,7 @@ export function TunnelEditor({
   existing,
   takenNames,
   canConnect,
+  canConnectIKEv2,
   onClose,
   onSaved,
 }: {
@@ -44,6 +45,8 @@ export function TunnelEditor({
   // False when the openvpn program isn't usable: saving still works, but
   // connecting an OpenVPN tunnel would only fail. WireGuard is built in.
   canConnect: boolean
+  // The same for IKEv2 tunnels' strongSwan (charon-cmd).
+  canConnectIKEv2: boolean
   onClose: () => void
   onSaved: (t: TunnelStatus, warnings: string[], connect: boolean) => void
 }) {
@@ -70,7 +73,7 @@ export function TunnelEditor({
   const ikev2 = kind === 'ikev2'
   // Editing takes a file of the tunnel's own type only.
   const wrongType = editing && profile && kindOf(profile.type) !== kind
-  const connectable = wireguard || (kind === 'openvpn' && canConnect)
+  const connectable = wireguard || (ikev2 ? canConnectIKEv2 : canConnect)
   // Only an OpenVPN profile may ask for a login: the others carry theirs.
   const needsAuth = kind === 'openvpn' && (profile ? profile.needs_auth : !!existing?.needs_auth)
   const expiry = certExpiry(profile ? profile.cert_expires : existing?.cert_expires)
@@ -384,7 +387,7 @@ export function TunnelEditor({
           {!connectable && (
             <p id={engineHintId} className="me-auto text-xs text-muted">
               {ikev2
-                ? "IKEv2 needs strongSwan, which this version doesn't include yet — save now, connect once it does."
+                ? "strongSwan, which IKEv2 tunnels run on, isn't usable yet — save now, connect once it is (see the Tunnels page)."
                 : "OpenVPN isn't usable yet — save now, connect once it is (see the Tunnels page)."}
             </p>
           )}
@@ -407,7 +410,13 @@ export function TunnelEditor({
             <button
               onClick={() => save(true)}
               disabled={!canSave || !connectable}
-              title={connectable ? undefined : ikev2 ? 'IKEv2 needs strongSwan' : "OpenVPN isn't usable yet (see the Tunnels page)"}
+              title={
+                connectable
+                  ? undefined
+                  : ikev2
+                    ? "strongSwan isn't usable yet (see the Tunnels page)"
+                    : "OpenVPN isn't usable yet (see the Tunnels page)"
+              }
               aria-describedby={connectable ? undefined : engineHintId}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >

@@ -505,6 +505,9 @@ export interface TunnelEngine {
   version?: string
   problem?: string
   install?: TunnelInstall
+  // The same for IKEv2 tunnels' strongSwan (charon-cmd); absent from daemons
+  // without IKEv2.
+  ikev2?: TunnelEngine
 }
 
 // What fixes openvpn here (absent from daemons that predate it):

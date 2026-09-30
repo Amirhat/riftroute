@@ -623,7 +623,7 @@ describe('Tunnels view — macOS openvpn', () => {
     renderView()
     expect(await screen.findByText('No tunnels yet')).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent(/yourself/)
-    expect(screen.getByText(/On\s+macOS it comes with RiftRoute/)).toBeInTheDocument()
+    expect(screen.getByText(/On\s+macOS they come with RiftRoute/)).toBeInTheDocument()
   })
 })
 
@@ -689,6 +689,11 @@ describe('Tunnels view — WireGuard', () => {
 
   it('adds one from a .mobileconfig — the login is in it, its full tunnel never routes — saved until IKEv2 can run', async () => {
     const soon = new Date(Date.now() + 90 * 86_400_000).toISOString()
+    mockApi.tunnelEngine.mockResolvedValue({
+      available: false,
+      problem: "OpenVPN isn't installed",
+      ikev2: { available: false, problem: "IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed" },
+    })
     withTunnels([])
     mockApi.openTunnelProfile.mockResolvedValue({
       path: '/Users/me/Office.mobileconfig',
@@ -714,7 +719,7 @@ describe('Tunnels view — WireGuard', () => {
     expect(screen.getByText(/Its full tunnel never becomes routes/)).toBeInTheDocument()
     expect(screen.getByText(/Its certificate expires in (89|90) days\./)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save & connect' })).toBeDisabled()
-    expect(screen.getByText(/IKEv2 needs strongSwan/)).toBeInTheDocument()
+    expect(screen.getByText(/strongSwan, which IKEv2 tunnels run on, isn't usable yet/)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Networks through this tunnel'), { target: { value: '10.30.0.0/16' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
@@ -724,9 +729,53 @@ describe('Tunnels view — WireGuard', () => {
     expect(spec.password).toBeUndefined()
   })
 
+  it('connects an IKEv2 tunnel once strongSwan is there, whatever openvpn says', async () => {
+    mockApi.tunnelEngine.mockResolvedValue({
+      available: false,
+      problem: "OpenVPN isn't installed",
+      ikev2: { available: true, path: '/Library/PrivilegedHelperTools/riftroute-charon-cmd', version: '6.1.0' },
+    })
+    withTunnels([{ ...wgTunnel, name: 'office', type: 'ikev2' }])
+    mockApi.connectTunnel.mockResolvedValue({ ...wgTunnel, name: 'office', type: 'ikev2', state: 'connecting' })
+    renderView()
+    const connect = await screen.findByRole('button', { name: 'Connect office' })
+    await waitFor(() => expect(connect).toBeEnabled())
+    expect(screen.queryByText("OpenVPN isn't installed")).not.toBeInTheDocument()
+    fireEvent.click(connect)
+    await waitFor(() => expect(mockApi.connectTunnel).toHaveBeenCalledWith('office'))
+  })
+
+  it('explains what IKEv2 tunnels need when strongSwan is missing, and holds their Connect', async () => {
+    withTunnels([{ ...wgTunnel, name: 'office', type: 'ikev2' }, wgTunnel])
+    mockApi.tunnelEngine.mockResolvedValue({
+      available: true,
+      path: '/Library/PrivilegedHelperTools/riftroute-openvpn',
+      ikev2: {
+        available: false,
+        problem: "IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed",
+        install: { system: 'macOS', action: 'reinstall', note: 'Reinstall the daemon from a current release.' },
+      },
+    })
+    renderView()
+    expect(
+      await screen.findByText("IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed"),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/IKEv2 tunnels run on the/)).toHaveTextContent(
+      'IKEv2 tunnels run on the charon-cmd that ships with RiftRoute.',
+    )
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Connect office' })).toBeDisabled())
+    expect(screen.getByRole('button', { name: 'Connect lab' })).toBeEnabled()
+  })
+
   it('warns on the card when an IKEv2 certificate is about to expire', async () => {
     withTunnels([
-      { ...wgTunnel, name: 'office', type: 'ikev2', state: 'disconnected', cert_expires: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+      {
+        ...wgTunnel,
+        name: 'office',
+        type: 'ikev2',
+        state: 'disconnected',
+        cert_expires: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+      },
     ])
     renderView()
     expect(await screen.findByText('IKEv2')).toBeInTheDocument()
