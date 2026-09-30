@@ -50,6 +50,11 @@ func InstalledDaemonPath() string { return installedBin }
 // on Linux, tunnels run the distribution's openvpn.
 func InstalledOpenVPNPath() string { return installedOpenVPN }
 
+// InstalledCharonCmdPath is where the charon-cmd that ships with RiftRoute
+// (IKEv2 tunnels) is placed, beside the daemon. It is "" where none ships: on
+// Linux, IKEv2 tunnels run the distribution's strongSwan.
+func InstalledCharonCmdPath() string { return installedCharonCmd }
+
 // bundledOpenVPNName is the openvpn's name next to riftrouted wherever a build
 // ships it: the release tarball, the app bundle's Contents/Resources/bin.
 const bundledOpenVPNName = "openvpn"

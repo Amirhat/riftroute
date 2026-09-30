@@ -42,31 +42,63 @@ The alternatives, and why not:
   whatever the routes say. A full-tunnel server makes it a full tunnel,
   with no interface to route into.
 
-**The engine setup:**
+**The engine setup (as built):**
 
-- strongSwan's `charon` with **`kernel-libipsec`**: ESP in userspace, over
-  a TUN device (`utun` on macOS, where `tun_device.c` supports it, and
-  `tun` on Linux). That's the same shape as our OpenVPN and WireGuard
-  tunnels: an interface we route chosen networks into.
-- Addresses come through `kernel-pfroute` (macOS) or `kernel-netlink`
-  (Linux).
-- Control is over **VICI**, strongSwan's management socket, with the
-  official Go client (`github.com/strongswan/govici`, MIT).
-- **One charon per tunnel session**, each with its own `strongswan.conf`
-  in the tunnel's private run directory (0700). That config sets:
-  - the VICI socket there;
-  - `port = 0` / `port_nat_t = 0`, so random IKE ports and no clash with
-    anything else using 500/4500;
-  - `install_routes = no`, so charon never touches the routing table (the
-    engine does, through the Apply Protocol);
-  - `install_virtual_ip` on the TUN;
-  - no `resolve`/`osx-attr` plugin, so the server's DNS is ignored;
-  - no `updown` scripts;
-  - logging to stderr (the tunnel's log).
-- The daemon loads the key, certificates and connection over VICI
-  (`load-key`, `load-cert`, `load-conn`), then `initiate`s. It follows
-  `ike-updown` / `child-updown` events for state. Keys never touch disk
-  outside the tunnel's definition (0600).
+- strongSwan with **`kernel-libipsec`**: ESP in userspace, over a TUN
+  device (`utun` on macOS, where `tun_device.c` supports it, and `tun` on
+  Linux). That's the same shape as our OpenVPN and WireGuard tunnels: an
+  interface we route chosen networks into. The virtual IP goes on it
+  (`kernel-pfroute` on macOS, `kernel-netlink` on Linux).
+- **One `charon-cmd` per attempt** — strongSwan's single-connection
+  client, not the `charon` daemon, whose PID file path is fixed at build
+  time (two tunnels couldn't run side by side). It takes the connection
+  on its command line (`renderIKE`, `internal/tunnel/ikeconf.go`):
+  - `--host`: the server, pinned (via direct) or its name;
+  - `--identity` / `--remote-identity`: the profile's identifiers;
+  - `--cert` / `--priv`: the login certificate and key; one `--cert` per
+    CA (charon-cmd trusts every certificate it's given);
+  - the profile's proposals;
+  - `--remote-ts 0.0.0.0/0`, plus `::/0` when the tunnel routes IPv6 —
+    which is also what decides the virtual IPs it asks for.
+- Its own `strongswan.conf` (`STRONGSWAN_CONF`), in the tunnel's run
+  directory (0700), so nothing from a system strongSwan applies:
+  - exactly the plugins it needs (`load`), the ones it can't run without
+    marked critical;
+  - `port = 0` / `port_nat_t = 0`: random IKE ports, no clash with
+    anything else on 500/4500 (charon-cmd then talks to the server's
+    4500 from the start);
+  - `install_routes = no` — see below;
+  - the VICI socket in the run directory;
+  - no `resolve`/`osx-attr` plugin, so the server's DNS is ignored; no
+    `updown` scripts.
+- **Routes are the engine's alone.** Upstream, `kernel-libipsec` installs a
+  route for every policy whatever `install_routes` says; for a
+  `0.0.0.0/0` selector `kernel-pfroute` adds two /1 halves — a full
+  tunnel. So:
+  - the macOS charon-cmd RiftRoute ships is built with a small patch
+    (`packaging/strongswan/`) making `kernel-libipsec` honour
+    `install_routes = no`, as the kernel backends do; the patch ships
+    with its sources, as the GPL asks;
+  - on Linux (the distribution's charon-cmd, unpatched) its routes go to
+    a table of their own (52520) whose rule comes after main's and
+    default's, so main's default route answers every lookup first.
+- **ESP always in UDP.** `kernel-libipsec` has no raw ESP on macOS, and
+  charon then forces UDP encapsulation (it reports NAT) — which also
+  crosses networks that drop raw ESP.
+- The daemon follows the session over **VICI** (strongSwan's control
+  socket; the official Go client, `github.com/strongswan/govici`, MIT),
+  polling `list-sas` every second: up means an established IKE_SA with
+  an installed CHILD_SA; it gives the virtual IPs, the server and the
+  byte counters.
+- charon-cmd exits when its first attempt fails (it tries once), but not
+  when a connection it made later drops (dead peer, the server deleting
+  it): the session restarts it after 5 s without one.
+- Keys: the certificate, key and CAs are written as PEM files (0600) into
+  the run directory for the attempt and removed when it ends (and reaped
+  at startup after a crash) — as openvpn's rendered config carries its
+  inline keys.
+- charon-cmd sets its own timers (DPD 30 s, rekey 10 h, MOBIKE on); the
+  profile's aren't applied.
 
 **Where charon comes from:**
 
@@ -75,10 +107,10 @@ The alternatives, and why not:
     (`scripts/build-strongswan.sh`, a CI job);
   - monolithic, with only the plugins listed below;
   - installed root-owned with the daemon, and kept current by the updater.
-- **Linux:** the distribution's packages, `strongswan` plus the
-  kernel-libipsec plugin (Debian/Ubuntu `libcharon-extra-plugins`, Fedora
-  `strongswan-libipsec`). The tunnel page says what to install, as it does
-  for openvpn.
+- **Linux:** the distribution's packages: `charon-cmd` plus the
+  kernel-libipsec plugin (Debian/Ubuntu `charon-cmd libcharon-extra-plugins`,
+  Fedora `strongswan strongswan-libipsec`), 5.9 or newer. The tunnel page
+  says what to install, as it does for openvpn.
 
 **Plugins:**
 
@@ -112,10 +144,10 @@ VICI, so it needs no `pkcs12` plugin and no OpenSSL legacy provider.
 | `RemoteIdentifier` | `remote.id` |
 | `LocalIdentifier` | `local.id` |
 | `AuthenticationMethod` Certificate | `local.auth = pubkey` with the PKCS#12's cert and key |
-| server auth | `remote.auth = pubkey`, `remote.cacerts` = the profile's CAs |
-| `ServerCertificateCommonName` | checked against the server's certificate |
-| `ExtendedAuthEnabled` + `AuthName`/`AuthPassword` | `local.auth = eap-mschapv2` (step 3) |
-| `SharedSecret` | `psk` (step 3) |
+| server auth | `remote.auth = pubkey`, `remote.cacerts` = the profile's CAs (none: the system's, from its CA bundle) |
+| `ServerCertificateCommonName` | not checked apart: the server must prove `RemoteIdentifier` with a certificate the CAs vouch for |
+| `ExtendedAuthEnabled` + `AuthName`/`AuthPassword` | `eap-mschapv2` — later: charon-cmd asks for it on a terminal; refused at connect until then |
+| `SharedSecret` | `psk` — later, likewise |
 | `IKESecurityAssociationParameters` | `proposals`, e.g. `aes256gcm16-prfsha256-ecp384` |
 | `ChildSecurityAssociationParameters` + `EnablePFS` | `esp_proposals`, e.g. `aes256gcm16-ecp384` |
 | `LifeTimeInMinutes` | `rekey_time` (IKE and child) |
@@ -125,9 +157,12 @@ VICI, so it needs no `pkcs12` plugin and no OpenSSL legacy provider.
 | (always) | `vips = 0.0.0.0, ::`, `remote_ts = 0.0.0.0/0, ::/0`, `start_action = none` |
 
 - **State:**
-  - connected when the CHILD_SA is up and the TUN holds the virtual IP;
-  - reconnecting while charon retries (`keyingtries`);
-  - failed after the attempt limit, with charon's reason.
+  - connected when the CHILD_SA is up and the TUN holds the virtual IP
+    (vetted like OpenVPN's pushed address; no virtual IP is refused);
+  - reconnecting while charon-cmd is restarted, with backoff (2 s up to a
+    minute);
+  - failed after the attempt limit (6, for a tunnel that never connected),
+    with the reason read from charon's output.
 - **The certificate's expiry** shows on the card, with a warning under 14
   days. Importing a new profile replaces it.
 
@@ -159,11 +194,12 @@ protocols.
      openvpn);
    - install with the daemon; the updater keeps it current.
 3. **The driver:**
-   - charon supervision and VICI;
-   - the Linux engine (detection and install help);
+   - charon-cmd supervision and VICI (done, with a fake for tests and
+     `-provider fake`);
+   - the Linux engine: detection and install help (done);
    - a Linux CI test against a strongSwan responder in a network
      namespace (the `netns` job);
-   - EAP and PSK profiles.
+   - EAP and PSK profiles (later).
 4. **The app and release:**
    - import `.mobileconfig` on the Tunnels page;
    - the certificate's expiry;

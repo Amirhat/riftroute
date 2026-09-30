@@ -12,7 +12,8 @@ const (
 	systemdUnitPath = "/etc/systemd/system/riftroute.service"
 	installedBin    = "/usr/local/bin/riftrouted"
 	// No openvpn ships for Linux: tunnels run the distribution's package.
-	installedOpenVPN = ""
+	installedOpenVPN   = ""
+	installedCharonCmd = ""
 )
 
 type systemdManager struct{}

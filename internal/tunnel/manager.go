@@ -47,6 +47,9 @@ type Options struct {
 	OnChange func()
 	// WireGuard makes WireGuard's tun devices; nil is this OS's own.
 	WireGuard WGSystem
+	// IKE starts IKEv2 sessions (charon-cmd); nil: IKEv2 tunnels don't
+	// connect.
+	IKE IKELauncher
 	// Owned reads the routes RiftRoute owns (the ownership map). A tunnel's
 	// own — tagged tunnel:<name>, on-link — include what tunnel-mode
 	// profiles send into it, which only the engine knows: on macOS they stay
@@ -709,6 +712,11 @@ func (m *Manager) Connect(name string) error {
 		return fmt.Errorf("tunnel %s needs a username and password", name)
 	}
 	drv := m.drivers[d.Type]
+	if c, ok := drv.(interface{ check(*parsed) error }); ok {
+		if err := c.check(p); err != nil {
+			return fmt.Errorf("tunnel %s: %w", name, err)
+		}
+	}
 	if e := drv.engine(); !e.Available {
 		return &EngineError{Engine: e}
 	}
@@ -1603,7 +1611,9 @@ func (m *Manager) reapStale() {
 				}
 			}
 			_ = os.Remove(filepath.Join(m.runDir, n))
-		case strings.HasSuffix(n, ".sock"), strings.HasSuffix(n, ".ovpn"), strings.HasPrefix(n, ".tmp-"):
+		case strings.HasSuffix(n, ".sock"), strings.HasSuffix(n, ".ovpn"), strings.HasPrefix(n, ".tmp-"),
+			// an IKEv2 session's (ikeconf.go): its config, keys and socket
+			strings.HasSuffix(n, ".conf"), strings.HasSuffix(n, ".pem"), strings.HasSuffix(n, ".vici"):
 			_ = os.Remove(filepath.Join(m.runDir, n))
 		}
 	}
@@ -1629,10 +1639,11 @@ func stopProcess(pid int, ours func(int) bool) bool {
 // to install what's missing.
 func (m *Manager) Engine() domain.TunnelEngine { return m.o.Launcher.Engine() }
 
-// ourCommandLine reports whether a process's command line is an openvpn we
-// started: the binary recorded with its pid (any openvpn by name for a pid
-// file without one), running a config from our run directory — so a
-// recycled pid, or an openvpn the user started themselves, is never killed.
+// ourCommandLine reports whether a process's command line is an openvpn or
+// charon-cmd we started: the binary recorded with its pid (any openvpn by
+// name for a pid file without one, from before charon-cmd), running a config
+// (openvpn) or key (charon-cmd) from our run directory — so a recycled pid,
+// or one the user started themselves, is never killed.
 func ourCommandLine(args, bin, runDir string) bool {
 	argv0, rest, _ := strings.Cut(args, " ")
 	if bin != "" {
@@ -1642,7 +1653,8 @@ func ourCommandLine(args, bin, runDir string) bool {
 	} else if b := filepath.Base(argv0); b != "openvpn" && b != "riftroute-openvpn" {
 		return false
 	}
-	return strings.Contains(" "+rest, " --config "+runDir+string(filepath.Separator))
+	dir := runDir + string(filepath.Separator)
+	return strings.Contains(" "+rest, " --config "+dir) || strings.Contains(" "+rest, " --priv "+dir)
 }
 
 // processArgs returns a process's command line, or "" if it's gone. Linux

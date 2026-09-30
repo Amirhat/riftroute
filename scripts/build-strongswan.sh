@@ -13,6 +13,10 @@
 # (kernel-pfroute), the VICI control socket, X.509/PKCS#1/PKCS#8/PEM keys,
 # and EAP-MSCHAPv2 (with its own MD4/DES, which OpenSSL 3 keeps in its legacy
 # provider). No DNS (osx-attr), no updown scripts, no revocation fetching.
+# One change to strongSwan (packaging/strongswan/*.patch): kernel-libipsec
+# honours install_routes = no, as the kernel backends do — RiftRoute routes
+# the networks it sends into a tunnel itself, and charon's own routes for a
+# 0.0.0.0/0 traffic selector would take every connection instead.
 # Plus <outdir>/licenses/. "universal" builds (or reuses) both architectures
 # and joins them with lipo, for the app bundle; the release tarballs carry
 # the thin ones.
@@ -78,8 +82,10 @@ case "$ARCH" in arm64|x86_64|universal) ;; *) usage ;; esac
 [ "$(uname -s)" = Darwin ] || { echo "build-strongswan.sh builds the macOS charon-cmd; run it on a Mac" >&2; exit 1; }
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# What an existing build must match to be reused: the pins and this script.
-PINS="$(shasum -a 256 "$0" | awk '{print $1}')"
+# What an existing build must match to be reused: the pins, this script and
+# the patches.
+PATCHES=("${ROOT}"/packaging/strongswan/*.patch)
+PINS="$(cat "$0" "${PATCHES[@]}" | shasum -a 256 | awk '{print $1}')"
 WORK="${RR_STRONGSWAN_WORK:-${ROOT}/build/strongswan-work}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
 mkdir -p "$WORK" "$OUT"
@@ -226,6 +232,9 @@ PKGCONFIG
   unpack "strongswan-${STRONGSWAN_VERSION}.tar.bz2" "${b}/strongswan"
   (
     cd "${b}/strongswan"
+    for p in "${PATCHES[@]}"; do
+      patch -p1 -N -s <"$p" || die "$(basename "$p") doesn't apply to strongSwan ${STRONGSWAN_VERSION}"
+    done
     # --disable-defaults, then only the plugins above, all compiled in
     # (--enable-monolithic, static, no shared libraries): nothing is looked
     # up on disk at run time. Our lib dir, searched first, holds only the
@@ -261,17 +270,19 @@ licenses() {
   t=$(mktemp -d)
   tar -xf "${SRC}/strongswan-${STRONGSWAN_VERSION}.tar.bz2" -C "$t" "strongswan-${STRONGSWAN_VERSION}/COPYING" "strongswan-${STRONGSWAN_VERSION}/LICENSE"
   cp "$t/strongswan-${STRONGSWAN_VERSION}/COPYING" "$t/strongswan-${STRONGSWAN_VERSION}/LICENSE" "$d/strongswan/"
+  cp "${PATCHES[@]}" "$d/strongswan/"
   tar -xzf "${SRC}/openssl-${OPENSSL_VERSION}.tar.gz" -C "$t" "openssl-${OPENSSL_VERSION}/LICENSE.txt"
   cp "$t/openssl-${OPENSSL_VERSION}/LICENSE.txt" "$d/openssl/"
   rm -rf "$t"
   cat >"$d/SOURCES.txt" <<EOF
 The charon-cmd program shipped with RiftRoute is a separate program, built by
 scripts/build-strongswan.sh in https://github.com/Amirhat/riftroute from these
-unmodified sources (each checked against the SHA-256 below):
+sources (each checked against the SHA-256 below):
 
 strongSwan ${STRONGSWAN_VERSION} (GPL-2.0-or-later, licenses/strongswan)
   ${STRONGSWAN_URL}
   sha256 ${STRONGSWAN_SHA256}
+  with the changes in licenses/strongswan/*.patch applied
 OpenSSL ${OPENSSL_VERSION} (Apache-2.0, licenses/openssl)
   ${OPENSSL_URL}
   sha256 ${OPENSSL_SHA256}

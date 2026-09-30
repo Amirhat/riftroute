@@ -331,6 +331,7 @@ func TestParsePlist(t *testing.T) {
 // saying so.
 func TestIKEv2TunnelSaves(t *testing.T) {
 	h := newHarness(t)
+	h.m.o.IKE = &FakeIKE{Missing: true}
 	ctx := t.Context()
 	pki := newTestPKI(t)
 	raw := profile("IKEv2", certIKEv2,

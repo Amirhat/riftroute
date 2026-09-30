@@ -5,8 +5,9 @@ package platform
 import "errors"
 
 const (
-	installedBin     = ""
-	installedOpenVPN = ""
+	installedBin       = ""
+	installedOpenVPN   = ""
+	installedCharonCmd = ""
 )
 
 type noopManager struct{}

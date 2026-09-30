@@ -66,6 +66,11 @@ type versionCache struct {
 }
 
 func (c *versionCache) version(bin string, fi os.FileInfo) (string, error) {
+	return c.versionBy(bin, fi, probeVersion)
+}
+
+// versionBy is version with probe reading it (a cache holds one binary's).
+func (c *versionCache) versionBy(bin string, fi os.FileInfo, probe func(string) (string, error)) (string, error) {
 	key := fmt.Sprintf("%s|%d|%d|%d", bin, fi.Size(), fi.ModTime().UnixNano(), fileIno(fi))
 	now := time.Now
 	if c.now != nil {
@@ -78,7 +83,7 @@ func (c *versionCache) version(bin string, fi os.FileInfo) (string, error) {
 	if c.key == key && (c.err == nil || now().Sub(c.at) < failedProbeFor) {
 		return c.ver, c.err
 	}
-	ver, err := probeVersion(bin)
+	ver, err := probe(bin)
 	c.key, c.ver, c.err, c.at = key, ver, err, now()
 	return ver, err
 }

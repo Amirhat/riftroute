@@ -142,7 +142,9 @@ const (
 	// The openvpn that ships with RiftRoute, which the daemon runs as root for
 	// tunnels: beside the daemon, for the same reason (never Homebrew's).
 	installedOpenVPN = installDir + "/riftroute-openvpn"
-	logDir           = "/var/log/riftroute"
+	// strongSwan's charon-cmd, which it runs as root for IKEv2 tunnels.
+	installedCharonCmd = installDir + "/riftroute-charon-cmd"
+	logDir             = "/var/log/riftroute"
 )
 
 type launchdManager struct{}
