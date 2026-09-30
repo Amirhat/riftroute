@@ -687,6 +687,52 @@ describe('Tunnels view — WireGuard', () => {
     expect(spec.password).toBeUndefined()
   })
 
+  it('adds one from a .mobileconfig — the login is in it, its full tunnel never routes — saved until IKEv2 can run', async () => {
+    const soon = new Date(Date.now() + 90 * 86_400_000).toISOString()
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      path: '/Users/me/Office.mobileconfig',
+      name: 'Office.mobileconfig',
+      type: 'ikev2',
+      config: '<plist/>',
+      servers: ['vpn.example.com (IKEv2)'],
+      needs_auth: false,
+      ignored: ['the full tunnel (only the networks you list go through it)'],
+      username: '',
+      password: '',
+      error: '',
+      cert_expires: soon,
+    })
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...wgTunnel, name: 'office', type: 'ikev2' } })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose a file…'))
+    await screen.findByText('Office.mobileconfig')
+
+    expect(screen.getByRole('heading', { name: 'Add an IKEv2 tunnel' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Username')).not.toBeInTheDocument()
+    expect(screen.getByText(/Its full tunnel never becomes routes/)).toBeInTheDocument()
+    expect(screen.getByText(/Its certificate expires in (89|90) days\./)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save & connect' })).toBeDisabled()
+    expect(screen.getByText(/IKEv2 needs strongSwan/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Networks through this tunnel'), { target: { value: '10.30.0.0/16' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
+    const spec = mockApi.saveTunnel.mock.calls[0][0]
+    expect(spec).toMatchObject({ name: 'office', type: 'ikev2', routes: ['10.30.0.0/16'] })
+    expect(spec.username).toBeUndefined()
+    expect(spec.password).toBeUndefined()
+  })
+
+  it('warns on the card when an IKEv2 certificate is about to expire', async () => {
+    withTunnels([
+      { ...wgTunnel, name: 'office', type: 'ikev2', state: 'disconnected', cert_expires: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+    ])
+    renderView()
+    expect(await screen.findByText('IKEv2')).toBeInTheDocument()
+    expect(screen.getByText(/expires in [45] days — edit the tunnel and choose a new profile/)).toBeInTheDocument()
+  })
+
   it('connects while openvpn is missing, with no openvpn banner', async () => {
     withTunnels([wgTunnel])
     renderView()

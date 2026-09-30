@@ -95,3 +95,33 @@ func TestLoadTunnelProfileWireGuard(t *testing.T) {
 		t.Errorf("bad: %v %+v", err, f)
 	}
 }
+
+// A .mobileconfig loads as an IKEv2 profile: its server and what's ignored,
+// no files read beside it and no login to ask for.
+func TestLoadTunnelProfileMobileconfig(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "Office.mobileconfig")
+	if err := os.WriteFile(p, []byte(`<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadContent</key><array><dict>
+    <key>PayloadType</key><string>com.apple.vpn.managed</string>
+    <key>VPNType</key><string>IKEv2</string>
+    <key>IKEv2</key><dict>
+      <key>RemoteAddress</key><string>vpn.example.com</string>
+      <key>AuthenticationMethod</key><string>SharedSecret</string>
+      <key>SharedSecret</key><string>shh</string>
+    </dict>
+  </dict></array>
+</dict></plist>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := loadTunnelProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != domain.TunnelIKEv2 || f.Error != "" || len(f.Servers) != 1 || f.Servers[0] != "vpn.example.com (IKEv2)" ||
+		f.NeedsAuth || len(f.Files) != 0 || len(f.Ignored) == 0 || f.CertExpires != "" {
+		t.Fatalf("loaded = %+v", f)
+	}
+}

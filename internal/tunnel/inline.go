@@ -49,6 +49,9 @@ func ReadProfileFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s %w", filepath.Base(path), err)
 	}
+	if text, ok := MobileconfigText(data); ok {
+		return text, nil // a signed profile is binary: its XML is what's kept
+	}
 	return string(data), nil
 }
 

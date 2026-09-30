@@ -8,6 +8,7 @@ import { Addr, Badge, Card, Dot, Label, Skeleton, Toggle } from '../components/u
 import { CommitConfirm } from '../components/CommitConfirm'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { TunnelEditor } from '../components/TunnelEditor'
+import { KINDS, certExpiry, kindOf, tunnelTypeName } from '../lib/tunnels'
 import type {
   ApplyResult,
   TunnelEngine,
@@ -533,12 +534,13 @@ function TunnelCard({
   const profilesOn = (t.profiles ?? []).some((p) => p.enabled)
   const blocked = new Map((t.blocked ?? []).map((b) => [b.route, b.reason]))
   const detail = t.detail && t.detail !== t.state ? t.detail : ''
+  const expiry = certExpiry(t.cert_expires)
   return (
     <Card>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div className="flex items-center gap-3">
           <h2 className="text-sm font-semibold text-default">{t.name}</h2>
-          <Badge tone="muted">{t.type === 'wireguard' ? 'WireGuard' : 'OpenVPN'}</Badge>
+          <Badge tone="muted">{tunnelTypeName(t.type || 'openvpn')}</Badge>
           <Badge tone={stateTone[t.state]}>
             <Dot tone={stateTone[t.state]} />
             {t.state}
@@ -604,6 +606,15 @@ function TunnelCard({
       </div>
       <div className="space-y-4 p-4">
         {t.last_error && <div className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">{t.last_error}</div>}
+        {expiry && (expiry.soon ? (
+          <div className="rounded-lg bg-warning/15 px-3 py-2 text-sm text-warning">
+            {expiry.days < 0
+              ? "The certificate it logs in with has expired — edit the tunnel and choose a new profile."
+              : `The certificate it logs in with expires in ${expiry.days} day${expiry.days === 1 ? '' : 's'} — edit the tunnel and choose a new profile before then.`}
+          </div>
+        ) : (
+          <p className="text-xs text-muted">Its certificate expires in {expiry.days} days.</p>
+        ))}
         {t.blocking && (
           <div role="status" className="rounded-lg bg-warning/15 px-3 py-2 text-sm text-warning">
             Its networks are blocked until it's back — it's set to block when down.
@@ -703,7 +714,7 @@ function TunnelCard({
         )}
         {(t.ignored ?? []).length > 0 && (
           <p className="text-xs text-muted">
-            Ignored from the {t.type === 'wireguard' ? 'configuration' : 'profile'}:{' '}
+            Ignored from the {KINDS[kindOf(t.type)].word}:{' '}
             <span className="ltr font-mono">{(t.ignored ?? []).join(', ')}</span>
           </p>
         )}

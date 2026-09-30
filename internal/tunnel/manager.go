@@ -171,6 +171,7 @@ func New(o Options) (*Manager, error) {
 	m.drivers = map[domain.TunnelType]driver{
 		domain.TunnelOpenVPN:   ovpnDriver{o: &m.o},
 		domain.TunnelWireGuard: wgDriver{o: &m.o},
+		domain.TunnelIKEv2:     ikev2Driver{o: &m.o},
 	}
 	m.ap = newApplier(func(ctx context.Context) error {
 		if m.o.Apply == nil {
@@ -310,6 +311,10 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
+		if p.ike != nil && !p.ike.CertExpires().IsZero() {
+			exp := p.ike.CertExpires()
+			s.CertExpires = &exp
+		}
 	}
 	if err := m.perrs[name]; err != nil && r.sess == nil {
 		s.State, s.LastError = domain.TunnelFailed, "profile is no longer valid: "+err.Error()
@@ -471,6 +476,9 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if spec.Type == domain.TunnelWireGuard && (spec.Username != "" || spec.Password != "") {
 		bad("username", "a WireGuard tunnel has no username or password; its keys are in the configuration")
 	}
+	if spec.Type == domain.TunnelIKEv2 && (spec.Username != "" || spec.Password != "") {
+		bad("username", "an IKEv2 tunnel logs in with what its profile carries (a certificate, or a username and password in it)")
+	}
 
 	m.mu.Lock()
 	prev := m.defs[spec.Name]
@@ -505,6 +513,8 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if strings.TrimSpace(d.Config) == "" {
 		if d.Type == domain.TunnelWireGuard {
 			bad("config", "a WireGuard configuration (.conf) is required")
+		} else if d.Type == domain.TunnelIKEv2 {
+			bad("config", "a configuration profile (.mobileconfig) is required")
 		} else {
 			bad("config", "an OpenVPN profile (.ovpn) is required")
 		}

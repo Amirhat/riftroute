@@ -12,6 +12,7 @@ import { Combobox } from '../components/Combobox'
 import { friendly } from '../lib/format'
 import { validateRouteGateway, validateRouteTarget } from '../lib/validate'
 import type { ApplyResult, ConfigImportResult, Family, Owner, Profile, Route, RouteDecision, RouteExplain } from '../types'
+import { tunnelTypeName } from '../lib/tunnels'
 
 type FamilyFilter = '' | Family
 type OwnerFilter = '' | Owner
@@ -33,15 +34,13 @@ function isDefaultRoute(r: Route): boolean {
   return !r.table && (r.dst_cidr === '0.0.0.0/0' || r.dst_cidr === '::/0')
 }
 
+export { tunnelTypeName }
+
 /** tunnelOf is the tunnel a route belongs to (its tag is tunnel:<name>), or "". */
 export function tunnelOf(profile?: string): string {
   return profile?.startsWith('tunnel:') ? profile.slice('tunnel:'.length) : ''
 }
 
-/** tunnelTypeName is how a tunnel's protocol reads. */
-export function tunnelTypeName(t: string): string {
-  return t === 'wireguard' ? 'WireGuard' : t === 'openvpn' ? 'OpenVPN' : t
-}
 
 /** filterRoutes narrows the table by owner and free-text substring (destination,
  * gateway, interface, owner, profile, table). Pure — unit-tested directly. */

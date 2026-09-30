@@ -198,6 +198,22 @@ func tunnelAddCmd() *cobra.Command {
 			if _, err := findTunnel(cmd.Context(), args[0]); err == nil && !replace {
 				return fmt.Errorf("a tunnel named %q already exists — change it with `riftroute tunnel edit %s`, or pass --replace", args[0], args[0])
 			}
+			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && tunnel.IsMobileconfig(raw) {
+				if f.username != "" || f.passwordStdin {
+					return errors.New("an IKEv2 tunnel logs in with what its profile carries; it takes no --username or password")
+				}
+				if _, err := tunnel.ParseMobileconfig(raw); err != nil {
+					return fmt.Errorf("%s: %w", args[1], err)
+				}
+				spec := domain.TunnelSpec{
+					Name: args[0], Type: domain.TunnelIKEv2, Config: raw, Routes: f.routes,
+					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
+				}
+				if len(f.routes) == 0 {
+					fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes (the profile's full tunnel never becomes routes)")
+				}
+				return saveTunnel(cmd, spec, f.connect)
+			}
 			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && tunnel.IsWireGuard(raw) {
 				if f.username != "" || f.passwordStdin {
 					return errors.New("a WireGuard tunnel has no username or password; its keys are in the configuration")
@@ -281,12 +297,18 @@ func tunnelEditCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				wg := tunnel.IsWireGuard(raw)
+				kind := domain.TunnelOpenVPN
 				switch {
-				case wg != (cur.Type == domain.TunnelWireGuard):
+				case tunnel.IsMobileconfig(raw):
+					kind = domain.TunnelIKEv2
+				case tunnel.IsWireGuard(raw):
+					kind = domain.TunnelWireGuard
+				}
+				switch {
+				case kind != cur.Type:
 					return fmt.Errorf("%s is a %s tunnel; --profile takes %s — to change its type, `riftroute tunnel add %s <file> --replace`",
-						cur.Name, cur.Type, map[bool]string{true: "a WireGuard configuration (.conf)", false: "an OpenVPN profile (.ovpn)"}[cur.Type == domain.TunnelWireGuard], cur.Name)
-				case wg:
+						cur.Name, cur.Type, profileKind(cur.Type), cur.Name)
+				case kind != domain.TunnelOpenVPN:
 					spec.Config = raw
 				default:
 					text, creds, err := readProfile(cmd, profile)
@@ -635,4 +657,15 @@ func orStr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// profileKind names the file a tunnel type is configured from.
+func profileKind(t domain.TunnelType) string {
+	switch t {
+	case domain.TunnelWireGuard:
+		return "a WireGuard configuration (.conf)"
+	case domain.TunnelIKEv2:
+		return "a configuration profile (.mobileconfig)"
+	}
+	return "an OpenVPN profile (.ovpn)"
 }

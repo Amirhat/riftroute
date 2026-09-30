@@ -34,6 +34,7 @@ type parsed struct {
 
 	ovpn *Profile
 	wg   *WGConfig
+	ike  *IKEv2Config
 }
 
 // ovpnDriver runs OpenVPN connections: an openvpn process per session,
