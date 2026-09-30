@@ -30,10 +30,13 @@ import (
 
 // IKESpec is what an IKELauncher starts.
 type IKESpec struct {
-	Name   string       // tunnel name, for logs
-	Args   []string     // charon-cmd's arguments (renderIKE)
-	Conf   string       // its strongswan.conf
-	Socket string       // the VICI socket that config names
+	Name   string   // tunnel name, for logs
+	Args   []string // charon-cmd's arguments (renderIKE)
+	Conf   string   // its strongswan.conf
+	Socket string   // the VICI socket that config names
+	// Stdin is what charon-cmd reads when it asks for a secret (getpass,
+	// with no terminal): one line per secret, in the order it asks.
+	Stdin  string
 	Config *IKEv2Config // the profile (the fake reads it)
 }
 
@@ -161,8 +164,8 @@ const (
 		"updates off too. Reinstalling the daemon from a current release (`sudo riftroute daemon install`) also puts it in place."
 	ikeMacReinstall = "Reinstall the daemon from a current release to put back the strongSwan client that ships with " +
 		"RiftRoute: `sudo riftroute daemon install`, or in the app, Settings → Daemon service: Uninstall, then Install & start."
-	ikeLinuxNote = "Install strongSwan's charon-cmd (5.9 or newer) with its kernel-libipsec and vici plugins, from your " +
-		"distribution's packages."
+	ikeLinuxNote = "Install strongSwan's charon-cmd (5.9 or newer) with its kernel-libipsec, openssl and vici plugins, " +
+		"from your distribution's packages."
 )
 
 // ikeLinuxInstall: what installs charon-cmd and the plugins a session loads,
@@ -172,8 +175,12 @@ var ikeLinuxInstall = []struct {
 	install, reinstall string
 	note               string
 }{
-	{ids: []string{"debian", "ubuntu"}, install: "sudo apt install charon-cmd libcharon-extra-plugins",
-		reinstall: "sudo apt install --reinstall charon-cmd libcharon-extra-plugins"},
+	// kernel-libipsec is in the extra plugins, OpenSSL's crypto in the
+	// standard ones, vici in swanctl's package; no recommends, which would
+	// add a system charon (not needed: each tunnel runs its own).
+	{ids: []string{"debian", "ubuntu"},
+		install:   "sudo apt install --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl",
+		reinstall: "sudo apt install --reinstall --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl"},
 	// kernel-libipsec is a package of its own there.
 	{ids: []string{"fedora"}, install: "sudo dnf install strongswan strongswan-libipsec",
 		reinstall: "sudo dnf reinstall strongswan strongswan-libipsec"},
@@ -245,7 +252,8 @@ func (l *ExecIKELauncher) Start(spec IKESpec) (IKEProcess, error) {
 	cmd := exec.Command(e.Path, spec.Args...)
 	cmd.Env = ikeEnv(runtime.GOOS, spec.Conf)
 	cmd.Dir = "/"
-	ownProcessGroup(cmd)
+	cmd.Stdin = strings.NewReader(spec.Stdin) // then EOF: a secret it wasn't given isn't asked again
+	ownSession(cmd)
 	pr, pw := io.Pipe()
 	cmd.Stdout, cmd.Stderr = pw, pw
 	if err := cmd.Start(); err != nil {

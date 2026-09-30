@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -170,7 +171,7 @@ func (k *ikeSession) resolve(ctx context.Context) error {
 // connection it made drops, or the session is stopped. wasUp: it connected.
 func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err error) {
 	m := k.m
-	setup, err := renderIKE(k.c, ikeRoots(k.c), host, m.runDir, k.name, RoutesNeedIPv6(k.d.Routes))
+	setup, err := renderIKE(k.c, ikeRoots(k.c), host, m.runDir, k.name, RoutesNeedIPv6(k.d.Routes), ikeKeyAsP12(k.l.Engine().Version))
 	if err != nil {
 		return false, errFatal{err.Error()}
 	}
@@ -188,7 +189,7 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 		r.detail = "starting strongSwan"
 	})
 	m.changed()
-	proc, err := k.l.Start(IKESpec{Name: k.name, Args: setup.Args, Conf: setup.Conf, Socket: setup.Socket, Config: k.c})
+	proc, err := k.l.Start(IKESpec{Name: k.name, Args: setup.Args, Conf: setup.Conf, Socket: setup.Socket, Stdin: setup.Stdin, Config: k.c})
 	if err != nil {
 		return false, errFatal{err.Error()}
 	}
@@ -324,6 +325,13 @@ func diagnoseIKE(name string, via domain.TunnelVia, tail []string) string {
 		}
 		return "", false
 	}
+	for _, l := range tail {
+		// "plugin 'x': failed to load - …" or "plugin 'x' failed to load:
+		// …" — not a feature "in plugin 'x'" that failed.
+		if m := rePluginMissing.FindStringSubmatch(l); m != nil && slices.Contains(ikeEssential, m[1]) {
+			return missingPlugin(m[1])
+		}
+	}
 	if l, ok := has("critical plugin"); ok {
 		msg := "strongSwan couldn't load a part IKEv2 tunnels need (" + l + ")"
 		if runtime.GOOS == "linux" {
@@ -341,6 +349,7 @@ func diagnoseIKE(name string, via domain.TunnelVia, tail []string) string {
 		{"certificate status is not available", "the server's certificate couldn't be verified"},
 		{"has expired", "a certificate has expired (the profile's, or the server's)"},
 		{"loading certificate from", "strongSwan couldn't read the profile's certificates"},
+		{"loading PKCS#12 file", "strongSwan couldn't read the profile's certificate and key"},
 		{"private key from", "strongSwan couldn't read the profile's private key"},
 	} {
 		if _, ok := has(c.sub); ok {
@@ -356,6 +365,18 @@ func diagnoseIKE(name string, via domain.TunnelVia, tail []string) string {
 		return msg
 	}
 	return "couldn't connect: " + lastLine(tail, "strongSwan gave no reason") + " — see `riftroute tunnel log " + name + "`"
+}
+
+var rePluginMissing = regexp.MustCompile(`(?:^|\] )plugin '([a-z0-9-]+)':? failed to load`)
+
+// missingPlugin explains a session that couldn't load one of strongSwan's
+// essential plugins.
+func missingPlugin(p string) string {
+	msg := "strongSwan's " + p + " plugin isn't installed, and IKEv2 tunnels need it"
+	if runtime.GOOS == "linux" {
+		msg += " — " + ikeLinuxNote
+	}
+	return msg
 }
 
 // ikeRootBundles are where each system keeps the CAs it trusts, one PEM

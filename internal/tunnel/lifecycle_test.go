@@ -350,8 +350,9 @@ func TestOurCommandLine(t *testing.T) {
 		// charon-cmd (IKEv2): its key is in the run directory
 		{"/Library/PrivilegedHelperTools/riftroute-charon-cmd --debug 1 --host 192.0.2.44 --identity alice --priv /var/db/riftroute/tunnels/office.key.pem",
 			"/Library/PrivilegedHelperTools/riftroute-charon-cmd", true},
-		{"/usr/sbin/charon-cmd --host 192.0.2.44 --priv /home/me/key.pem", "/usr/sbin/charon-cmd", false},     // someone else's
-		{"/usr/sbin/charon-cmd --host 192.0.2.44 --priv /var/db/riftroute/tunnels/office.key.pem", "", false}, // pid files without the binary are openvpn's
+		{"/usr/sbin/charon-cmd --host 192.0.2.44 --p12 /var/db/riftroute/tunnels/office.p12", "/usr/sbin/charon-cmd", true}, // strongSwan 5
+		{"/usr/sbin/charon-cmd --host 192.0.2.44 --priv /home/me/key.pem", "/usr/sbin/charon-cmd", false},                   // someone else's
+		{"/usr/sbin/charon-cmd --host 192.0.2.44 --priv /var/db/riftroute/tunnels/office.key.pem", "", false},               // pid files without the binary are openvpn's
 	} {
 		if got := ourCommandLine(tc.args, tc.bin, run); got != tc.want {
 			t.Errorf("ourCommandLine(%q, %q) = %v", tc.args, tc.bin, got)

@@ -226,7 +226,7 @@ func TestRenderIKE(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := "/run/rr"
-	st, err := renderIKE(c, nil, "192.0.2.44", dir, "office", true)
+	st, err := renderIKE(c, nil, "192.0.2.44", dir, "office", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,27 +271,59 @@ func TestRenderIKE(t *testing.T) {
 			t.Errorf("config loads %s:\n%s", s, conf)
 		}
 	}
-	if darwin, linux := ikeConf("darwin", "/s"), ikeConf("linux", "/s"); strings.Contains(darwin, "routing_table") ||
-		!strings.Contains(darwin, "kernel-pfroute!") || !strings.Contains(linux, "routing_table = 52520\n") ||
-		!strings.Contains(linux, "routing_table_prio = 52520\n") || !strings.Contains(linux, "kernel-netlink!") {
+	if darwin, linux := ikeConf("darwin", "/s", false), ikeConf("linux", "/s", false); strings.Contains(darwin, "routing_table") ||
+		!strings.Contains(darwin, " kernel-pfroute ") || !strings.Contains(linux, "routing_table = 52520\n") ||
+		!strings.Contains(linux, "routing_table_prio = 52520\n") || !strings.Contains(linux, " kernel-netlink ") ||
+		!strings.Contains(linux, "stderr {") || strings.Contains(linux, "pem!") {
 		t.Errorf("per-OS config:\n%s\n%s", darwin, linux)
 	}
 
+	// An older charon-cmd (strongSwan 5.x, as Debian and Ubuntu ship) takes
+	// the login as a PKCS#12, whose password it reads from stdin.
+	st, err = renderIKE(c, nil, "192.0.2.44", dir, "office", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if argAfter(st.Args, "--p12") != dir+"/office.p12" || slices.Contains(st.Args, "--priv") ||
+		argAfter(st.Args, "--cert") != dir+"/office.ca0.pem" {
+		t.Errorf("p12 args: %q", st.Args)
+	}
+	for _, f := range st.Files {
+		switch filepath.Base(f.Name) {
+		case "office.p12":
+			key, cert, _, err := pkcs12.DecodeChain(f.Data, strings.TrimSuffix(st.Stdin, "\n"))
+			if err != nil || !pki.key.Equal(key) || !cert.Equal(pki.client) || len(st.Stdin) != 33 {
+				t.Errorf("the PKCS#12 doesn't open, with the password on stdin, to the login: %v", err)
+			}
+		case "office.conf":
+			if !strings.Contains(string(f.Data), " pkcs7 pkcs12") {
+				t.Errorf("a p12 session must load pkcs12 and pkcs7:\n%s", f.Data)
+			}
+		case "office.key.pem", "office.cert.pem":
+			t.Errorf("%s written beside the PKCS#12", f.Name)
+		}
+	}
+	for v, want := range map[string]bool{"5.9.8": true, "5.9.13": true, "6.0.1": false, "6.1.0": false, "": false} {
+		if ikeKeyAsP12(v) != want {
+			t.Errorf("ikeKeyAsP12(%q) != %v", v, want)
+		}
+	}
+
 	// v4 only: no IPv6 asked for.
-	if st, _ := renderIKE(c, nil, "192.0.2.44", dir, "office", false); slices.Contains(st.Args, "::/0") {
+	if st, _ := renderIKE(c, nil, "192.0.2.44", dir, "office", false, false); slices.Contains(st.Args, "::/0") {
 		t.Errorf("v4-only args: %q", st.Args)
 	}
 	// No CA in the profile: the system's, or a refusal.
 	c.CAs = nil
-	if _, err := renderIKE(c, nil, "h", dir, "office", false); err == nil || !strings.Contains(err.Error(), "no certificate authority") {
+	if _, err := renderIKE(c, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "no certificate authority") {
 		t.Errorf("no CA = %v", err)
 	}
-	st, err = renderIKE(c, []*x509.Certificate{pki.caCert, pki.caCert}, "h", dir, "office", false)
+	st, err = renderIKE(c, []*x509.Certificate{pki.caCert, pki.caCert}, "h", dir, "office", false, false)
 	if err != nil || argAfter(st.Args, "--cert") != dir+"/office.cert.pem" || !slices.Contains(st.Args, dir+"/office.ca1.pem") {
 		t.Errorf("system roots: %v %q", err, st.Args)
 	}
 	c.Auth = IKEv2PSK
-	if _, err := renderIKE(c, nil, "h", dir, "office", false); err == nil {
+	if _, err := renderIKE(c, nil, "h", dir, "office", false, false); err == nil {
 		t.Error("a PSK profile rendered")
 	}
 }
@@ -455,6 +487,12 @@ func TestDiagnoseIKE(t *testing.T) {
 		want string
 	}{
 		{"loading critical plugin 'kernel-libipsec' failed", domain.TunnelViaDirect, "couldn't load a part"},
+		{"00[LIB] plugin 'openssl': failed to load - openssl_plugin_create not found, plugin may be shipped in a separate package",
+			domain.TunnelViaDirect, "strongSwan's openssl plugin isn't installed"},
+		{"00[LIB] plugin 'md4': failed to load - md4_plugin_create not found, plugin may be shipped in a separate package",
+			domain.TunnelViaDirect, "couldn't connect: 00[LIB] plugin 'md4'"}, // not one a session needs
+		{"00[LIB] feature CUSTOM:kernel-ipsec in plugin 'kernel-netlink' failed to load", domain.TunnelViaDirect,
+			"couldn't connect: 00[LIB] feature"}, // a feature, not the plugin
 		{"received NO_PROPOSAL_CHOSEN notify error", domain.TunnelViaDirect, "encryption settings"},
 		{"constraint check failed: identity 'vpn.example.com' required", domain.TunnelViaDirect, "RemoteIdentifier"},
 		{"no trusted ECDSA public key found for 'vpn.example.com'", domain.TunnelViaDirect, "certificate authorities"},
@@ -487,7 +525,7 @@ func TestDetectIKEEngine(t *testing.T) {
 	}
 	ubuntu := hostInfo{goos: "linux", osRelease: map[string]string{"ID": "pop", "ID_LIKE": "ubuntu debian"}}
 	if e := detectIKEEngine(ubuntu, missing, nil); e.Install == nil ||
-		!slices.Equal(e.Install.Commands, []string{"sudo apt install charon-cmd libcharon-extra-plugins"}) {
+		!slices.Equal(e.Install.Commands, []string{"sudo apt install --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl"}) {
 		t.Errorf("Ubuntu-like, missing: %+v", e.Install)
 	}
 	if e := detectIKEEngine(hostInfo{goos: "linux", osRelease: map[string]string{"ID": "nixos"}}, missing, nil); e.Install == nil ||
@@ -495,7 +533,7 @@ func TestDetectIKEEngine(t *testing.T) {
 		t.Errorf("unknown Linux: %+v", e.Install)
 	}
 	if e := detectIKEEngine(ubuntu, found, ver("5.8.2")); e.Available || !strings.Contains(e.Problem, "too old") ||
-		!slices.Equal(e.Install.Commands, []string{"sudo apt install --reinstall charon-cmd libcharon-extra-plugins"}) {
+		!slices.Equal(e.Install.Commands, []string{"sudo apt install --reinstall --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl"}) {
 		t.Errorf("too old: %+v", e)
 	}
 	if e := detectIKEEngine(ubuntu, found, ver("6.1.0")); !e.Available || e.Version != "6.1.0" || e.Path != "/usr/sbin/charon-cmd" {

@@ -22,7 +22,7 @@ GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
-.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e test-tunnels-linux vet fmt tidy cross clean run-daemon bindings \
+.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e test-tunnels-linux test-ikev2-linux vet fmt tidy cross clean run-daemon bindings \
         dist dist-binaries checksums package-deb package-dmg package-appimage tray openvpn strongswan
 
 all: build
@@ -72,6 +72,12 @@ test-e2e:
 ## Linux daemon, a router, and an old-style OpenVPN server (needs Docker)
 test-tunnels-linux:
 	test/tunnels-linux/run.sh
+
+## test-ikev2-linux: real Linux check of IKEv2 tunnels in Docker — the Linux
+## daemon with the distribution's charon-cmd, a router, and a strongSwan
+## server with a full tunnel (needs Docker)
+test-ikev2-linux:
+	test/ikev2-linux/run.sh
 
 vet:
 	go vet $(CORE_PKGS)

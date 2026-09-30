@@ -1613,7 +1613,7 @@ func (m *Manager) reapStale() {
 			_ = os.Remove(filepath.Join(m.runDir, n))
 		case strings.HasSuffix(n, ".sock"), strings.HasSuffix(n, ".ovpn"), strings.HasPrefix(n, ".tmp-"),
 			// an IKEv2 session's (ikeconf.go): its config, keys and socket
-			strings.HasSuffix(n, ".conf"), strings.HasSuffix(n, ".pem"), strings.HasSuffix(n, ".vici"):
+			strings.HasSuffix(n, ".conf"), strings.HasSuffix(n, ".pem"), strings.HasSuffix(n, ".p12"), strings.HasSuffix(n, ".vici"):
 			_ = os.Remove(filepath.Join(m.runDir, n))
 		}
 	}
@@ -1660,7 +1660,8 @@ func ourCommandLine(args, bin, runDir string) bool {
 		return false
 	}
 	dir := runDir + string(filepath.Separator)
-	return strings.Contains(" "+rest, " --config "+dir) || strings.Contains(" "+rest, " --priv "+dir)
+	return strings.Contains(" "+rest, " --config "+dir) || strings.Contains(" "+rest, " --priv "+dir) ||
+		strings.Contains(" "+rest, " --p12 "+dir)
 }
 
 // processArgs returns a process's command line, or "" if it's gone. Linux

@@ -34,7 +34,7 @@ Architecture: ${ARCH}
 Maintainer: AmirHat <a.h.amani.t@gmail.com>
 Depends: iproute2, nftables
 Recommends: openvpn
-Suggests: charon-cmd, libcharon-extra-plugins
+Suggests: charon-cmd, libcharon-extra-plugins, libstrongswan-standard-plugins, strongswan-swanctl
 Description: Cross-platform split-tunneling / policy-based routing controller
  RiftRoute steers traffic by policy with a safety-first Apply Protocol
  (snapshot, watchdog, commit-confirm, atomic rollback). This package ships the

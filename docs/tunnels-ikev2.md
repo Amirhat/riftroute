@@ -108,7 +108,7 @@ The alternatives, and why not:
   - monolithic, with only the plugins listed below;
   - installed root-owned with the daemon, and kept current by the updater.
 - **Linux:** the distribution's packages: `charon-cmd` plus the
-  kernel-libipsec plugin (Debian/Ubuntu `charon-cmd libcharon-extra-plugins`,
+  kernel-libipsec plugin (Debian/Ubuntu `charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl`,
   Fedora `strongswan strongswan-libipsec`), 5.9 or newer. The tunnel page
   says what to install, as it does for openvpn.
 
