@@ -90,4 +90,18 @@ type AuditEvent struct {
 	Result   string    `json:"result"`
 	Rollback bool      `json:"rollback,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
+	// Timing is how long an applied change took, by part (on "applied").
+	Timing *ApplyTiming `json:"timing,omitempty"`
+}
+
+// ApplyTiming is how long a change took to reach the kernel, in
+// milliseconds: waiting for another change, building the desired state
+// (the profiles' domain lookups are in it), working out and vetting the
+// change, and making it.
+type ApplyTiming struct {
+	TotalMS int64 `json:"total_ms"`
+	WaitMS  int64 `json:"wait_ms"`
+	BuildMS int64 `json:"build_ms"`
+	CheckMS int64 `json:"check_ms"`
+	ExecMS  int64 `json:"exec_ms"`
 }

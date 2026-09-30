@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/progress"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/routing"
 )
@@ -149,10 +150,26 @@ type Result struct {
 
 type decision int
 
+// A transaction's fate, and for a rollback, why (the audit says so).
 const (
-	decCommit decision = iota
-	decRollback
+	decCommit              decision = iota
+	decRollback                     // asked for (Rollback)
+	decRollbackWatchdog             // every connectivity check failed, K times in a row
+	decRollbackUnconfirmed          // not kept before its confirmation window closed
+	decRollbackShutdown             // the daemon stopped before it was kept
 )
+
+func (d decision) why() string {
+	switch d {
+	case decRollbackWatchdog:
+		return "the connection was lost: no connectivity check answered, several times in a row"
+	case decRollbackUnconfirmed:
+		return "not kept in time"
+	case decRollbackShutdown:
+		return "the daemon stopped before it was kept"
+	}
+	return "reverted on request"
+}
 
 type pendingTx struct {
 	id          string
@@ -392,6 +409,7 @@ func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute
 // its rollback failing on the same expired context — would leave the table
 // half-changed.
 func (p *Protocol) Apply(ctx context.Context, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options) (Result, error) {
+	ctx = startTiming(ctx)
 	if err := p.lockApply(ctx); err != nil {
 		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
@@ -409,9 +427,13 @@ func (p *Protocol) lockApply(ctx context.Context) error {
 	if p.panicking.Load() > 0 {
 		return ErrPanicking
 	}
-	if err := p.applyMu.LockCtx(ctx); err != nil {
-		return fmt.Errorf("gave up waiting for the change in progress: %w", err)
+	if !p.applyMu.TryLock() {
+		progress.Report(ctx, domain.StepWaiting, 0, 0) // behind another change
+		if err := p.applyMu.LockCtx(ctx); err != nil {
+			return fmt.Errorf("gave up waiting for the change in progress: %w", err)
+		}
 	}
+	mark(ctx, func(t *timing) *time.Time { return &t.locked })
 	if p.panicking.Load() > 0 {
 		p.applyMu.Unlock()
 		return ErrPanicking
@@ -432,6 +454,7 @@ type Build func(ctx context.Context, owned []domain.ManagedRoute, opts *Options)
 // (a tunnel transition and an auto-apply racing would otherwise each revert
 // the other). A build error aborts before anything is touched.
 func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (Result, error) {
+	ctx = startTiming(ctx)
 	if opts.Lendable && p.lent.Load() {
 		// The quiesce holder's lock covers it (LendQuiesce): nothing else
 		// applies meanwhile, and nothing is on probation (TryQuiesce
@@ -441,6 +464,7 @@ func (p *Protocol) ApplyBuilt(ctx context.Context, build Build, opts Options) (R
 		}
 		p.lentMu.Lock()
 		defer p.lentMu.Unlock()
+		mark(ctx, func(t *timing) *time.Time { return &t.locked })
 		return p.applyBuilt(context.WithoutCancel(ctx), build, opts, nil)
 	}
 	if err := p.lockApply(ctx); err != nil {
@@ -460,6 +484,7 @@ func (p *Protocol) applyBuilt(ctx context.Context, build Build, opts Options, be
 	if err != nil {
 		return Result{Status: domain.TxFailed, Error: err.Error()}, err
 	}
+	mark(ctx, func(t *timing) *time.Time { return &t.built })
 	var again func() (Result, error)
 	if len(beside) > 0 && opts.BuiltOnRecord {
 		// Built from a record the changes beside may be about to replace:
@@ -473,6 +498,7 @@ func (p *Protocol) applyBuilt(ctx context.Context, build Build, opts Options, be
 // beside are the transactions on probation when desired was built; again,
 // if set, builds and applies afresh once they're settled.
 func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options, beside []*pendingTx, again func() (Result, error)) (Result, error) {
+	progress.Report(ctx, domain.StepChecking, 0, 0)
 	actual := p.installed(ctx, owned, desired)
 	plan := routing.Reconcile(desired, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
@@ -490,6 +516,7 @@ func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRou
 		p.audit(opts.Actor, "apply", "refused", violationSummary(vs), &plan, false)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
+	mark(ctx, func(t *timing) *time.Time { return &t.vetted })
 
 	if len(plan.Ops) == 0 {
 		p.recordUnchanged(opts, beside)
@@ -563,6 +590,7 @@ func (p *Protocol) takeSnapshot(ctx context.Context, opts Options) {
 // and crash-repair must leave the results alone; the journaled inverse is
 // what protects the change until it's confirmed.
 func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Plan, opts Options) (Result, error) {
+	ctx = startTiming(ctx)
 	if err := p.lockApply(ctx); err != nil {
 		return Result{Plan: plan, Status: domain.TxFailed, Error: err.Error()}, err
 	}
@@ -573,10 +601,12 @@ func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Pla
 	if opts.DryRun {
 		return Result{Plan: plan, Diff: diff, Status: domain.TxPending}, nil
 	}
+	progress.Report(ctx, domain.StepChecking, 0, 0)
 	if vs := checkPlanGuardrails(plan); len(vs) > 0 {
 		p.audit(opts.Actor, action, "refused", violationSummary(vs), &plan, false)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
+	mark(ctx, func(t *timing) *time.Time { return &t.vetted })
 	if len(plan.Ops) == 0 {
 		p.recordUnchanged(opts, p.onProbation())
 		return Result{Plan: plan, Diff: diff, Status: domain.TxCommitted}, nil
@@ -663,7 +693,9 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 	if ownership {
 		p.applyOwnership(plan, false)
 	}
-	p.audit(opts.Actor, action, "applied", "", &plan, false)
+	mark(ctx, func(t *timing) *time.Time { return &t.done })
+	tm := timingOf(ctx).summary()
+	p.auditApplied(opts.Actor, action, &plan, tm)
 
 	if opts.Unguarded {
 		p.clearPending(txID)
@@ -683,14 +715,14 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 	prober := p.newProber()
 	guardFirst := p.clock.After(opts.ProbeInterval) // registered synchronously (fake-clock safe)
 	decisionTimer := p.clock.After(opts.window())
-	wd := NewWatchdog(p.clock, prober, opts.Anchors, opts.K, opts.ProbeInterval, func() { pt.decide(decRollback) })
+	wd := NewWatchdog(p.clock, prober, opts.Anchors, opts.K, opts.ProbeInterval, func() { pt.decide(decRollbackWatchdog) })
 	p.goSafe("watchdog", func() { wd.Run(ctxTx, guardFirst) })
 	p.goSafe("decision-timer", func() {
 		select {
 		case <-ctxTx.Done():
 		case <-decisionTimer:
 			if opts.Interactive {
-				pt.decide(decRollback) // missed confirm → auto-revert
+				pt.decide(decRollbackUnconfirmed) // missed confirm → auto-revert
 			} else {
 				pt.decide(decCommit) // guard window elapsed cleanly → commit
 			}
@@ -762,7 +794,7 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		}
 		p.clearPending(pt.id)
 		pt.result = domain.TxRolledBack
-		p.audit(actor, "rollback", "rolled_back", "watchdog or missed confirm", nil, true)
+		p.audit(actor, "rollback", "rolled_back", d.why(), nil, true)
 	}
 	p.finishTx(pt)
 }
@@ -999,7 +1031,7 @@ func (p *Protocol) ShutdownResolve() {
 	p.txmu.Unlock()
 	for _, pt := range pts {
 		if pt.interactive {
-			pt.decide(decRollback)
+			pt.decide(decRollbackShutdown)
 		} else {
 			pt.decide(decCommit)
 		}
@@ -1188,6 +1220,21 @@ func (p *Protocol) recordOwnership(op domain.PlanOp) {
 	case domain.OpDelRoute:
 		_ = p.store.DelOwned(*op.Route)
 	}
+}
+
+// auditApplied audits a change that reached the kernel, with how long it
+// took; a slow one is logged with its parts too.
+func (p *Protocol) auditApplied(actor domain.Actor, action string, plan *domain.Plan, tm *domain.ApplyTiming) {
+	if tm != nil && time.Duration(tm.TotalMS)*time.Millisecond >= slowApply {
+		p.log.Info("slow change", "actor", actor, "action", action, "ops", len(plan.Ops),
+			"total_ms", tm.TotalMS, "wait_ms", tm.WaitMS, "build_ms", tm.BuildMS, "check_ms", tm.CheckMS, "exec_ms", tm.ExecMS)
+	}
+	if p.store == nil {
+		return
+	}
+	_, _ = p.store.AppendAudit(domain.AuditEvent{
+		TS: p.clock.Now(), Actor: actor, Action: action, Result: "applied", Plan: plan, Timing: tm,
+	})
 }
 
 func (p *Protocol) audit(actor domain.Actor, action, result, reason string, plan *domain.Plan, rollback bool) {

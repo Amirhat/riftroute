@@ -21,6 +21,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/progress"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/sysinfo"
 )
@@ -66,6 +67,9 @@ func (e *APIError) Error() string {
 type Client struct {
 	socketPath func() string
 	http       *http.Client
+	// long has no timeout of its own: for a request whose caller set a
+	// deadline (a change that may wait on others), the deadline governs.
+	long *http.Client
 }
 
 // New builds a client for the daemon socket at socketPath.
@@ -96,7 +100,16 @@ func newClient(socketPath func() string, keepAlive bool) *Client {
 	return &Client{
 		socketPath: socketPath,
 		http:       &http.Client{Transport: tr, Timeout: 15 * time.Second},
+		long:       &http.Client{Transport: tr},
 	}
+}
+
+// client is the http client for req: a caller's own deadline, else 15 s.
+func (c *Client) client(req *http.Request) *http.Client {
+	if _, ok := req.Context().Deadline(); ok {
+		return c.long
+	}
+	return c.http
 }
 
 // SocketPath returns the socket path the next dial will use.
@@ -118,10 +131,11 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	if err != nil {
 		return err
 	}
+	setProgress(req)
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.client(req).Do(req)
 	if err != nil {
 		// Transport-level failure: the daemon couldn't be reached.
 		return fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
@@ -392,8 +406,9 @@ func (c *Client) ApplyConfig(ctx context.Context, data []byte, format string, dr
 	if err != nil {
 		return ConfigResult{}, err
 	}
+	setProgress(req)
 	req.Header.Set("Content-Type", "text/plain")
-	resp, err := c.http.Do(req)
+	resp, err := c.client(req).Do(req)
 	if err != nil {
 		return ConfigResult{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
 	}
@@ -449,10 +464,11 @@ func (c *Client) configRequest(ctx context.Context, method, path string, body []
 	if err != nil {
 		return ConfigResult{}, err
 	}
+	setProgress(req)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.http.Do(req)
+	resp, err := c.client(req).Do(req)
 	if err != nil {
 		return ConfigResult{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
 	}
@@ -535,8 +551,9 @@ func (c *Client) SaveList(ctx context.Context, l domain.List) (domain.List, erro
 	if err != nil {
 		return domain.List{}, err
 	}
+	setProgress(req)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := c.client(req).Do(req)
 	if err != nil {
 		return domain.List{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
 	}
@@ -774,8 +791,9 @@ func (c *Client) SaveTunnel(ctx context.Context, spec domain.TunnelSpec) (Tunnel
 	if err != nil {
 		return TunnelResult{}, err
 	}
+	setProgress(req)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
+	resp, err := c.client(req).Do(req)
 	if err != nil {
 		return TunnelResult{}, fmt.Errorf("%w: %v", ErrDaemonUnreachable, err)
 	}
@@ -823,4 +841,19 @@ func (c *Client) TunnelLog(ctx context.Context, name string) ([]string, error) {
 	}
 	err := c.do(ctx, http.MethodGet, "/tunnels/"+url.PathEscape(name)+"/log", nil, &body)
 	return body.Lines, err
+}
+
+type progressKey struct{}
+
+// WithProgress tags the change a request makes with id: the daemon reports
+// its steps as it goes (domain.EventApplyProgress on the event stream), so
+// the caller can show what's happening while it waits.
+func WithProgress(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, progressKey{}, id)
+}
+
+func setProgress(req *http.Request) {
+	if id, _ := req.Context().Value(progressKey{}).(string); progress.ValidID(id) {
+		req.Header.Set(progress.Header, id)
+	}
 }

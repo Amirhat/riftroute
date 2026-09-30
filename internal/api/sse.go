@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/progress"
 )
 
 // Hub is a fan-out broadcaster for SSE clients. Slow clients drop events rather
@@ -66,11 +67,22 @@ func (s *Server) BroadcastState(ctx context.Context) {
 	if s.hub.Count() == 0 {
 		return
 	}
-	st, err := s.svc.State(ctx)
+	st, err := s.svc.State(progress.Detach(ctx)) // not a step of the change it follows
 	if err != nil {
 		return
 	}
 	if ev, err := domain.NewEvent(domain.EventState, time.Now(), st); err == nil {
+		s.hub.Broadcast(ev)
+	}
+}
+
+// emitProgress sends a step of a change a client is waiting on
+// (progress.With) to the event stream.
+func (s *Server) emitProgress(p domain.ApplyProgress) {
+	if s.hub.Count() == 0 {
+		return
+	}
+	if ev, err := domain.NewEvent(domain.EventApplyProgress, time.Now(), p); err == nil {
 		s.hub.Broadcast(ev)
 	}
 }
