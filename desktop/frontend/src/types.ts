@@ -280,6 +280,16 @@ export interface AuditEvent {
   rollback?: boolean
   reason?: string
   plan?: Plan
+  // How long an applied change took, by part (daemons from 0.5.1 on).
+  timing?: ApplyTiming
+}
+
+export interface ApplyTiming {
+  total_ms: number
+  wait_ms: number
+  build_ms: number
+  check_ms: number
+  exec_ms: number
 }
 
 export interface Snapshot {
@@ -526,4 +536,15 @@ export interface AppUpdateStatus {
   target?: string
   why?: string
   error?: string
+}
+
+// A step of a change this app made, as it goes (rr:apply-progress): the
+// app's own "started" and "finished" around the daemon's steps.
+export type ApplyStep = 'started' | 'waiting' | 'resolving' | 'checking' | 'applying' | 'finished'
+
+export interface ApplyProgress {
+  id: string
+  step: ApplyStep
+  done?: number
+  total?: number
 }
