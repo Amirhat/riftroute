@@ -295,6 +295,9 @@ func buildManifest(ctx context.Context, hc *http.Client, api, tag, channel, minF
 		if os_ == "darwin" && kind == "tarball" && !update.Newer(version, firstWithOpenVPN) && !tarballHas(b, "openvpn") {
 			return update.Manifest{}, fmt.Errorf("%s has no openvpn — macOS installs of this release would have no tunnels; refusing to sign it", a.Name)
 		}
+		if os_ == "darwin" && kind == "tarball" && !update.Newer(version, firstWithCharonCmd) && !tarballHas(b, "charon-cmd") {
+			return update.Manifest{}, fmt.Errorf("%s has no charon-cmd — macOS installs of this release would have no IKEv2 tunnels; refusing to sign it", a.Name)
+		}
 		m.Assets = append(m.Assets, update.ManifestAsset{OS: os_, Arch: arch, Kind: kind, URL: a.URL, SHA256: got, Size: a.Size})
 	}
 	if _, ok := m.Asset("darwin", "arm64", "tarball"); !ok {
@@ -306,6 +309,9 @@ func buildManifest(ctx context.Context, hc *http.Client, api, tag, channel, minF
 // firstWithOpenVPN is the first release whose macOS tarballs ship RiftRoute's
 // own openvpn; from it on, one without it is a broken release.
 const firstWithOpenVPN = "0.3.0"
+
+// firstWithCharonCmd is the same for strongSwan's charon-cmd (IKEv2 tunnels).
+const firstWithCharonCmd = "0.6.0"
 
 // tarballHas reports whether a .tar.gz holds a regular file by that name.
 func tarballHas(tgz []byte, name string) bool {

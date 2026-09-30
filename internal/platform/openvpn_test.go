@@ -26,11 +26,11 @@ func TestOpenVPNNextToTheDaemon(t *testing.T) {
 
 	flat := filepath.Join(dir, "flat")
 	writeExe(t, filepath.Join(flat, "riftrouted"), "daemon")
-	if got := openVPNNextTo(filepath.Join(flat, "riftrouted")); got != "" {
+	if got := helperNextTo(filepath.Join(flat, "riftrouted"), "openvpn"); got != "" {
 		t.Fatalf("a build without openvpn: got %q", got)
 	}
 	writeExe(t, filepath.Join(flat, "openvpn"), "openvpn")
-	if got := openVPNNextTo(filepath.Join(flat, "riftrouted")); got != filepath.Join(flat, "openvpn") {
+	if got := helperNextTo(filepath.Join(flat, "riftrouted"), "openvpn"); got != filepath.Join(flat, "openvpn") {
 		t.Fatalf("beside the daemon: got %q", got)
 	}
 
@@ -44,7 +44,7 @@ func TestOpenVPNNextToTheDaemon(t *testing.T) {
 	if err := os.Symlink(filepath.Join(libexec, "riftrouted"), filepath.Join(bin, "riftrouted")); err != nil {
 		t.Fatal(err)
 	}
-	got := openVPNNextTo(filepath.Join(bin, "riftrouted"))
+	got := helperNextTo(filepath.Join(bin, "riftrouted"), "openvpn")
 	if real, _ := filepath.EvalSymlinks(filepath.Join(libexec, "openvpn")); got == "" || !sameFile(got, real) {
 		t.Fatalf("beside the symlinked daemon's target: got %q", got)
 	}
@@ -54,10 +54,10 @@ func TestOpenVPNNextToTheDaemon(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(odd, "openvpn"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := openVPNNextTo(filepath.Join(odd, "riftrouted")); got != "" {
+	if got := helperNextTo(filepath.Join(odd, "riftrouted"), "openvpn"); got != "" {
 		t.Fatalf("a directory named openvpn isn't a program: got %q", got)
 	}
-	if got := openVPNNextTo(""); got != "" {
+	if got := helperNextTo("", "openvpn"); got != "" {
 		t.Fatalf("no daemon: got %q", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestInstallOpenVPNCopiesThenSecures(t *testing.T) {
 		secured = append(secured, p)
 		return nil
 	}
-	if err := installOpenVPN(src, dst, secure); err != nil {
+	if err := installHelper("openvpn", src, dst, secure); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(dst); !bytes.Equal(b, []byte("the shipped openvpn")) {
@@ -95,7 +95,21 @@ func TestInstallOpenVPNCopiesThenSecures(t *testing.T) {
 
 	// A file that can't be made root's is an install failure, not a warning.
 	refuse := func(string, os.FileMode) error { return errors.New("is a symlink; refusing") }
-	if err := installOpenVPN(src, dst, refuse); err == nil {
+	if err := installHelper("openvpn", src, dst, refuse); err == nil {
 		t.Fatal("an openvpn that couldn't be secured was installed silently")
+	}
+}
+
+// Each helper a platform ships is found next to the daemon by its own name.
+func TestHelpersNextToTheDaemon(t *testing.T) {
+	dir := t.TempDir()
+	writeExe(t, filepath.Join(dir, "riftrouted"), "daemon")
+	writeExe(t, filepath.Join(dir, "charon-cmd"), "charon-cmd")
+	h := Helper{Name: "charon-cmd", Installed: "/Library/PrivilegedHelperTools/riftroute-charon-cmd"}
+	if got := h.Bundled(filepath.Join(dir, "riftrouted")); got != filepath.Join(dir, "charon-cmd") {
+		t.Fatalf("charon-cmd: got %q", got)
+	}
+	if got := (Helper{Name: "openvpn"}).Bundled(filepath.Join(dir, "riftrouted")); got != "" {
+		t.Fatalf("no openvpn in this build: got %q", got)
 	}
 }

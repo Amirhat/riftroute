@@ -111,7 +111,7 @@ func TestAnUpdateBringsTheMissingOpenVPNItself(t *testing.T) {
 	if !fileIs(t, ovpn, fakeOpenVPN("new")) || fileExists(prevBinary(ovpn)) {
 		t.Fatal("openvpn not added by the update (or a .prev invented)")
 	}
-	if ps, _ := loadPersisted(h.env.StateDir); ps.OpenVPNSwap != openvpnAdded {
+	if ps, _ := loadPersisted(h.env.StateDir); ps.OpenVPNSwap != helperAdded {
 		t.Fatalf("swap recorded as %q", ps.OpenVPNSwap)
 	}
 }

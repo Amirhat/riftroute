@@ -55,8 +55,30 @@ func InstalledOpenVPNPath() string { return installedOpenVPN }
 // Linux, IKEv2 tunnels run the distribution's strongSwan.
 func InstalledCharonCmdPath() string { return installedCharonCmd }
 
-// bundledOpenVPNName is the openvpn's name next to riftrouted wherever a build
-// ships it: the release tarball, the app bundle's Contents/Resources/bin.
+// Helper is a program that ships with RiftRoute beside the daemon where the
+// system has none the daemon can trust (macOS): openvpn, and strongSwan's
+// charon-cmd for IKEv2 tunnels.
+type Helper struct {
+	// Name is its name next to riftrouted wherever a build ships it: the
+	// release tarball, the app bundle's Contents/Resources/bin.
+	Name string
+	// Installed is where install (and the updater) put it.
+	Installed string
+}
+
+// Helpers are the helpers this platform ships (none on Linux: tunnels run
+// the distribution's packages).
+func Helpers() []Helper {
+	var hs []Helper
+	if installedOpenVPN != "" {
+		hs = append(hs, Helper{Name: bundledOpenVPNName, Installed: installedOpenVPN})
+	}
+	if installedCharonCmd != "" {
+		hs = append(hs, Helper{Name: "charon-cmd", Installed: installedCharonCmd})
+	}
+	return hs
+}
+
 const bundledOpenVPNName = "openvpn"
 
 // BundledOpenVPN returns the openvpn shipped next to the daemon binary being
@@ -66,12 +88,16 @@ func BundledOpenVPN(daemonBin string) string {
 	if installedOpenVPN == "" {
 		return ""
 	}
-	return openVPNNextTo(daemonBin)
+	return helperNextTo(daemonBin, bundledOpenVPNName)
 }
 
-// openVPNNextTo looks beside daemonBin and, when that is a symlink (a
-// package manager's bin/ link), beside the file it points to.
-func openVPNNextTo(daemonBin string) string {
+// Bundled returns the helper shipped next to the daemon binary being
+// installed, or "" when this build doesn't include it.
+func (h Helper) Bundled(daemonBin string) string { return helperNextTo(daemonBin, h.Name) }
+
+// helperNextTo looks for name beside daemonBin and, when that is a symlink
+// (a package manager's bin/ link), beside the file it points to.
+func helperNextTo(daemonBin, name string) string {
 	if daemonBin == "" {
 		return ""
 	}
@@ -80,7 +106,7 @@ func openVPNNextTo(daemonBin string) string {
 		dirs = append(dirs, filepath.Dir(real))
 	}
 	for _, d := range dirs {
-		p := filepath.Join(d, bundledOpenVPNName)
+		p := filepath.Join(d, name)
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
 			return p
 		}
@@ -88,15 +114,15 @@ func openVPNNextTo(daemonBin string) string {
 	return ""
 }
 
-// installOpenVPN copies the shipped openvpn into place and makes it root's
+// installHelper copies a shipped helper into place and makes it root's
 // alone (secure is secureRootFile; tests, which can't chown, pass a stand-in).
 // The daemon runs it as root, and runs nothing else.
-func installOpenVPN(src, dst string, secure func(string, os.FileMode) error) error {
+func installHelper(name, src, dst string, secure func(string, os.FileMode) error) error {
 	if err := copyFile(src, dst, 0o755); err != nil {
-		return fmt.Errorf("install openvpn: %w", err)
+		return fmt.Errorf("install %s: %w", name, err)
 	}
 	if err := secure(dst, 0o755); err != nil {
-		return fmt.Errorf("secure openvpn: %w", err)
+		return fmt.Errorf("secure %s: %w", name, err)
 	}
 	return nil
 }
@@ -262,8 +288,8 @@ func cmdContains(needle string, name string, args ...string) bool {
 // version — stays.)
 func clearUpdateFiles() {
 	_ = os.Remove(installedBin + ".prev")
-	if installedOpenVPN != "" {
-		_ = os.Remove(installedOpenVPN + ".prev")
+	for _, h := range Helpers() {
+		_ = os.Remove(h.Installed + ".prev")
 	}
 	dir := DefaultPaths().StateDir
 	for _, f := range []string{"update-backup.db", "update-pending.json"} {

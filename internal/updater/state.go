@@ -25,12 +25,17 @@ type persisted struct {
 	InstalledAt    time.Time `json:"installed_at,omitzero"`
 	LastCheck      time.Time `json:"last_check,omitzero"`
 	// OpenVPNSwap is what the last update did to the openvpn beside the
-	// daemon, for a rollback to undo: openvpnReplaced, openvpnAdded, or ""
-	// (not touched).
-	OpenVPNSwap string `json:"openvpn_swap,omitempty"`
+	// daemon, for a rollback to undo: helperReplaced, helperAdded, or ""
+	// (not touched). HelperSwap is the same for the other helpers, by name
+	// (openvpn keeps its own field: an older updater's swap is read by this
+	// one's rollback).
+	OpenVPNSwap string            `json:"openvpn_swap,omitempty"`
+	HelperSwap  map[string]string `json:"helper_swap,omitempty"`
 	// OpenVPNRepair is the release whose own openvpn couldn't be installed
 	// for good (it ships none, or a broken one): not tried again for it.
-	OpenVPNRepair string `json:"openvpn_repair,omitempty"`
+	// HelperRepair is the same for the other helpers.
+	OpenVPNRepair string            `json:"openvpn_repair,omitempty"`
+	HelperRepair  map[string]string `json:"helper_repair,omitempty"`
 	// LastAdvice is the update server's last word on the newest release it
 	// served; a GitHub copy of that release obeys it too.
 	LastAdvice struct {
@@ -49,20 +54,66 @@ func backupPath(dir string) string  { return filepath.Join(dir, "update-backup.d
 func prevBinary(bin string) string  { return bin + ".prev" }
 func pendingPath(dir string) string { return filepath.Join(dir, "update-pending.json") }
 
-// What an update did to the installed openvpn (persisted.OpenVPNSwap).
+// What an update did to an installed helper (persisted.OpenVPNSwap,
+// HelperSwap).
 const (
-	openvpnReplaced = "replaced" // the previous one is kept as .prev
-	openvpnAdded    = "added"    // there was none before; a rollback keeps it
+	helperReplaced = "replaced" // the previous one is kept as .prev
+	helperAdded    = "added"    // there was none before; a rollback keeps it
 )
 
-// restoreOpenVPN undoes openvpn's side of the last swap (see keepOpenVPN):
-// an openvpn the update replaced goes back. One it added stays — removing it
-// would leave a daemon that runs tunnels without openvpn, and every openvpn
-// RiftRoute ships works with every daemon (one from before tunnels ignores
-// it). Running it again after it succeeded (a crash before the daemon's own
-// restore) changes nothing.
-func restoreOpenVPN(path, how string) error {
-	if path == "" || how != openvpnReplaced {
+func (ps *persisted) swapOf(name string) string {
+	if name == helperOpenVPN {
+		return ps.OpenVPNSwap
+	}
+	return ps.HelperSwap[name]
+}
+
+func (ps *persisted) setSwap(name, how string) {
+	if name == helperOpenVPN {
+		ps.OpenVPNSwap = how
+		return
+	}
+	ps.HelperSwap = setOrDelete(ps.HelperSwap, name, how)
+}
+
+func (ps *persisted) repairOf(name string) string {
+	if name == helperOpenVPN {
+		return ps.OpenVPNRepair
+	}
+	return ps.HelperRepair[name]
+}
+
+func (ps *persisted) setRepair(name, version string) {
+	if name == helperOpenVPN {
+		ps.OpenVPNRepair = version
+		return
+	}
+	ps.HelperRepair = setOrDelete(ps.HelperRepair, name, version)
+}
+
+func setOrDelete(m map[string]string, k, v string) map[string]string {
+	if v == "" {
+		delete(m, k)
+		if len(m) == 0 {
+			return nil
+		}
+		return m
+	}
+	if m == nil {
+		m = map[string]string{}
+	}
+	m[k] = v
+	return m
+}
+
+// restoreHelper undoes a helper's side of the last swap (see keepHelpers):
+// one the update replaced goes back. One it added stays — removing it would
+// leave a daemon whose tunnels can't run, and every helper RiftRoute ships
+// works with every daemon (one from before it ignores it). Running it again
+// after it succeeded (a crash before the daemon's own restore) changes
+// nothing.
+func restoreHelper(path, how string) error {
+	if path == "" || how != helperReplaced {
 		return nil
 	}
 	prev := prevBinary(path)

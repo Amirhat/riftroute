@@ -19,32 +19,83 @@ import (
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
+// helper is a program that ships with RiftRoute beside the daemon where the
+// system has none to trust (macOS): openvpn, and strongSwan's charon-cmd for
+// IKEv2 tunnels. The updater installs a release's copy together with its
+// daemon, rolls it back with it (one the update added stays), and puts back
+// one that's missing from the newest release (repairHelpers).
+type helper struct {
+	name    string // its file in a release tarball
+	path    string // where it's installed
+	maxSize int64
+	// version is how its --version output starts (the self-test).
+	version string
+}
+
+// The helpers' names in a release tarball.
+const (
+	helperOpenVPN   = "openvpn"
+	helperCharonCmd = "charon-cmd"
+)
+
+var helperNames = []string{helperOpenVPN, helperCharonCmd}
+
+// helpersAt lists the helpers installed at these paths ("" where none ships).
+func helpersAt(openvpn, charonCmd string) []helper {
+	var hs []helper
+	if openvpn != "" {
+		hs = append(hs, helper{name: helperOpenVPN, path: openvpn, maxSize: maxOpenVPNSize, version: "OpenVPN "})
+	}
+	if charonCmd != "" {
+		hs = append(hs, helper{name: helperCharonCmd, path: charonCmd, maxSize: maxCharonCmdSize, version: "charon-cmd, strongSwan "})
+	}
+	return hs
+}
+
+func (u *Updater) helpers() []helper { return helpersAt(u.env.OpenVPN, u.env.CharonCmd) }
+
 // staged is a verified, self-tested daemon waiting to be installed — with
-// the openvpn from the same release, where one ships (macOS).
+// the helpers from the same release, where they ship (macOS).
 type staged struct {
 	version  string
 	path     string
 	sum      string // sha256 of the binary at staging time, re-checked at swap
 	raw, sig []byte // its release manifest as signed (kept at the swap)
-	// openvpn is the release's openvpn ("" when this platform ships none or
-	// the release doesn't include it: the installed one is left alone).
-	openvpn    string
-	openvpnSum string
+	// helpers are the release's helpers (one this platform doesn't ship, or
+	// the release doesn't include, isn't here: the installed one is left
+	// alone).
+	helpers []stagedHelper
+}
+
+type stagedHelper struct {
+	helper
+	file, sum string
 }
 
 // files are the staged files and the hashes they must still have at the swap.
 func (s *staged) files() map[string]string {
 	f := map[string]string{s.path: s.sum}
-	if s.openvpn != "" {
-		f[s.openvpn] = s.openvpnSum
+	for _, h := range s.helpers {
+		f[h.file] = h.sum
 	}
 	return f
 }
 
+// has reports whether the release's copy of the helper is staged.
+func (s *staged) has(name string) bool {
+	for _, h := range s.helpers {
+		if h.name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Largest files the updater takes from a release tarball.
 const (
-	maxDaemonSize  = 150 << 20
-	maxOpenVPNSize = 20 << 20 // a static openvpn is ~6 MB
+	maxDaemonSize    = 150 << 20
+	maxOpenVPNSize   = 20 << 20 // a static openvpn is ~6 MB
+	maxCharonCmdSize = 30 << 20 // a static charon-cmd is ~5 MB (per architecture)
 )
 
 // errBroken marks a problem with the release itself (as opposed to the
@@ -57,13 +108,13 @@ func (e errBroken) Unwrap() error { return e.err }
 func broken(err error) error { return errBroken{err} }
 
 // stage downloads the release tarball, checks it against the signed hash
-// and size, unpacks the daemon (and, where one ships, openvpn) into a
+// and size, unpacks the daemon (and, where they ship, the helpers) into a
 // directory of its own, and self-tests them. A release that is itself broken
 // is skipped until a newer one appears; anything else is retried at the next
 // check.
 func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 	u.mu.Lock()
-	if s := u.staged; s != nil && s.version == m.Version && fileExists(s.path) && (s.openvpn == "" || fileExists(s.openvpn)) {
+	if s := u.staged; s != nil && s.version == m.Version && fileExists(s.path) && allExist(s.helpers) {
 		u.mu.Unlock()
 		return true
 	}
@@ -96,30 +147,28 @@ func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 		return fail(err)
 	}
 	s := &staged{version: m.Version, path: filepath.Join(dir, "riftrouted")}
-	if u.env.OpenVPN != "" {
-		s.openvpn = filepath.Join(dir, "openvpn")
-	}
-	withOpenVPN, err := extractRelease(tgz, s.path, s.openvpn)
+	helpers := u.helpers()
+	got, err := extractRelease(tgz, s.path, dir, helpers)
 	if err != nil {
 		return fail(err)
 	}
 	_ = os.Remove(tgz)
-	if !withOpenVPN {
-		if s.openvpn != "" {
-			u.env.Log.Warn("update doesn't include openvpn; the installed one is kept", "version", m.Version)
-		}
-		s.openvpn = ""
-	}
 	if s.sum, err = fileSHA256(s.path); err != nil {
 		return fail(err)
 	}
-	if s.openvpn != "" {
-		if s.openvpnSum, err = fileSHA256(s.openvpn); err != nil {
+	for _, h := range helpers {
+		if !got[h.name] {
+			u.env.Log.Warn("update doesn't include "+h.name+"; the installed one is kept", "version", m.Version)
+			continue
+		}
+		sh := stagedHelper{helper: h, file: filepath.Join(dir, h.name)}
+		if sh.sum, err = fileSHA256(sh.file); err != nil {
 			return fail(err)
 		}
-		if err := selfTestOpenVPN(ctx, s.openvpn); err != nil {
+		if err := selfTestHelper(ctx, h, sh.file); err != nil {
 			return fail(err)
 		}
+		s.helpers = append(s.helpers, sh)
 	}
 	if err := u.selfTest(ctx, s.path, m.Version); err != nil {
 		return fail(err)
@@ -128,7 +177,16 @@ func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 	u.staged = s
 	u.mu.Unlock()
 	u.set(func(s *domain.UpdateStatus) { s.State, s.Staged, s.Error = "waiting", m.Version, "" })
-	u.env.Log.Info("update staged", "version", m.Version, "openvpn", s.openvpn != "")
+	u.env.Log.Info("update staged", "version", m.Version, "openvpn", s.has(helperOpenVPN), "charon-cmd", s.has(helperCharonCmd))
+	return true
+}
+
+func allExist(hs []stagedHelper) bool {
+	for _, h := range hs {
+		if !fileExists(h.file) {
+			return false
+		}
+	}
 	return true
 }
 
@@ -173,28 +231,28 @@ func (u *Updater) download(ctx context.Context, a update.ManifestAsset, dst stri
 }
 
 // extractRelease pulls the files the updater installs out of the release
-// tarball: riftrouted into daemonDst (required) and, when openvpnDst isn't
-// "", openvpn into it (reporting whether the release has one). Anything that
-// isn't a plain file of sane size, or appears twice, is refused. The tarball
+// tarball: riftrouted into daemonDst (required) and each of the helpers into
+// dir, under its name, reporting which the release has. Anything that isn't
+// a plain file of sane size, or appears twice, is refused. The tarball
 // matched the signed hash, so a malformed one is the release's fault; a
 // failed write is not.
-func extractRelease(tgz, daemonDst, openvpnDst string) (bool, error) {
+func extractRelease(tgz, daemonDst, dir string, helpers []helper) (map[string]bool, error) {
 	f, err := os.Open(tgz)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer f.Close()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return false, broken(err)
+		return nil, broken(err)
 	}
 	type file struct {
 		dst string
 		max int64
 	}
 	want := map[string]file{"riftrouted": {daemonDst, maxDaemonSize}}
-	if openvpnDst != "" {
-		want["openvpn"] = file{openvpnDst, maxOpenVPNSize}
+	for _, h := range helpers {
+		want[h.name] = file{filepath.Join(dir, h.name), h.maxSize}
 	}
 	got := map[string]bool{}
 	tr := tar.NewReader(gz)
@@ -204,7 +262,7 @@ func extractRelease(tgz, daemonDst, openvpnDst string) (bool, error) {
 			break
 		}
 		if err != nil {
-			return false, broken(err)
+			return nil, broken(err)
 		}
 		name := strings.TrimPrefix(h.Name, "./")
 		w, ok := want[name]
@@ -212,20 +270,20 @@ func extractRelease(tgz, daemonDst, openvpnDst string) (bool, error) {
 			continue
 		}
 		if got[name] {
-			return false, broken(fmt.Errorf("the release has %s twice", name))
+			return nil, broken(fmt.Errorf("the release has %s twice", name))
 		}
 		if h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > w.max {
-			return false, broken(fmt.Errorf("%s in the release is not a plain file", name))
+			return nil, broken(fmt.Errorf("%s in the release is not a plain file", name))
 		}
 		if err := writeLimited(w.dst, tr, h.Size); err != nil {
-			return false, err
+			return nil, err
 		}
 		got[name] = true
 	}
 	if !got["riftrouted"] {
-		return false, broken(errors.New("release has no riftrouted"))
+		return nil, broken(errors.New("release has no riftrouted"))
 	}
-	return got["openvpn"], nil
+	return got, nil
 }
 
 func writeLimited(dst string, r io.Reader, n int64) error {
@@ -240,26 +298,26 @@ func writeLimited(dst string, r io.Reader, n int64) error {
 	return out.Close()
 }
 
-// selfTestOpenVPN runs the staged openvpn's --version, in the environment the
-// daemon runs it with: a release whose openvpn doesn't run here (the wrong
+// selfTestHelper runs a staged helper's --version, in the environment the
+// daemon runs it with: a release whose helper doesn't run here (the wrong
 // architecture, a missing library) is broken. It runs as root from the
 // root-only staging dir; it matched the signed hash, like the daemon that
-// selfTest runs.
-func selfTestOpenVPN(ctx context.Context, bin string) error {
+// selfTest runs. (charon-cmd prints its version before it reads anything.)
+func selfTestHelper(ctx context.Context, h helper, bin string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "OPENSSL_CONF=/dev/null"}
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "OPENSSL_CONF=/dev/null", "STRONGSWAN_CONF=/dev/null"}
 	cmd.Dir = "/"
 	cmd.WaitDelay = 2 * time.Second
-	out, err := cmd.CombinedOutput() // some versions exit 1 after printing it
-	if strings.HasPrefix(strings.TrimSpace(string(out)), "OpenVPN ") {
+	out, err := cmd.CombinedOutput() // some openvpn versions exit 1 after printing it
+	if strings.HasPrefix(strings.TrimSpace(string(out)), h.version) {
 		return nil
 	}
 	if err == nil {
-		return broken(fmt.Errorf("openvpn in the release doesn't say its version: %q", firstLine(out)))
+		return broken(fmt.Errorf("%s in the release doesn't say its version: %q", h.name, firstLine(out)))
 	}
-	return classifyRun(ctx, fmt.Errorf("openvpn --version: %w: %s", err, firstLine(out)))
+	return classifyRun(ctx, fmt.Errorf("%s --version: %w: %s", h.name, err, firstLine(out)))
 }
 
 func firstLine(b []byte) string {

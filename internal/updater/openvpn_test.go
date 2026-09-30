@@ -108,7 +108,7 @@ func TestUpdateInstallsTheShippedOpenVPNWithTheDaemon(t *testing.T) {
 	if fi, _ := os.Stat(ovpn); fi.Mode().Perm() != 0o755 {
 		t.Fatalf("openvpn mode %v", fi.Mode())
 	}
-	if ps, _ := loadPersisted(h.env.StateDir); ps.OpenVPNSwap != openvpnReplaced {
+	if ps, _ := loadPersisted(h.env.StateDir); ps.OpenVPNSwap != helperReplaced {
 		t.Fatalf("swap recorded as %q", ps.OpenVPNSwap)
 	}
 	if fileExists(stagingDir(h.env.StateDir)) {
@@ -129,7 +129,7 @@ func TestHealthRollbackRestoresOpenVPN(t *testing.T) {
 		t.Fatal("openvpn .prev kept after it was restored")
 	}
 	// Rolling back again (a crash before the daemon's own restore) is harmless.
-	restoreOpenVPNFor(env)
+	restoreHelpersFor(env)
 	if !fileIs(t, ovpn, fakeOpenVPN("old")) {
 		t.Fatal("a repeated restore changed openvpn")
 	}
@@ -294,7 +294,7 @@ func TestNoOpenVPNIsTakenWhereNoneShips(t *testing.T) {
 	if st := h.check(); st.Staged != "0.2.7" {
 		t.Fatalf("setup: %+v", st)
 	}
-	if fileExists(filepath.Join(stagingDir(h.env.StateDir), "0.2.7", "openvpn")) || h.u.staged.openvpn != "" {
+	if fileExists(filepath.Join(stagingDir(h.env.StateDir), "0.2.7", "openvpn")) || len(h.u.staged.helpers) != 0 {
 		t.Fatal("openvpn staged where none ships")
 	}
 }
@@ -307,7 +307,8 @@ func TestExtractReleaseRefusesOddOpenVPNs(t *testing.T) {
 		if err := os.WriteFile(tgz, releaseTarball(t, files...), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		return extractRelease(tgz, filepath.Join(dir, "riftrouted"), filepath.Join(dir, "openvpn"))
+		got, err := extractRelease(tgz, filepath.Join(dir, "riftrouted"), dir, helpersAt("/x/riftroute-openvpn", ""))
+		return got["openvpn"], err
 	}
 	isBroken := func(err error) bool { var b errBroken; return err != nil && errors.As(err, &b) }
 

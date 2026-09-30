@@ -320,7 +320,7 @@ func TestRolloutBucketIsStable(t *testing.T) {
 // ---------------------------------------------------------------- boot guard
 
 func guardEnv(h *harness, current string) GuardEnv {
-	return GuardEnv{Current: current, Binary: h.env.Binary, OpenVPN: h.env.OpenVPN, StateDir: h.env.StateDir, DBPath: h.env.DBPath,
+	return GuardEnv{Current: current, Binary: h.env.Binary, OpenVPN: h.env.OpenVPN, CharonCmd: h.env.CharonCmd, StateDir: h.env.StateDir, DBPath: h.env.DBPath,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Exit: func(int) {}}
 }
 

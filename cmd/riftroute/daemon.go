@@ -85,9 +85,10 @@ func daemonInstallCmd() *cobra.Command {
 		Long: "Installs the riftrouted binary (macOS: /Library/PrivilegedHelperTools,\n" +
 			"Linux: /usr/local/bin), writes the launchd plist / systemd unit, and\n" +
 			"(re)starts it. Run with sudo.\n\n" +
-			"On macOS the openvpn that ships next to riftrouted is installed beside it\n" +
-			"(/Library/PrivilegedHelperTools/riftroute-openvpn): tunnels run only that\n" +
-			"one. On Linux they use the distribution's openvpn package.\n\n" +
+			"On macOS the openvpn and charon-cmd (strongSwan, for IKEv2) that ship next\n" +
+			"to riftrouted are installed beside it (/Library/PrivilegedHelperTools/\n" +
+			"riftroute-openvpn, riftroute-charon-cmd): tunnels run only those. On Linux\n" +
+			"they use the distribution's openvpn and strongSwan packages.\n\n" +
 			"The daemon runs as root but authorizes --allow-uid (default: the invoking\n" +
 			"user, even under sudo) for mutating calls, so an unprivileged GUI/CLI can\n" +
 			"control it.\n\n" +
@@ -114,7 +115,7 @@ func daemonInstallCmd() *cobra.Command {
 				}
 			}
 			fmt.Fprintf(out, "installing riftrouted %s\n  from %s\n", buildinfo.Short(candidate), bin)
-			reportOpenVPN(out, cmd.ErrOrStderr(), bin)
+			reportHelpers(out, cmd.ErrOrStderr(), bin)
 			if allowUID < 0 {
 				allowUID = invokingUID()
 			}
@@ -137,26 +138,29 @@ func daemonInstallCmd() *cobra.Command {
 	return cmd
 }
 
-// reportOpenVPN says what install does about tunnels' openvpn: on macOS the
-// one shipped next to riftrouted is installed beside the daemon (tunnels
-// never run any other); without one, an earlier copy stays, or the daemon's
-// update check fetches it (the updater's repair). On Linux the
-// distribution's is used and there's nothing to say.
-func reportOpenVPN(out, errw io.Writer, daemonBin string) {
-	dst := platform.InstalledOpenVPNPath()
-	if dst == "" {
-		return
+// reportHelpers says what install does about the programs tunnels run
+// (openvpn; charon-cmd for IKEv2): on macOS each one shipped next to
+// riftrouted is installed beside the daemon (tunnels never run any other);
+// without one, an earlier copy stays, or the daemon's update check fetches
+// it (the updater's repair). On Linux the distribution's are used and
+// there's nothing to say.
+func reportHelpers(out, errw io.Writer, daemonBin string) {
+	for _, h := range platform.Helpers() {
+		what := "tunnels"
+		if h.Name == "charon-cmd" {
+			what = "IKEv2 tunnels"
+		}
+		if src := h.Bundled(daemonBin); src != "" {
+			fmt.Fprintf(out, "installing %s for %s\n  from %s\n  to   %s\n", h.Name, what, src, h.Installed)
+			continue
+		}
+		if _, err := os.Stat(h.Installed); err == nil {
+			fmt.Fprintf(errw, "note: this build doesn't include %s; %s keep using the one already at %s\n", h.Name, what, h.Installed)
+			continue
+		}
+		fmt.Fprintf(errw, "note: this build doesn't include %s (none next to %s), so %s won't be available\n"+
+			"until it's installed: `riftroute update check` fetches the one the newest release ships\n", h.Name, daemonBin, what)
 	}
-	if src := platform.BundledOpenVPN(daemonBin); src != "" {
-		fmt.Fprintf(out, "installing openvpn for tunnels\n  from %s\n  to   %s\n", src, dst)
-		return
-	}
-	if _, err := os.Stat(dst); err == nil {
-		fmt.Fprintf(errw, "note: this build doesn't include openvpn; tunnels keep using the one already at %s\n", dst)
-		return
-	}
-	fmt.Fprintf(errw, "note: this build doesn't include openvpn (none next to %s), so tunnels won't be available\n"+
-		"until it's installed: `riftroute update check` fetches the one the newest release ships\n", daemonBin)
 }
 
 // systemClient talks to the installed service's socket — the daemon install
