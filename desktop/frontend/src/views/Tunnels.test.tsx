@@ -692,7 +692,7 @@ describe('Tunnels view — WireGuard', () => {
     mockApi.tunnelEngine.mockResolvedValue({
       available: false,
       problem: "OpenVPN isn't installed",
-      ikev2: { available: false, problem: "IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed" },
+      ikev2: { available: false, problem: "strongSwan's charon-cmd isn't installed" },
     })
     withTunnels([])
     mockApi.openTunnelProfile.mockResolvedValue({
@@ -752,14 +752,12 @@ describe('Tunnels view — WireGuard', () => {
       path: '/Library/PrivilegedHelperTools/riftroute-openvpn',
       ikev2: {
         available: false,
-        problem: "IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed",
+        problem: "strongSwan's charon-cmd isn't installed",
         install: { system: 'macOS', action: 'reinstall', note: 'Reinstall the daemon from a current release.' },
       },
     })
     renderView()
-    expect(
-      await screen.findByText("IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed"),
-    ).toBeInTheDocument()
+    expect(await screen.findByText("strongSwan's charon-cmd isn't installed")).toBeInTheDocument()
     expect(screen.getByText(/IKEv2 tunnels run on the/)).toHaveTextContent(
       'IKEv2 tunnels run on the charon-cmd that ships with RiftRoute.',
     )

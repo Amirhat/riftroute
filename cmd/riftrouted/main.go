@@ -81,7 +81,7 @@ func run() error {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&selfTest, "selftest", false, "check this binary against a database copy (-db) and exit (used by the updater)")
 	flag.StringVar(&channel, "update-channel", "stable", "update channel")
-	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn weren't installed (shows the install help)")
+	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn and strongSwan weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 

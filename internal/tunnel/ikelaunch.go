@@ -137,7 +137,7 @@ func detectIKEEngine(h hostInfo, find func() (string, fs.FileInfo, error), versi
 	bin, fi, err := find()
 	switch {
 	case errors.Is(err, errNotFound):
-		return domain.TunnelEngine{Problem: "IKEv2 tunnels run on strongSwan's charon-cmd, which isn't installed", Install: ikeHelp(h, true)}
+		return domain.TunnelEngine{Problem: "strongSwan's charon-cmd isn't installed", Install: ikeHelp(h, true)}
 	case err != nil: // present, but unsafe to run as root or not checkable
 		return domain.TunnelEngine{Path: bin, Problem: err.Error(), Install: ikeHelp(h, false)}
 	}

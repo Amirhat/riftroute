@@ -405,7 +405,7 @@ func tunnelDownCmd() *cobra.Command {
 func tunnelLogCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "log <name>",
-		Short: "Show a tunnel's recent log — openvpn's output, or WireGuard's (why it won't connect)",
+		Short: "Show a tunnel's recent log — openvpn's, WireGuard's or strongSwan's output (why it won't connect)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			lines, err := client().TunnelLog(cmd.Context(), args[0])
