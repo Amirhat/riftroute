@@ -427,6 +427,11 @@ func (p *Protocol) lockApply(ctx context.Context) error {
 	if p.panicking.Load() > 0 {
 		return ErrPanicking
 	}
+	// A caller already gone gets nothing made on its behalf, free lock or
+	// not (LockCtx's own first check, which TryLock would skip).
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("gave up waiting for the change in progress: %w", err)
+	}
 	if !p.applyMu.TryLock() {
 		progress.Report(ctx, domain.StepWaiting, 0, 0) // behind another change
 		if err := p.applyMu.LockCtx(ctx); err != nil {

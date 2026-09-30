@@ -54,6 +54,20 @@ describe('ChangeProgress', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
   })
 
+  it('takes the app behind it out of reach while it shows, and names a dry run for what it is', () => {
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    render(<ChangeProgress />, { container: root })
+    emit({ id: 'p1', step: 'started', preview: true })
+    pass(SHOW_AFTER_MS + 50)
+    expect(screen.getByRole('status', { name: 'Working out your change' })).toBeInTheDocument()
+    expect(root.inert).toBe(true)
+    emit({ id: 'p1', step: 'finished' })
+    expect(root.inert).toBe(false)
+    root.remove()
+  })
+
   it('never flashes for a change that returns quickly', () => {
     render(<ChangeProgress />)
     emit({ id: 'c2', step: 'started' })

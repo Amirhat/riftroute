@@ -547,4 +547,6 @@ export interface ApplyProgress {
   step: ApplyStep
   done?: number
   total?: number
+  // On "started": a dry run, working the change out without making it.
+  preview?: boolean
 }

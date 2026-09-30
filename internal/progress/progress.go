@@ -40,6 +40,7 @@ type reporter struct {
 
 	mu   sync.Mutex
 	step domain.ApplyStep
+	done int // the step's count last sent: counts only go up
 	last time.Time
 }
 
@@ -63,9 +64,13 @@ func Report(ctx context.Context, step domain.ApplyStep, done, total int) {
 	}
 	now := time.Now()
 	r.mu.Lock()
-	send := step != r.step || done >= total || now.Sub(r.last) >= minGap
+	newStep := step != r.step
+	// A count from a goroutine that finished before a later-reported one
+	// would go backwards: drop it.
+	stale := !newStep && done < r.done
+	send := !stale && (newStep || done >= total || now.Sub(r.last) >= minGap)
 	if send {
-		r.step, r.last = step, now
+		r.step, r.done, r.last = step, done, now
 	}
 	r.mu.Unlock()
 	if send {

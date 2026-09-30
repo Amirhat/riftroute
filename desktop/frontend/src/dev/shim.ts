@@ -67,10 +67,10 @@ let changeSeq = 0
 
 // change mirrors changeCall: a change tagged with a fresh progress id,
 // between a "started" and a "finished".
-async function change<T>(run: (id: string) => Promise<T>): Promise<T> {
+async function change<T>(run: (id: string) => Promise<T>, preview = false): Promise<T> {
   const id = `dev-${++changeSeq}`
   ownChanges.add(id)
-  emit('rr:apply-progress', { id, step: 'started' })
+  emit('rr:apply-progress', { id, step: 'started', preview })
   try {
     return await run(id)
   } finally {
@@ -135,7 +135,7 @@ const App = {
   SetProfileEnabled: (name: string, enable: boolean) =>
     req('POST', `/profiles/${encodeURIComponent(name)}/${enable ? 'enable' : 'disable'}?apply=false`, {}),
   SaveProfile: (p: unknown, dry: boolean) =>
-    change((id) => issuesAreResults(req('POST', `/profiles${dry ? '?dry_run=1' : ''}`, p, undefined, id))),
+    change((id) => issuesAreResults(req('POST', `/profiles${dry ? '?dry_run=1' : ''}`, p, undefined, id)), dry),
   DeleteProfile: (n: string) =>
     change((id) => issuesAreResults(req('DELETE', `/profiles/${encodeURIComponent(n)}`, undefined, undefined, id))),
   ApplyConfigContent: (content: string, format: string, dry: boolean, yes: boolean) =>
@@ -143,6 +143,7 @@ const App = {
       issuesAreResults(
         req('POST', `/config?format=${format}&dry_run=${dry ? 1 : 0}&yes=${yes ? 1 : 0}`, undefined, content, id),
       ),
+      dry,
     ),
   RouteOp: (action: string, route: unknown, newRoute: unknown) =>
     change((id) =>

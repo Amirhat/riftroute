@@ -52,3 +52,15 @@ func TestValidID(t *testing.T) {
 		}
 	}
 }
+
+// Counts from goroutines finishing out of order never go backwards.
+func TestReportCountsOnlyGoUp(t *testing.T) {
+	var got []int
+	ctx := With(context.Background(), "p", func(p domain.ApplyProgress) { got = append(got, p.Done) })
+	Report(ctx, domain.StepResolving, 0, 10)
+	Report(ctx, domain.StepResolving, 10, 10)
+	Report(ctx, domain.StepResolving, 7, 10) // late
+	if len(got) != 2 || got[1] != 10 {
+		t.Fatalf("sent %v", got)
+	}
+}

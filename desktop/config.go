@@ -65,7 +65,7 @@ func (a *App) OpenConfigDialog() (ConfigFile, error) {
 // dry-run, and validation errors come back as populated Issues (not a thrown
 // error), so the UI can render them inline.
 func (a *App) ApplyConfigContent(content, format string, dryRun, yes bool) (apiclient.ConfigResult, error) {
-	ctx, cancel := a.changeCall()
+	ctx, cancel := a.progressCall(dryRun)
 	defer cancel()
 	res, err := a.client.ApplyConfig(ctx, []byte(content), format, dryRun, yes)
 	// A 400 (validation failure) is not a transport error for the UI: the Issues in

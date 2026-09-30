@@ -125,10 +125,16 @@ var changeSeq atomic.Uint64
 // fresh progress id, which the event stream forwards to React while the
 // call runs, between a "started" and a "finished" of the app's own — so the
 // app shows one progress panel for every change, wherever it was made.
-func (a *App) changeCall() (context.Context, context.CancelFunc) {
+func (a *App) changeCall() (context.Context, context.CancelFunc) { return a.progressCall(false) }
+
+// previewCall is changeCall for a dry run: it works the change out (looking
+// the domains up too) without making it, and the panel says so.
+func (a *App) previewCall() (context.Context, context.CancelFunc) { return a.progressCall(true) }
+
+func (a *App) progressCall(preview bool) (context.Context, context.CancelFunc) {
 	id := fmt.Sprintf("app-%d-%d", os.Getpid(), changeSeq.Add(1))
 	a.changes.Store(id, true)
-	a.emit("rr:apply-progress", map[string]any{"id": id, "step": "started"})
+	a.emit("rr:apply-progress", map[string]any{"id": id, "step": "started", "preview": preview})
 	ctx, cancel := context.WithTimeout(a.ctx, changeTimeout)
 	return apiclient.WithProgress(ctx, id), func() {
 		cancel()
@@ -321,7 +327,7 @@ func (a *App) SetProfileEnabled(name string, enable bool) (safety.Result, error)
 // applies interactively (the UI runs the commit-confirm on the returned tx).
 // Validation errors come back in the result's Issues, not as a thrown error.
 func (a *App) SaveProfile(p domain.Profile, dryRun bool) (apiclient.ConfigResult, error) {
-	ctx, cancel := a.changeCall() // a dry run looks the domains up too
+	ctx, cancel := a.progressCall(dryRun) // a dry run looks the domains up too
 	defer cancel()
 	res, err := a.client.SaveProfile(ctx, p, dryRun, false)
 	if err != nil && len(res.Issues) > 0 {

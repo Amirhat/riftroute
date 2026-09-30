@@ -24,7 +24,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refreshes them. They used to expire after 60 seconds, so most changes
   looked every name up again, one after another, while every other change
   waited. Names are also looked up together now, and a name that fails is
-  retried after 2 minutes, not on every change.
+  retried after 2 minutes, not on every change. So a change can use an
+  answer up to about 5 minutes old; the re-resolve still follows a CDN that
+  moves.
 
 ### Fixed
 - **The app no longer reports a slow change as failed.** It gave up after
