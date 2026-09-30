@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { onApplyProgress } from '../lib/events'
+import { takeDeferredFocus } from '../lib/focus'
 import type { ApplyProgress, ApplyStep } from '../types'
 
 // The daemon's steps, in the order a change goes through them. A change
@@ -63,13 +64,23 @@ export function ChangeProgress() {
 
   const shown = !!change && now - change.at >= SHOW_AFTER_MS
   // While it shows, the app behind it takes no input: not the pointer (the
-  // backdrop) and not the keyboard (inert).
+  // backdrop) and not the keyboard (inert). Going inert takes focus from the
+  // element that had it (usually the button that started the change), and
+  // nothing gives it back: afterwards it goes to what a dialog asked for
+  // meanwhile (focusOrDefer), or else back where it was — unless it's
+  // somewhere already.
   useEffect(() => {
     const root = document.getElementById('root')
     if (!shown || !root) return
+    const had = document.activeElement instanceof HTMLElement ? document.activeElement : null
     root.inert = true
     return () => {
       root.inert = false
+      const wanted = takeDeferredFocus()
+      const active = document.activeElement
+      if (active && active !== document.body) return
+      const el = [wanted, had].find((e) => e && e !== document.body && e.isConnected && !e.closest('[inert]'))
+      el?.focus()
     }
   }, [shown])
 

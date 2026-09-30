@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { ChangeProgress, SHOW_AFTER_MS } from './ChangeProgress'
+import { Modal } from './Modal'
 import type { ApplyProgress } from '../types'
 
 // The Go side's rr:apply-progress events, fired by hand.
@@ -66,6 +67,72 @@ describe('ChangeProgress', () => {
     emit({ id: 'p1', step: 'finished' })
     expect(root.inert).toBe(false)
     root.remove()
+  })
+
+  // jsdom has no inert: what a browser does to focus under it, by hand —
+  // focus() does nothing inside an inert #root, and going inert moves focus
+  // off the element that had it.
+  function inertRoot() {
+    const root = document.createElement('div')
+    root.id = 'root'
+    document.body.appendChild(root)
+    const focus = HTMLElement.prototype.focus
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (this: HTMLElement) {
+      if (!(root.inert && root.contains(this))) focus.call(this)
+    })
+    return root
+  }
+
+  it('gives focus back to the button that started the change', () => {
+    const root = inertRoot()
+    render(
+      <>
+        <button>Save</button>
+        <ChangeProgress />
+      </>,
+      { container: root },
+    )
+    const save = screen.getByRole('button', { name: 'Save' })
+    save.focus()
+    emit({ id: 'c1', step: 'started' })
+    pass(SHOW_AFTER_MS + 50)
+    expect(root.inert).toBe(true)
+    save.blur() // the browser's focus fixup
+    emit({ id: 'c1', step: 'finished' })
+    expect(save).toHaveFocus()
+    root.remove()
+    vi.restoreAllMocks()
+  })
+
+  it('gives focus to a dialog that opened while the app was out of reach', () => {
+    const root = inertRoot()
+    const { rerender } = render(
+      <>
+        <button>Save</button>
+        <ChangeProgress />
+      </>,
+      { container: root },
+    )
+    screen.getByRole('button', { name: 'Save' }).focus()
+    emit({ id: 'c1', step: 'started' })
+    pass(SHOW_AFTER_MS + 50)
+    screen.getByRole('button', { name: 'Save' }).blur()
+    // The change needs confirming: its dialog opens under the panel.
+    rerender(
+      <>
+        <button>Save</button>
+        <ChangeProgress />
+        <Modal>
+          <h2>Keep these changes?</h2>
+          <button>Keep</button>
+        </Modal>
+      </>,
+    )
+    expect(screen.getByRole('button', { name: 'Keep' })).not.toHaveFocus()
+    emit({ id: 'c1', step: 'finished' })
+    expect(screen.getByRole('button', { name: 'Keep' })).toHaveFocus()
+    root.remove()
+    vi.restoreAllMocks()
   })
 
   it('never flashes for a change that returns quickly', () => {
