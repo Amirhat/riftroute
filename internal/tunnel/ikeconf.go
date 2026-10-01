@@ -186,12 +186,16 @@ func renderIKE(c *IKEv2Config, roots []*x509.Certificate, host, dir, name string
 // every connection. kernel-libipsec ignores install_routes upstream; the
 // charon-cmd RiftRoute ships on macOS is built to honour it
 // (packaging/strongswan). On Linux, where charon-cmd is the distribution's,
-// its routes go to a table of their own whose rule comes after main's (and
-// default's), so main's default route answers every lookup first.
+// its routes (a default route into the tunnel) go to a table of their own
+// whose rule never matches: it's for packets carrying a mark nothing sets
+// (ikeRuleMark). Its priority, after main's and default's, is a second
+// line: a rule after main alone still catches every lookup main can't
+// answer — a host's IPv6 on a v4-only network, say.
 func ikeConf(goos, socket string, p12 bool) string {
-	linux := ""
+	linux, linuxPlugins := "", ""
 	if goos == "linux" {
 		linux = fmt.Sprintf("    routing_table = %d\n    routing_table_prio = %d\n", ikeRoutingTable, ikeRoutingTable)
+		linuxPlugins = fmt.Sprintf("        kernel-netlink {\n            fwmark = %s\n        }\n", ikeRuleMark)
 	}
 	return fmt.Sprintf(`# written by riftrouted for one charon-cmd session; not read by anything else
 charon-cmd {
@@ -213,10 +217,16 @@ charon-cmd {
         vici {
             socket = unix://%s
         }
-    }
+%s    }
 }
-`, ikePlugins(goos, p12), linux, socket)
+`, ikePlugins(goos, p12), linux, socket, linuxPlugins)
 }
+
+// ikeRuleMark is the firewall mark (value/mask) charon's routing rule on
+// Linux matches: one nothing sets — not RiftRoute's per-app 0x5252, not
+// wg-quick's 0xca6c, Tailscale's or Mullvad's — so the rule matches no
+// packet.
+const ikeRuleMark = "0x7f52ea21/0xffffffff"
 
 // ikeRoutingTable is the Linux table (and rule priority, after main's 32766
 // and default's 32767) charon-cmd's unwanted routes go to.

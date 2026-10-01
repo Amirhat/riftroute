@@ -238,10 +238,22 @@ get=$(cx ip route get 1.1.1.1 | head -1)
 grep -q "dev wg0" <<<"$get" && pass "everything else still goes to the main VPN: $get" || fail "main VPN lost: $get"
 own=$(cx ip route show table main | grep " dev ${iface:-none}\b" | grep -v "proto riftroute" || true)
 [ -n "$iface" ] && [ -z "$own" ] && pass "charon installed no route of its own in main" || fail "charon's own routes in main: $own"
-charon_rules=$(cx ip rule | grep -c 52520 || true)
 table=$(cx ip route show table 52520 2>/dev/null || true)
 [ -n "$table" ] && sed 's/^/    table 52520: /' <<<"$table"
-[ "$charon_rules" -le 1 ] && pass "charon's table (52520) is looked up after main, if at all" || fail "ip rule: $(cx ip rule)"
+rules=$(cx ip rule | grep 52520 || true)
+[ -n "$rules" ] && sed 's/^/    rule: /' <<<"$rules"
+if [ -z "$rules" ] || ! grep -qv "fwmark 0x7f52ea21" <<<"$rules"; then
+  pass "charon's rule (if any) only matches a mark nothing sets"
+else
+  fail "charon's rule matches unmarked packets: $rules"
+fi
+# What main can't answer must not fall into charon's table: take main's
+# routes away (the main VPN's halves and the default) and look again.
+cx sh -c 'ip route del 0.0.0.0/1 dev wg0; ip route del 128.0.0.0/1 dev wg0; ip route del default'
+get=$(cx ip route get 8.8.8.8 2>&1 | head -1 || true)
+cx sh -c 'ip route add default via 10.78.1.254 dev eth0; ip route add 0.0.0.0/1 dev wg0; ip route add 128.0.0.0/1 dev wg0'
+grep -q "ipsec0" <<<"$get" && fail "with main empty, traffic falls into the tunnel: $get" ||
+  pass "with main empty, nothing falls into the tunnel ($get)"
 if [ "${SWAN:-}" = 6 ]; then
   # RiftRoute's patch: kernel-libipsec installs no route at all.
   [ -z "$table" ] && pass "the patched charon-cmd installed no route anywhere" || fail "routes despite the patch: $table"

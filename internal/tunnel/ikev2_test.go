@@ -274,7 +274,8 @@ func TestRenderIKE(t *testing.T) {
 	if darwin, linux := ikeConf("darwin", "/s", false), ikeConf("linux", "/s", false); strings.Contains(darwin, "routing_table") ||
 		!strings.Contains(darwin, " kernel-pfroute ") || !strings.Contains(linux, "routing_table = 52520\n") ||
 		!strings.Contains(linux, "routing_table_prio = 52520\n") || !strings.Contains(linux, " kernel-netlink ") ||
-		!strings.Contains(linux, "stderr {") || strings.Contains(linux, "pem!") {
+		!strings.Contains(linux, "stderr {") || strings.Contains(linux, "pem!") ||
+		!strings.Contains(linux, "fwmark = 0x7f52ea21/0xffffffff\n") || strings.Contains(darwin, "fwmark") {
 		t.Errorf("per-OS config:\n%s\n%s", darwin, linux)
 	}
 

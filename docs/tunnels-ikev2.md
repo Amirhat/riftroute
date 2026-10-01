@@ -91,9 +91,14 @@ The alternatives, and why not:
     (`packaging/strongswan/`) making `kernel-libipsec` honour
     `install_routes = no`, as the kernel backends do; the patch ships
     with its sources, as the GPL asks;
-  - on Linux (the distribution's charon-cmd, unpatched) its routes go to
-    a table of their own (52520) whose rule comes after main's and
-    default's, so main's default route answers every lookup first.
+  - on Linux (the distribution's charon-cmd, unpatched) its routes (a
+    default route into the tunnel) go to a table of their own (52520)
+    whose rule matches only packets carrying a firewall mark nothing sets
+    (`kernel-netlink.fwmark = 0x7f52ea21/0xffffffff`), so no lookup ever
+    reaches it. Its priority, after main's and default's, is a second line
+    only: on its own, a rule after main still catches every lookup main
+    can't answer (a host's IPv6 on a v4-only network, say — the review
+    proved it, and the Docker test now checks it with main emptied).
 - **ESP always in UDP.** `kernel-libipsec` has no raw ESP on macOS, and
   charon then forces UDP encapsulation (it reports NAT) — which also
   crosses networks that drop raw ESP.
