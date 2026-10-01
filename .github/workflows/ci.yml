@@ -78,6 +78,26 @@ jobs:
             echo "no netns tests yet (added in M2); skipping"
           fi
 
+  # A real IKEv2 connection on Linux, in Docker (test/ikev2-linux): the daemon
+  # with the distribution's charon-cmd (strongSwan 5.9), and with the one
+  # RiftRoute builds for macOS (6.1 with its patch, built from source here),
+  # against a strongSwan server with a full tunnel.
+  ikev2-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        swan: ["distro", "6"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: test/ikev2-linux
+        env:
+          SWAN: ${{ matrix.swan == '6' && '6' || '' }}
+        run: test/ikev2-linux/run.sh
+
   # Always-compiles: daemon + CLI build for every target, incl. the Windows
   # fallback stub (AGENTS §8). cgo off — pure-Go SQLite keeps the core portable.
   build-core:

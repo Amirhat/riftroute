@@ -16,11 +16,15 @@
 # if they weren't kept out of the way.
 #
 # Run it with `make test-ikev2-linux` (needs Docker). KEEP=1 leaves the
-# containers up for poking around afterwards.
+# containers up for poking around afterwards. SWAN=6 gives the client the
+# charon-cmd RiftRoute builds for macOS instead (strongSwan 6.1 with its
+# patch, built here from the same pinned source: Dockerfile.swan6).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 IMG=riftroute-ikev2-e2e
+DOCKERFILE=Dockerfile
+if [ "${SWAN:-}" = 6 ]; then IMG=riftroute-ikev2-e2e-swan6 DOCKERFILE=Dockerfile.swan6; fi
 WORK=$(mktemp -d)
 pass() { printf '  PASS %s\n' "$*"; }
 fail() { printf '  FAIL %s\n' "$*"; FAILED=1; }
@@ -41,7 +45,9 @@ echo "== build (linux/$arch)"
 for b in riftrouted riftroute; do
   (cd "$ROOT" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$WORK/$b" "./cmd/$b")
 done
-docker build -t "$IMG" "$HERE" >"$WORK/build.log" 2>&1 || { cat "$WORK/build.log"; exit 1; }
+mkdir "$WORK/ctx" && cp "$HERE"/Dockerfile* "$ROOT"/packaging/strongswan/*.patch "$WORK/ctx/"
+docker build -t "$IMG" -f "$WORK/ctx/$DOCKERFILE" "$WORK/ctx" >"$WORK/build.log" 2>&1 || { tail -40 "$WORK/build.log"; exit 1; }
+echo "   client: $(docker run --rm "$IMG" charon-cmd --version)"
 
 docker network create --subnet 10.78.1.0/24 rr-ike-lan >/dev/null
 docker network create --subnet 10.78.2.0/24 rr-ike-wan >/dev/null
@@ -233,8 +239,13 @@ grep -q "dev wg0" <<<"$get" && pass "everything else still goes to the main VPN:
 own=$(cx ip route show table main | grep " dev ${iface:-none}\b" | grep -v "proto riftroute" || true)
 [ -n "$iface" ] && [ -z "$own" ] && pass "charon installed no route of its own in main" || fail "charon's own routes in main: $own"
 charon_rules=$(cx ip rule | grep -c 52520 || true)
-cx ip route show table 52520 2>/dev/null | sed 's/^/    table 52520: /' || true
+table=$(cx ip route show table 52520 2>/dev/null || true)
+[ -n "$table" ] && sed 's/^/    table 52520: /' <<<"$table"
 [ "$charon_rules" -le 1 ] && pass "charon's table (52520) is looked up after main, if at all" || fail "ip rule: $(cx ip rule)"
+if [ "${SWAN:-}" = 6 ]; then
+  # RiftRoute's patch: kernel-libipsec installs no route at all.
+  [ -z "$table" ] && pass "the patched charon-cmd installed no route anywhere" || fail "routes despite the patch: $table"
+fi
 cx cmp -s /etc/resolv.conf /tmp/resolv.before && pass "DNS untouched (the profile's DNS ignored)" || fail "resolv.conf changed"
 # strongSwan 6 takes the key as PEM, 5.x (Debian's) as a PKCS#12.
 keyfile=$(cx sh -c 'ls /var/lib/riftroute/tunnels/office.key.pem /var/lib/riftroute/tunnels/office.p12 2>/dev/null | head -1')

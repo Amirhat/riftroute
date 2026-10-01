@@ -6,7 +6,7 @@ in `go.mod`.
 ## openvpn (macOS)
 
 On macOS, RiftRoute also ships a separate program: `openvpn`, which the daemon
-runs (as root) for [tunnels](README.md#tunnels--an-openvpn-connection-next-to-your-main-vpn).
+runs (as root) for [tunnels](README.md#tunnels--an-openvpn-wireguard-or-ikev2-connection-next-to-your-main-vpn).
 It is not linked into RiftRoute; RiftRoute starts it as its own process.
 
 It is built by [`scripts/build-openvpn.sh`](scripts/build-openvpn.sh) from

@@ -4,6 +4,32 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **IKEv2 tunnels from a configuration profile.** Import a `.mobileconfig`
+  (signed or not) — the file an iPhone or Mac installs for an IKEv2 VPN — on
+  the Tunnels page or with `riftroute tunnel add <name> <profile.mobileconfig>`.
+  It carries the server, the identities, the encryption settings and the
+  login certificate; only the networks you list go through the tunnel (the
+  profile's full tunnel, DNS and on-demand rules are left out), with
+  everything other tunnels have: server pins, routes only while connected,
+  profiles through it, when-down. The card shows when the certificate
+  expires, and warns two weeks ahead. Profiles that log in with a
+  certificate connect; username/password (EAP) and shared-secret ones are
+  saved but refused at connect for now.
+- They run on strongSwan's `charon-cmd`, one per tunnel, followed over its
+  control socket: a dropped connection is noticed and reconnected, a failed
+  one explained (a rejected certificate, unmatched encryption settings, a
+  server identity mismatch, an unreachable server, a missing plugin). On
+  macOS RiftRoute ships its own (strongSwan 6.1, built from pinned source
+  with one patch so charon never adds routes), installed beside the daemon
+  and kept current — and put back by an update check — like openvpn; on
+  Linux it uses the distribution's, and says what to install.
+- `make test-ikev2-linux`: a real IKEv2 connection in Docker against a
+  strongSwan server with a full tunnel, with the distribution's strongSwan
+  and with the one RiftRoute ships (`SWAN=6`); in CI too.
+
 ## [0.5.0] — 2026-09-28
 
 Tunnels: profiles through a tunnel, and what happens while one is down.

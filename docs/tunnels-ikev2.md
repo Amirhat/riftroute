@@ -56,14 +56,26 @@ The alternatives, and why not:
   - `--host`: the server, pinned (via direct) or its name;
   - `--identity` / `--remote-identity`: the profile's identifiers;
   - `--cert` / `--priv`: the login certificate and key; one `--cert` per
-    CA (charon-cmd trusts every certificate it's given);
+    CA (charon-cmd trusts every certificate it's given). A charon-cmd
+    before 6.0 (Debian's and Ubuntu's 5.9) has no `--priv` — only `--rsa`,
+    for RSA keys alone — so it gets `--p12`: a PKCS#12 with a fresh random
+    password, which it asks for with `getpass`. With no terminal (charon-cmd
+    runs in a session of its own, so even a dev daemon's isn't its) that
+    reads stdin, where the daemon writes it. (5.9 doesn't try an empty
+    password first.)
   - the profile's proposals;
   - `--remote-ts 0.0.0.0/0`, plus `::/0` when the tunnel routes IPv6 —
     which is also what decides the virtual IPs it asks for.
 - Its own `strongswan.conf` (`STRONGSWAN_CONF`), in the tunnel's run
   directory (0700), so nothing from a system strongSwan applies:
-  - exactly the plugins it needs (`load`), the ones it can't run without
-    marked critical;
+  - exactly the plugins it needs (`load`). Only kernel-libipsec,
+    socket-default and vici are marked critical: a critical plugin needs
+    every feature it has, and pem's DSA or PGP keys, or kernel-netlink's
+    IPsec (kernel-libipsec's instead), would fail the session. A missing
+    essential one is named from the log instead;
+  - its log on stderr (the tunnel's log), with the library one level
+    deeper, where a missing plugin is named — and not to syslog, where the
+    default loggers go;
   - `port = 0` / `port_nat_t = 0`: random IKE ports, no clash with
     anything else on 500/4500 (charon-cmd then talks to the server's
     4500 from the start);
@@ -93,10 +105,12 @@ The alternatives, and why not:
 - charon-cmd exits when its first attempt fails (it tries once), but not
   when a connection it made later drops (dead peer, the server deleting
   it): the session restarts it after 5 s without one.
-- Keys: the certificate, key and CAs are written as PEM files (0600) into
-  the run directory for the attempt and removed when it ends (and reaped
-  at startup after a crash) — as openvpn's rendered config carries its
-  inline keys.
+- Keys: the certificate, key and CAs are written as PEM files (or the
+  PKCS#12) (0600) into the run directory for the attempt and removed when
+  it ends (and reaped at startup after a crash) — as openvpn's rendered
+  config carries its inline keys. On Linux a daemon that dies takes
+  charon-cmd with it (the parent-death signal), which deletes the
+  connection with the server.
 - charon-cmd sets its own timers (DPD 30 s, rekey 10 h, MOBIKE on); the
   profile's aren't applied.
 
@@ -197,8 +211,11 @@ protocols.
    - charon-cmd supervision and VICI (done, with a fake for tests and
      `-provider fake`);
    - the Linux engine: detection and install help (done);
-   - a Linux CI test against a strongSwan responder in a network
-     namespace (the `netns` job);
+   - a real connection on Linux, in Docker (`test/ikev2-linux`, `make
+     test-ikev2-linux`, a CI job): the daemon with Debian's charon-cmd
+     (5.9), and with the 6.1 RiftRoute builds for macOS (`SWAN=6`, from the
+     same source and patch), against a strongSwan server with a full
+     tunnel, a virtual-IP pool and ECDSA certificates (done);
    - EAP and PSK profiles (later).
 4. **The app and release:**
    - import `.mobileconfig` on the Tunnels page;
