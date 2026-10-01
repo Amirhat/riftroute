@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { ChangeProgress, SHOW_AFTER_MS } from './ChangeProgress'
 import { Modal } from './Modal'
+import { focusOrDefer } from '../lib/focus'
 import type { ApplyProgress } from '../types'
 
 // The Go side's rr:apply-progress events, fired by hand.
@@ -100,6 +101,36 @@ describe('ChangeProgress', () => {
     save.blur() // the browser's focus fixup
     emit({ id: 'c1', step: 'finished' })
     expect(save).toHaveFocus()
+    root.remove()
+    vi.restoreAllMocks()
+  })
+
+  it("doesn't hand focus to something whose focus failed before the panel, for another reason", () => {
+    const root = inertRoot()
+    const { rerender } = render(
+      <>
+        <button disabled>Old</button>
+        <button>Go</button>
+        <ChangeProgress />
+      </>,
+      { container: root },
+    )
+    // A dialog closing onto a button disabled at that moment (no panel up).
+    focusOrDefer(screen.getByRole('button', { name: 'Old' }))
+    rerender(
+      <>
+        <button>Old</button>
+        <button>Go</button>
+        <ChangeProgress />
+      </>,
+    )
+    const go = screen.getByRole('button', { name: 'Go' })
+    go.focus()
+    emit({ id: 'c1', step: 'started' })
+    pass(SHOW_AFTER_MS + 50)
+    go.blur()
+    emit({ id: 'c1', step: 'finished' })
+    expect(go).toHaveFocus()
     root.remove()
     vi.restoreAllMocks()
   })

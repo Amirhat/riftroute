@@ -73,6 +73,7 @@ export function ChangeProgress() {
     const root = document.getElementById('root')
     if (!shown || !root) return
     const had = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    takeDeferredFocus() // only what's asked for while the panel shows
     root.inert = true
     return () => {
       root.inert = false
