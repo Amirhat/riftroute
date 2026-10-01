@@ -67,11 +67,14 @@ statically, with only the plugins it needs, from:
 strongSwan's tarball is the one whose GPG signature verifies with the
 strongSwan release key `948F158A4E76A27BF3D07532DF42C170B34DBA77`.
 
-**One change** to strongSwan: [`packaging/strongswan/kernel-libipsec-install-routes.patch`](packaging/strongswan/kernel-libipsec-install-routes.patch)
-makes its userspace IPsec backend honour `install_routes = no`, as the
-kernel backends do, so charon never adds routes (RiftRoute routes the
-networks it sends into a tunnel itself). The patch ships with the program,
-in `licenses/charon-cmd/strongswan/`.
+**Two changes** to strongSwan, in [`packaging/strongswan/`](packaging/strongswan/):
+`kernel-libipsec-install-routes.patch` makes its userspace IPsec backend
+honour `install_routes = no`, as the kernel backends do, so charon never adds
+routes (RiftRoute routes the networks it sends into a tunnel itself);
+`charon-cmd-send-cert-always.patch` adds a setting that makes `charon-cmd`
+send its certificate whether or not the server asks for it, as Apple's
+client does. The patches ship with the program, in
+`licenses/charon-cmd/strongswan/`.
 
 Where it ships, with its licenses beside it: the macOS release tarballs
 (`charon-cmd`, licenses in `licenses/charon-cmd/`); the app

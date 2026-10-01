@@ -204,6 +204,10 @@ charon-cmd {
     port_nat_t = 0
     install_routes = no
     install_virtual_ip = yes
+    # Send our certificate whether or not the server asks for it, as Apple's
+    # client does: some servers never ask, and wait for it (RiftRoute's
+    # charon-cmd, which does so by default; others ignore the setting).
+    send_cert_always = yes
 %s    # The tunnel's log (the daemon reads stderr), instead of the default
     # loggers, which add syslog. The library's messages one level deeper:
     # that's where a plugin the system doesn't have is named.

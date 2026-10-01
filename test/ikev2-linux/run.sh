@@ -60,7 +60,13 @@ docker network connect --ip 10.78.2.254 rr-ike-wan rr-ike-router
 echo "== strongSwan server"
 docker run -d --name rr-ike-server --network rr-ike-wan --ip 10.78.2.20 --cap-add NET_ADMIN \
   $IMG sleep infinity >/dev/null
-sx sh -euc '
+# The server doesn't ask for the client's certificate (CERTREQ) with SWAN=6,
+# like some real ones: RiftRoute's charon-cmd sends it anyway
+# (send_cert_always). Debian's would wait to be asked, so its server asks.
+certreq=yes
+[ "${SWAN:-}" = 6 ] && certreq=no
+certreq=${SERVER_CERTREQ:-$certreq} # SERVER_CERTREQ=no shows an unpatched client failing
+docker exec -e CERTREQ="$certreq" rr-ike-server sh -euc '
   ip route replace default via 10.78.2.254
   ip link add infra0 type dummy && ip addr add 10.99.9.1/24 dev infra0 && ip link set infra0 up
   mkdir -p /pki && cd /pki
@@ -84,6 +90,7 @@ connections {
   rw {
     local_addrs = 10.78.2.20
     pools = rw4
+    send_certreq = CERTREQ
     proposals = aes256gcm16-prfsha256-ecp384
     local {
       auth = pubkey
@@ -108,6 +115,7 @@ pools {
   }
 }
 EOF
+  sed -i "s/CERTREQ/$CERTREQ/" /etc/swanctl/conf.d/rw.conf
   /usr/lib/ipsec/charon >/var/log/charon.log 2>&1 &
   for i in $(seq 1 50); do [ -S /var/run/charon.vici ] && break; sleep 0.1; done
   swanctl --load-all >/var/log/swanctl.log 2>&1

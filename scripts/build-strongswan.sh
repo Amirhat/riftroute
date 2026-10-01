@@ -13,10 +13,12 @@
 # (kernel-pfroute), the VICI control socket, X.509/PKCS#1/PKCS#8/PEM keys,
 # and EAP-MSCHAPv2 (with its own MD4/DES, which OpenSSL 3 keeps in its legacy
 # provider). No DNS (osx-attr), no updown scripts, no revocation fetching.
-# One change to strongSwan (packaging/strongswan/*.patch): kernel-libipsec
+# Two changes to strongSwan (packaging/strongswan/*.patch): kernel-libipsec
 # honours install_routes = no, as the kernel backends do — RiftRoute routes
 # the networks it sends into a tunnel itself, and charon's own routes for a
-# 0.0.0.0/0 traffic selector would take every connection instead.
+# 0.0.0.0/0 traffic selector would take every connection instead; and
+# charon-cmd sends its certificate unasked (send_cert_always, on by default),
+# as Apple's client does — some servers never ask for it, and wait.
 # Plus <outdir>/licenses/. "universal" builds (or reuses) both architectures
 # and joins them with lipo, for the app bundle; the release tarballs carry
 # the thin ones.

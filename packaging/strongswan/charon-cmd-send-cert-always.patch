@@ -1,0 +1,16 @@
+--- a/src/charon-cmd/cmd/cmd_connection.c
++++ b/src/charon-cmd/cmd/cmd_connection.c
+@@ -162,7 +162,12 @@
+ 		.childless = this->childless,
+ 	};
+ 	peer_cfg_create_t peer = {
+-		.cert_policy = CERT_SEND_IF_ASKED,
++		/* RiftRoute: send our certificate whether or not the server asked
++		 * for one, as Apple's client does (some servers never ask, and wait
++		 * for it); send_cert_always = no restores asking first */
++		.cert_policy = lib->settings->get_bool(lib->settings,
++							"%s.send_cert_always", TRUE, lib->ns) ?
++							CERT_ALWAYS_SEND : CERT_SEND_IF_ASKED,
+ 		.unique = UNIQUE_REPLACE,
+ 		.keyingtries = 1,
+ 		.rekey_time = 36000, /* 10h */
