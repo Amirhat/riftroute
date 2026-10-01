@@ -123,6 +123,26 @@ export namespace config {
 
 export namespace domain {
 	
+	export class ApplyTiming {
+	    total_ms: number;
+	    wait_ms: number;
+	    build_ms: number;
+	    check_ms: number;
+	    exec_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ApplyTiming(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.total_ms = source["total_ms"];
+	        this.wait_ms = source["wait_ms"];
+	        this.build_ms = source["build_ms"];
+	        this.check_ms = source["check_ms"];
+	        this.exec_ms = source["exec_ms"];
+	    }
+	}
 	export class ManagedRule {
 	    priority: number;
 	    selector: string;
@@ -306,6 +326,7 @@ export namespace domain {
 	    result: string;
 	    rollback?: boolean;
 	    reason?: string;
+	    timing?: ApplyTiming;
 	
 	    static createFrom(source: any = {}) {
 	        return new AuditEvent(source);
@@ -322,6 +343,7 @@ export namespace domain {
 	        this.result = source["result"];
 	        this.rollback = source["rollback"];
 	        this.reason = source["reason"];
+	        this.timing = this.convertValues(source["timing"], ApplyTiming);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

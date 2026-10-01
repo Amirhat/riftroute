@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/progress"
 	"github.com/Amirhat/riftroute/internal/provider"
 )
 
@@ -29,12 +30,14 @@ func NewExecutor(p provider.RouteProvider) *Executor { return &Executor{prov: p}
 func (e *Executor) Apply(ctx context.Context, plan domain.Plan) error {
 	ctx = provider.WithTableCache(context.WithoutCancel(ctx))
 	applied := make([]domain.PlanOp, 0, len(plan.Ops))
+	count := progress.Count(ctx, domain.StepApplying, len(plan.Ops))
 	for _, op := range plan.Ops {
 		if err := e.do(ctx, op); err != nil {
 			e.rollback(ctx, applied)
 			return fmt.Errorf("op %q failed (rolled back %d prior op(s)): %w", op.Human, len(applied), err)
 		}
 		applied = append(applied, op)
+		count.Add()
 	}
 	return nil
 }

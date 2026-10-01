@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+
+	"github.com/Amirhat/riftroute/internal/progress"
 )
 
 var errStreamingUnsupported = errors.New("response writer does not support streaming")
@@ -82,6 +84,10 @@ func (s *Server) requireWrite(next http.HandlerFunc) http.HandlerFunc {
 		if pi.uid != 0 && pi.uid != s.allowUID {
 			writeErr(w, http.StatusForbidden, fmt.Errorf("uid %d is not authorized to mutate routing", pi.uid))
 			return
+		}
+		if id := r.Header.Get(progress.Header); progress.ValidID(id) {
+			// The client shows this change's steps as they happen.
+			r = r.WithContext(progress.With(r.Context(), id, s.emitProgress))
 		}
 		next(w, r)
 	}

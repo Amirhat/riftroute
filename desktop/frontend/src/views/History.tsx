@@ -6,7 +6,7 @@ import { Card, CardHeader, Badge, Skeleton } from '../components/ui'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { CommitConfirm } from '../components/CommitConfirm'
 import { friendly } from '../lib/format'
-import type { ApplyResult, AuditEvent, Snapshot } from '../types'
+import type { ApplyResult, ApplyTiming, AuditEvent, Snapshot } from '../types'
 
 const CONFIRM_SECONDS = 15
 
@@ -161,6 +161,7 @@ function AuditRow({ ev }: { ev: AuditEvent }) {
         </div>
       </div>
       {ev.reason && <div className="mt-1 text-xs text-muted">{ev.reason}</div>}
+      {ev.timing && <TimingLine t={ev.timing} />}
       {ev.plan && ev.plan.ops.length > 0 && (
         <div className="ltr mt-2 space-y-0.5 rounded-md bg-base p-2 font-mono text-[11px] text-muted">
           {ev.plan.ops.slice(0, 6).map((op, i) => (
@@ -168,6 +169,39 @@ function AuditRow({ ev }: { ev: AuditEvent }) {
           ))}
           {ev.plan.ops.length > 6 && <div>… {ev.plan.ops.length - 6} more</div>}
         </div>
+      )}
+    </div>
+  )
+}
+
+// seconds reads a duration for people: 0.4s, 4.6s, 12s.
+function seconds(ms: number): string {
+  return ms < 10_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms / 1000)}s`
+}
+
+// TimingLine says how long a change took, and where the time went when it
+// was slow enough to ask.
+function TimingLine({ t }: { t: ApplyTiming }) {
+  const parts: [string, number][] = [
+    ['waiting for another change', t.wait_ms],
+    ['working out the routes', t.build_ms],
+    ['checking', t.check_ms],
+    ['changing routes', t.exec_ms],
+  ]
+  const shown = t.total_ms >= 1000 ? parts.filter(([, ms]) => ms >= 100) : []
+  return (
+    <div className="mt-1 text-xs text-muted">
+      took <span className="ltr tabular-nums">{seconds(t.total_ms)}</span>
+      {shown.length > 0 && (
+        <span>
+          {' — '}
+          {shown.map(([what, ms], i) => (
+            <span key={what}>
+              {i > 0 && ', '}
+              {what} <span className="ltr tabular-nums">{seconds(ms)}</span>
+            </span>
+          ))}
+        </span>
       )}
     </div>
   )

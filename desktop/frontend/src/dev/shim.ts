@@ -19,10 +19,13 @@ class ApiError extends Error {
   }
 }
 
-async function req(method: string, path: string, body?: unknown, raw?: string): Promise<any> {
+async function req(method: string, path: string, body?: unknown, raw?: string, progress?: string): Promise<any> {
+  const headers: Record<string, string> = {}
+  if (body !== undefined || raw !== undefined) headers['Content-Type'] = 'application/json'
+  if (progress) headers['X-RR-Progress'] = progress
   const res = await fetch('/rr-api' + path, {
     method,
-    headers: body !== undefined || raw !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+    headers,
     body: raw !== undefined ? raw : body !== undefined ? JSON.stringify(body) : undefined,
   })
   const text = await res.text()
@@ -53,6 +56,47 @@ async function issuesAreResults(p: Promise<any>): Promise<any> {
   }
 }
 
+// Runtime events, as desktop/app.go re-emits them from the daemon's event
+// stream: rr:state, rr:connection, and rr:apply-progress for this page's
+// own changes (change) — so the progress panel works in dev mode too.
+type Listener = (...data: unknown[]) => void
+const listeners = new Map<string, Set<Listener>>()
+const emit = (name: string, data: unknown) => listeners.get(name)?.forEach((cb) => cb(data))
+const ownChanges = new Set<string>()
+let changeSeq = 0
+
+// change mirrors changeCall: a change tagged with a fresh progress id,
+// between a "started" and a "finished".
+async function change<T>(run: (id: string) => Promise<T>, preview = false): Promise<T> {
+  const id = `dev-${++changeSeq}`
+  ownChanges.add(id)
+  emit('rr:apply-progress', { id, step: 'started', preview })
+  try {
+    return await run(id)
+  } finally {
+    ownChanges.delete(id)
+    emit('rr:apply-progress', { id, step: 'finished' })
+  }
+}
+
+function streamEvents() {
+  const es = new EventSource('/rr-api/events')
+  es.onopen = () => emit('rr:connection', { reachable: true })
+  es.onerror = () => emit('rr:connection', { reachable: false })
+  es.onmessage = (m) => {
+    let ev: { type?: string; data?: unknown }
+    try {
+      ev = JSON.parse(m.data)
+    } catch {
+      return
+    }
+    if (ev.type === 'state') emit('rr:state', ev.data)
+    else if (ev.type === 'apply_progress') {
+      if (ownChanges.has((ev.data as { id?: string })?.id ?? '')) emit('rr:apply-progress', ev.data)
+    } else emit('rr:event', ev)
+  }
+}
+
 const notInBrowser = (what: string) => () =>
   Promise.reject(new Error(`${what} needs the desktop app (browser dev mode)`))
 
@@ -65,7 +109,10 @@ const App = {
   GetProfiles: () => req('GET', '/profiles').then((b) => b.profiles ?? []),
   GetAudit: () => req('GET', '/audit').then((b) => b.events ?? []),
   GetSnapshots: () => req('GET', '/snapshots').then((b) => b.snapshots ?? []),
-  RestoreSnapshot: (id: string) => issuesAreResults(req('POST', `/snapshots/${encodeURIComponent(id)}/restore`)),
+  RestoreSnapshot: (snap: string) =>
+    change((id) =>
+      issuesAreResults(req('POST', `/snapshots/${encodeURIComponent(snap)}/restore`, undefined, undefined, id)),
+    ),
   GetDoctor: () => req('GET', '/doctor'),
   GetLeaks: () => req('GET', '/leaks').then((b) => b.leaks ?? []),
   GetFlows: () => req('GET', '/flows').then((b) => b.flows ?? []),
@@ -80,20 +127,29 @@ const App = {
   SetKillSwitch: (e: boolean) => req('POST', '/killswitch', { enabled: e }).then((b) => b.kill_switch),
   SetAutoApply: (e: boolean) => req('PUT', '/autoapply', { enabled: e }).then((b) => b.auto_apply),
   PlanPreview: () => req('POST', '/plan', {}).then((b) => b.plan),
-  Apply: (yes: boolean, t: number) => req('POST', '/apply', { dry_run: false, yes, confirm_timeout_sec: t }),
+  Apply: (yes: boolean, t: number) =>
+    change((id) => req('POST', '/apply', { dry_run: false, yes, confirm_timeout_sec: t }, undefined, id)),
   Confirm: (tx: string) => req('POST', '/confirm', { tx_id: tx }).then((b) => b.result),
   Rollback: (tx: string) => req('POST', '/rollback', { tx_id: tx }).then((b) => b.result),
   PanicFlush: () => req('POST', '/panic', {}).then(() => undefined),
   SetProfileEnabled: (name: string, enable: boolean) =>
     req('POST', `/profiles/${encodeURIComponent(name)}/${enable ? 'enable' : 'disable'}?apply=false`, {}),
   SaveProfile: (p: unknown, dry: boolean) =>
-    issuesAreResults(req('POST', `/profiles${dry ? '?dry_run=1' : ''}`, p)),
-  DeleteProfile: (n: string) => issuesAreResults(req('DELETE', `/profiles/${encodeURIComponent(n)}`)),
+    change((id) => issuesAreResults(req('POST', `/profiles${dry ? '?dry_run=1' : ''}`, p, undefined, id)), dry),
+  DeleteProfile: (n: string) =>
+    change((id) => issuesAreResults(req('DELETE', `/profiles/${encodeURIComponent(n)}`, undefined, undefined, id))),
   ApplyConfigContent: (content: string, format: string, dry: boolean, yes: boolean) =>
-    issuesAreResults(req('POST', `/config?format=${format}&dry_run=${dry ? 1 : 0}&yes=${yes ? 1 : 0}`, undefined, content)),
+    change((id) =>
+      issuesAreResults(
+        req('POST', `/config?format=${format}&dry_run=${dry ? 1 : 0}&yes=${yes ? 1 : 0}`, undefined, content, id),
+      ),
+      dry,
+    ),
   RouteOp: (action: string, route: unknown, newRoute: unknown) =>
-    issuesAreResults(
-      req('POST', '/routes/ops', { action, route, new_route: action === 'replace' ? newRoute : undefined }),
+    change((id) =>
+      issuesAreResults(
+        req('POST', '/routes/ops', { action, route, new_route: action === 'replace' ? newRoute : undefined }, undefined, id),
+      ),
     ),
   Reachable: () =>
     req('GET', '/healthz')
@@ -161,6 +217,17 @@ const App = {
 }
 
 ;(window as unknown as Record<string, unknown>).go = { main: { App } }
+;(window as unknown as Record<string, unknown>).runtime = {
+  EventsOn(name: string, cb: Listener) {
+    if (!listeners.has(name)) listeners.set(name, new Set())
+    listeners.get(name)!.add(cb)
+    return () => listeners.get(name)?.delete(cb)
+  },
+}
+streamEvents()
+// Dev-only: fire a runtime event from the console (e.g. to look at the change
+// progress panel through a slow change without making one).
+;(window as unknown as Record<string, unknown>).__rrEmit = emit
 console.info('[riftroute] browser dev shim active — bindings proxied via /rr-api')
 
 export {}

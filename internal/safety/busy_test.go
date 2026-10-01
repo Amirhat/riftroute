@@ -136,3 +136,20 @@ func TestLendQuiesceLetsOnlyTunnelAppliesThrough(t *testing.T) {
 		}
 	}
 }
+
+// A caller that has already gone gets no change made, even when the lock is
+// free.
+func TestCanceledCallerGetsNoChange(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	build := func(context.Context, []domain.ManagedRoute, *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
+		return desired("9.9.9.0/24"), nil, nil
+	}
+	if res, err := h.p.ApplyBuilt(ctx, build, opts(false)); err == nil || res.Status != domain.TxFailed {
+		t.Fatalf("applied for a gone caller: %s %v", res.Status, err)
+	}
+	if h.prov.CountManaged() != 0 {
+		t.Fatalf("%d routes made", h.prov.CountManaged())
+	}
+}

@@ -2,7 +2,7 @@
 // side holds the SSE stream and re-emits (spec §3.5). We read them off
 // window.runtime so the app degrades gracefully when run outside the webview
 // (e.g. a plain browser during UI development) instead of throwing.
-import type { AppUpdateStatus, State } from '../types'
+import type { AppUpdateStatus, ApplyProgress, State } from '../types'
 
 type Unsub = () => void
 const noop: Unsub = () => {}
@@ -34,4 +34,9 @@ export function onMenu(cb: (action: string) => void): Unsub {
 /** Subscribe to the app's own update status as it changes. */
 export function onAppUpdate(cb: (s: AppUpdateStatus) => void): Unsub {
   return runtime()?.EventsOn('rr:app-update', (s) => cb(s as AppUpdateStatus)) ?? noop
+}
+
+/** Subscribe to the steps of this app's changes as they happen. */
+export function onApplyProgress(cb: (p: ApplyProgress) => void): Unsub {
+  return runtime()?.EventsOn('rr:apply-progress', (p) => cb(p as ApplyProgress)) ?? noop
 }

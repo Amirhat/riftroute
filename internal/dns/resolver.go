@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,8 +50,12 @@ type cacheEntry struct {
 }
 
 // failTTL is how long a failed lookup stands. The re-resolver (Refresh)
-// doesn't wait for it.
-const failTTL = 30 * time.Second
+// doesn't wait for it: a name that can't resolve now costs one timeout per
+// failTTL at most, not one per change.
+const failTTL = 2 * time.Minute
+
+// parallel caps the lookups a Cache runs at once (LookupAll, Refresh).
+const parallel = 8
 
 // NewCache builds a TTL cache over a resolver.
 func NewCache(r Resolver, ttl time.Duration) *Cache {
@@ -92,25 +97,65 @@ func (c *Cache) Lookup(ctx context.Context, host string) []netip.Addr {
 	return addrs
 }
 
-// Refresh re-resolves every given host and reports whether any answer changed
-// (used by the background re-resolver to decide whether to reconcile).
+// LookupAll is Lookup for each of hosts, a few at a time: a change waits for
+// its slowest name, not for the sum of them. done is called as each finishes
+// (from any goroutine; nil for none).
+func (c *Cache) LookupAll(ctx context.Context, hosts []string, done func()) map[string][]netip.Addr {
+	out := make(map[string][]netip.Addr, len(hosts))
+	var mu sync.Mutex
+	each(hosts, func(h string) {
+		addrs := c.Lookup(ctx, h)
+		mu.Lock()
+		out[h] = addrs
+		mu.Unlock()
+		if done != nil {
+			done()
+		}
+	})
+	return out
+}
+
+// Refresh re-resolves every given host, a few at a time, and reports whether
+// any answer changed (used by the background re-resolver to decide whether
+// to reconcile).
 func (c *Cache) Refresh(ctx context.Context, hosts []string) bool {
-	changed := false
-	for _, h := range hosts {
+	var changed atomic.Bool
+	each(hosts, func(h string) {
 		addrs, err := c.resolver.Resolve(ctx, h)
 		if err != nil {
-			continue
+			return
 		}
 		sortAddrs(addrs)
 		c.mu.Lock()
 		prev := c.entries[h]
 		if !sameAddrs(prev.addrs, addrs) {
-			changed = true
+			changed.Store(true)
 		}
 		c.entries[h] = cacheEntry{addrs: addrs, at: c.now()}
 		c.mu.Unlock()
+	})
+	return changed.Load()
+}
+
+// each runs fn for every distinct host, at most parallel at a time, and
+// returns when all are done.
+func each(hosts []string, fn func(string)) {
+	sem := make(chan struct{}, parallel)
+	var wg sync.WaitGroup
+	seen := map[string]bool{}
+	for _, h := range hosts {
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			fn(h)
+		}()
 	}
-	return changed
+	wg.Wait()
 }
 
 func sortAddrs(a []netip.Addr) {

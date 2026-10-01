@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { focusOrDefer } from '../lib/focus'
 
 // What Tab can reach inside a dialog.
 const FOCUSABLE = [
@@ -68,7 +69,7 @@ export function Modal({
     open.push(el)
     if (!el.contains(document.activeElement)) {
       const first = el.querySelector<HTMLElement>('[data-autofocus]') ?? focusables(el)[0] ?? el
-      first.focus()
+      focusOrDefer(first) // after a change's progress panel, if it's up (ChangeProgress)
     }
     function onKey(e: KeyboardEvent) {
       if (!el || open[open.length - 1] !== el || e.isComposing) return
@@ -102,7 +103,7 @@ export function Modal({
       // or the opener is gone (a card's Delete button, with its card).
       const active = document.activeElement
       if (opener?.isConnected && (!active || active === document.body || el.contains(active))) {
-        opener.focus()
+        focusOrDefer(opener)
       }
     }
     // Once per open: the close handler is read through its ref.
