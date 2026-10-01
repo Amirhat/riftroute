@@ -4,6 +4,19 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **An update installs while a wildcard rule keeps learning addresses.** A
+  downloaded update waits for 10 minutes without a change before it restarts
+  the daemon, and auto-apply's own reconciles counted as changes — a wildcard
+  rule learning a busy name's addresses every minute or two, a network
+  change. With such a rule the wait never ended: the daemon stayed on the old
+  release ("installing at a quiet moment"), "Install now" included. Those
+  reconciles no longer restart the 10 minutes; only their ~30 s guard window
+  holds an update off. A change you make, and a tunnel you connect or
+  disconnect, still do.
+
 ## [0.6.1] — 2026-10-01
 
 IKEv2 tunnels connect to servers that don't ask for the client's certificate.

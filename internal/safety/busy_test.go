@@ -87,6 +87,60 @@ func TestTryQuiesceHoldsOffNewChanges(t *testing.T) {
 	}
 }
 
+// A background apply (auto-apply's reconcile) holds TryQuiesce off while it's
+// on probation, but doesn't restart the quiet window: a staged update isn't
+// put off for as long as a wildcard rule keeps learning addresses. A change
+// someone made still does.
+func TestBackgroundApplyDoesNotRestartTheQuietWindow(t *testing.T) {
+	h := newHarness(t)
+	settle := func(res safety.Result, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.clock.Advance(30 * time.Second) // its guard window
+		if result, _ := h.p.Wait(res.TxID); result != domain.TxCommitted {
+			t.Fatalf("the change settled as %s", result)
+		}
+	}
+	quiet := func() bool {
+		t.Helper()
+		release, ok, _ := h.p.TryQuiesce(10 * time.Minute)
+		if ok {
+			release()
+		}
+		return ok
+	}
+	background := opts(false)
+	background.Background = true
+
+	res, err := h.p.Apply(context.Background(), desired("1.1.1.0/24"), nil, background)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, why := h.p.TryQuiesce(10 * time.Minute); ok || why == "" {
+		t.Fatal("quiesced while a background change is on probation")
+	}
+	settle(res, nil)
+	if !quiet() {
+		t.Fatal("a settled background change kept it from being quiet")
+	}
+
+	settle(h.p.Apply(context.Background(), desired("1.1.1.0/24", "2.2.2.0/24"), nil, opts(false)))
+	if quiet() {
+		t.Fatal("quiet right after a change someone made")
+	}
+	h.clock.Advance(8 * time.Minute)
+	settle(h.p.Apply(context.Background(), desired("1.1.1.0/24", "2.2.2.0/24", "3.3.3.0/24"), nil, background))
+	if quiet() {
+		t.Fatal("a background change ended the wait after someone's change")
+	}
+	h.clock.Advance(2 * time.Minute)
+	if !quiet() {
+		t.Fatal("not quiet 10 minutes after someone's change: the background one restarted the wait")
+	}
+}
+
 // A restarting updater keeps the apply lock until the process exits, and
 // lends it to the tunnels' last applies (LendQuiesce): a Lendable apply goes
 // through then — not before — while any other change still waits. Released,
