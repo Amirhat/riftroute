@@ -49,14 +49,12 @@ func (t *timing) summary() *domain.ApplyTiming {
 	locked := at(t.locked, t.start)
 	built := at(t.built, locked)
 	vetted := at(t.vetted, built)
-	ms := func(a, b time.Time) int64 { return b.Sub(a).Milliseconds() }
-	return &domain.ApplyTiming{
-		TotalMS: ms(t.start, t.done),
-		WaitMS:  ms(t.start, locked),
-		BuildMS: ms(locked, built),
-		CheckMS: ms(built, vetted),
-		ExecMS:  ms(vetted, t.done),
-	}
+	// Each part is the difference of whole milliseconds since the start,
+	// so the parts always add up to the total (rounding each part on its
+	// own can lose a millisecond between them).
+	since := func(x time.Time) int64 { return x.Sub(t.start).Milliseconds() }
+	l, b, v, d := since(locked), since(built), since(vetted), since(t.done)
+	return &domain.ApplyTiming{TotalMS: d, WaitMS: l, BuildMS: b - l, CheckMS: v - b, ExecMS: d - v}
 }
 
 // slowApply is how long a change may take before the log says so, with its
