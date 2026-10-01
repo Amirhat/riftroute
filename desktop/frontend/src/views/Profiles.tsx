@@ -9,6 +9,7 @@ import { ProfileBuilder } from '../components/ProfileBuilder'
 import { ListsManager } from '../components/ListsManager'
 import { ConfirmModal } from '../components/ConfirmModal'
 import type { ApplyResult, Plan, Profile } from '../types'
+import { tunnelTypeName } from '../lib/tunnels'
 
 const CONFIRM_SECONDS = 15
 const DAEMON_BACKSTOP_SEC = 60
@@ -208,7 +209,7 @@ export function Profiles() {
                 {p.mode === 'tunnel' ? (
                   <Badge tone="accent">
                     → tunnel {p.tunnel}
-                    {tunnelOf(p)?.type ? ` · ${tunnelOf(p)?.type === 'wireguard' ? 'WireGuard' : 'OpenVPN'}` : ''}
+                    {tunnelOf(p)?.type ? ` · ${tunnelTypeName(tunnelOf(p)!.type)}` : ''}
                   </Badge>
                 ) : (
                   <Badge tone={p.mode === 'include' ? 'vpn' : 'muted'}>{p.mode}</Badge>

@@ -22,8 +22,8 @@ GOFLAGS := -trimpath
 WAILS   := $(shell go env GOPATH)/bin/wails
 CORE_PKGS := ./internal/... ./cmd/...
 
-.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e test-tunnels-linux vet fmt tidy cross clean run-daemon bindings \
-        dist dist-binaries checksums package-deb package-dmg package-appimage tray openvpn
+.PHONY: all build daemon cli desktop desktop-universal dev test test-e2e test-tunnels-linux test-ikev2-linux vet fmt tidy cross clean run-daemon bindings \
+        dist dist-binaries checksums package-deb package-dmg package-appimage tray openvpn strongswan
 
 all: build
 
@@ -73,6 +73,12 @@ test-e2e:
 test-tunnels-linux:
 	test/tunnels-linux/run.sh
 
+## test-ikev2-linux: real Linux check of IKEv2 tunnels in Docker — the Linux
+## daemon with the distribution's charon-cmd, a router, and a strongSwan
+## server with a full tunnel (needs Docker)
+test-ikev2-linux:
+	test/ikev2-linux/run.sh
+
 vet:
 	go vet $(CORE_PKGS)
 
@@ -106,6 +112,17 @@ openvpn:
 # Homebrew's. REQUIRE_OPENVPN=1 makes a missing one an error.
 OPENVPN_DIR ?= build/openvpn
 
+## strongswan: build the charon-cmd that ships on macOS for IKEv2 (macOS host; scripts/build-strongswan.sh)
+strongswan:
+	scripts/build-strongswan.sh arm64 $(STRONGSWAN_DIR)/arm64
+	scripts/build-strongswan.sh x86_64 $(STRONGSWAN_DIR)/x86_64
+	scripts/build-strongswan.sh universal $(STRONGSWAN_DIR)/universal
+
+# The same for strongSwan's charon-cmd (IKEv2 tunnels): $(STRONGSWAN_DIR)/
+# <arch>/charon-cmd and licenses/, which go in the tarball as charon-cmd and
+# licenses/charon-cmd/. REQUIRE_STRONGSWAN=1 makes a missing one an error.
+STRONGSWAN_DIR ?= build/strongswan
+
 ## dist-binaries: cross-compile CLI+daemon tarballs for all release targets
 dist-binaries:
 	@mkdir -p dist
@@ -125,6 +142,17 @@ dist-binaries:
 				echo "missing $$ov/openvpn (+ licenses/) — build it with scripts/build-openvpn.sh" >&2; exit 1; \
 			else \
 				echo "  (no $$ov/openvpn: this tarball ships without openvpn; tunnels won't be available on macOS)"; \
+			fi; \
+			ss=$(STRONGSWAN_DIR)/$$( [ $$arch = amd64 ] && echo x86_64 || echo $$arch ); \
+			if [ -f $$ss/charon-cmd ] && [ -d $$ss/licenses ]; then \
+				cp $$ss/charon-cmd $$d/charon-cmd; chmod 755 $$d/charon-cmd; \
+				mkdir -p $$d/licenses; cp -R $$ss/licenses $$d/licenses/charon-cmd; \
+				files="$$files charon-cmd"; case " $$files " in *" licenses "*) ;; *) files="$$files licenses";; esac; \
+				echo "  + charon-cmd from $$ss"; \
+			elif [ -n "$(REQUIRE_STRONGSWAN)" ]; then \
+				echo "missing $$ss/charon-cmd (+ licenses/) — build it with scripts/build-strongswan.sh" >&2; exit 1; \
+			else \
+				echo "  (no $$ss/charon-cmd: this tarball ships without it; IKEv2 tunnels won't be available on macOS)"; \
 			fi; \
 		fi; \
 		tar -C $$d -czf dist/riftroute_$(VERSION)_$${os}_$${arch}.tar.gz $$files; \

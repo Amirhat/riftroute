@@ -1,0 +1,33 @@
+--- a/src/libcharon/plugins/kernel_libipsec/kernel_libipsec_ipsec.c
++++ b/src/libcharon/plugins/kernel_libipsec/kernel_libipsec_ipsec.c
+@@ -56,6 +56,12 @@
+ 	 * Whether the remote TS may equal the IKE peer
+ 	 */
+ 	bool allow_peer_ts;
++
++	/**
++	 * Whether to install routes for policies (RiftRoute routes the networks
++	 * it sends into the tunnel itself)
++	 */
++	bool install_routes;
+ 
+ 	/**
+ 	 * Whether UDP encapsulation is required
+@@ -410,7 +416,7 @@
+ 	host_t *src_ip;
+ 	bool is_virtual;
+ 
+-	if (policy->direction != POLICY_OUT)
++	if (policy->direction != POLICY_OUT || !this->install_routes)
+ 	{
+ 		this->mutex->unlock(this->mutex);
+ 		return TRUE;
+@@ -717,6 +723,8 @@
+ 		.excludes = linked_list_create(),
+ 		.allow_peer_ts = lib->settings->get_bool(lib->settings,
+ 					"%s.plugins.kernel-libipsec.allow_peer_ts", FALSE, lib->ns),
++		.install_routes = lib->settings->get_bool(lib->settings,
++					"%s.install_routes", TRUE, lib->ns),
+ 		.require_encap = !lib->get(lib, "kernel-libipsec-esp-handler"),
+ 	);
+ 

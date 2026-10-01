@@ -4,8 +4,9 @@ name: Release
 # always built; the signed/notarized macOS .dmg and Linux AppImage are built per
 # OS. Code signing + notarization run only when the corresponding secrets exist
 # (MAC_*/AC_*), so forks and unsigned dry-runs still succeed (Gatekeeper warns).
-# The macOS tarballs and the .dmg ship RiftRoute's own openvpn (the openvpn job).
-# It is required: if it fails, nothing is published (a release without it
+# The macOS tarballs and the .dmg ship RiftRoute's own openvpn (the openvpn job)
+# and strongSwan's charon-cmd for IKEv2 tunnels (the strongswan job). Both are
+# required: if either fails, nothing is published (a release without them
 # would leave every new macOS install without tunnels). Never Homebrew's.
 on:
   push:
@@ -83,10 +84,54 @@ jobs:
           path: build/openvpn-sources/
           if-no-files-found: error
 
+  # strongSwan's charon-cmd for macOS IKEv2 tunnels, the same way
+  # (scripts/build-strongswan.sh, with RiftRoute's patch in
+  # packaging/strongswan). Cached by the script's and the patches' hash;
+  # strongswan.yml saves that cache on the default branch.
+  strongswan:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: |
+            build/strongswan
+            build/strongswan-work/sources
+          key: strongswan-${{ runner.os }}-${{ hashFiles('scripts/build-strongswan.sh', 'packaging/strongswan/*.patch') }}
+      - name: Build charon-cmd (arm64, x86_64, universal)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          scripts/build-strongswan.sh arm64 build/strongswan/arm64
+          scripts/build-strongswan.sh x86_64 build/strongswan/x86_64
+          scripts/build-strongswan.sh universal build/strongswan/universal
+      - name: Check it (cached builds too)
+        run: scripts/check-strongswan.sh build/strongswan
+      # GPL-2.0-or-later: the complete corresponding source — strongSwan and
+      # RiftRoute's patch (OpenSSL's tarball, the same one openvpn is built
+      # with, is in openvpn-sources-dist).
+      - name: Collect the sources
+        run: |
+          mkdir -p build/strongswan-sources
+          cp build/strongswan-work/sources/strongswan-*.tar.bz2 packaging/strongswan/*.patch build/strongswan-sources/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strongswan-darwin
+          path: |
+            build/strongswan/arm64
+            build/strongswan/x86_64
+            build/strongswan/universal
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strongswan-sources-dist
+          path: build/strongswan-sources/
+          if-no-files-found: error
+
   # Always-buildable core: cross binaries, checksums, .deb. No secrets needed.
-  # The darwin tarballs carry the openvpn job's binaries.
+  # The darwin tarballs carry the openvpn and strongswan jobs' binaries.
   core:
-    needs: openvpn
+    needs: [openvpn, strongswan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,8 +153,13 @@ jobs:
         with:
           name: openvpn-darwin
           path: build/openvpn
+      - name: Get the macOS charon-cmd
+        uses: actions/download-artifact@v4
+        with:
+          name: strongswan-darwin
+          path: build/strongswan
       - name: Build cross binaries + checksums
-        run: make dist VERSION="${VERSION:-0.0.0}" REQUIRE_OPENVPN=1
+        run: make dist VERSION="${VERSION:-0.0.0}" REQUIRE_OPENVPN=1 REQUIRE_STRONGSWAN=1
       - name: Build .deb (amd64 + arm64)
         run: |
           ARCH=amd64 VERSION="${VERSION:-0.0.0}" packaging/deb/build-deb.sh
@@ -124,9 +174,10 @@ jobs:
   # macOS GUI → signed/notarized .dmg (signing gated on secrets). Secrets are
   # surfaced as job-level env because the `secrets` context is NOT allowed in an
   # `if:` (that made the whole workflow a startup failure); the step gates on env.
-  # The universal openvpn is bundled and signed with the CLI and daemon.
+  # The universal openvpn and charon-cmd are bundled and signed with the CLI
+  # and daemon.
   dmg:
-    needs: openvpn
+    needs: [openvpn, strongswan]
     runs-on: macos-latest
     env:
       MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
@@ -161,11 +212,18 @@ jobs:
         with:
           name: openvpn-darwin
           path: build/openvpn
+      - name: Get the macOS charon-cmd
+        uses: actions/download-artifact@v4
+        with:
+          name: strongswan-darwin
+          path: build/strongswan
       - name: Build GUI + package DMG
         env:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
           OPENVPN_BIN: ${{ github.workspace }}/build/openvpn/universal/openvpn
           REQUIRE_OPENVPN: "1"
+          CHARON_BIN: ${{ github.workspace }}/build/strongswan/universal/charon-cmd
+          REQUIRE_STRONGSWAN: "1"
         run: |
           V="${VERSION#v}"
           make desktop-universal VERSION="$V"
@@ -209,13 +267,14 @@ jobs:
           path: dist/*.AppImage
 
   publish:
-    needs: [openvpn, core, dmg, appimage]
-    # Publish as long as openvpn and the always-buildable core succeeded; a
-    # flaky GUI build (dmg/appimage) then just omits those artifacts rather
-    # than blocking the whole release. download-artifact fetches whatever
-    # succeeded — only the *-dist artifacts (the openvpn binaries reach users
-    # inside the tarballs and the app; its sources are openvpn-sources-dist).
-    if: ${{ always() && needs.openvpn.result == 'success' && needs.core.result == 'success' }}
+    needs: [openvpn, strongswan, core, dmg, appimage]
+    # Publish as long as openvpn, strongswan and the always-buildable core
+    # succeeded; a flaky GUI build (dmg/appimage) then just omits those
+    # artifacts rather than blocking the whole release. download-artifact
+    # fetches whatever succeeded — only the *-dist artifacts (the openvpn and
+    # charon-cmd binaries reach users inside the tarballs and the app; their
+    # sources are openvpn-sources-dist and strongswan-sources-dist).
+    if: ${{ always() && needs.openvpn.result == 'success' && needs.strongswan.result == 'success' && needs.core.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -198,7 +198,7 @@ the first hit. **If you depend on a specific subdomain, add it as its own exact
 guaranteed, immediate coverage. Wildcard subdomain learning is available on
 macOS (scoped resolver files) and Linux (systemd-resolved).
 
-### Tunnels — an OpenVPN or WireGuard connection next to your main VPN
+### Tunnels — an OpenVPN, WireGuard or IKEv2 connection next to your main VPN
 
 Running a second VPN client usually knocks the first one off: an OpenVPN server
 pushes `redirect-gateway` (a pair of `0/1` + `128/1` routes that out-rank the
@@ -238,12 +238,27 @@ You don't need to look this up: until openvpn is usable, the **Tunnels** page
 and `riftroute tunnel list` say so and show what to do on your system, and the
 daemon picks it up as soon as it's there — no restart.
 
+**IKEv2** tunnels come from a configuration profile (`.mobileconfig`, the file
+an iPhone or Mac installs for an IKEv2 VPN), which carries the server, the
+identities, the encryption settings and the certificate that logs in. They
+run on strongSwan's `charon-cmd`, one per tunnel — on macOS the one RiftRoute
+ships (installed beside the daemon like openvpn), on Linux your
+distribution's (Debian/Ubuntu: `sudo apt install --no-install-recommends
+charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins
+strongswan-swanctl`; the Tunnels page says what to install elsewhere). The
+profile's full tunnel, DNS and on-demand rules are left out: only the
+networks you list go through it, as with the others. Profiles that log in
+with a certificate work now; ones that log in with a username and password
+(EAP) or a shared secret are saved but don't connect yet. Design and details:
+[docs/tunnels-ikev2.md](docs/tunnels-ikev2.md).
+
 ```bash
 riftroute tunnel add infra ~/Downloads/office.ovpn \
   --route 192.168.70.0/24 --route 192.168.72.11 --connect
 riftroute tunnel list       # state, interface, server, routes
 riftroute tunnel down infra # disconnect; its routes are removed
 riftroute tunnel log infra  # openvpn's own output — why it won't connect
+riftroute tunnel add office ~/Downloads/office.mobileconfig --route 10.30.0.0/16 --connect
 ```
 
 Or use the **Tunnels** page in the app. How it works:

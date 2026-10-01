@@ -15,6 +15,12 @@
 # builds, without openvpn, and macOS tunnels say what's missing;
 # REQUIRE_OPENVPN=1 (release builds) makes that an error.
 #
+# strongSwan's charon-cmd (IKEv2 tunnels; scripts/build-strongswan.sh
+# universal) is bundled the same way from CHARON_BIN (default
+# build/strongswan/universal/charon-cmd), its licenses/ going to
+# Resources/licenses/charon-cmd; REQUIRE_STRONGSWAN=1 makes a missing one an
+# error.
+#
 # Usage: VERSION=1.2.3 packaging/macos/build-dmg.sh
 # Requires the app already built at desktop/build/bin/RiftRoute.app (make desktop).
 set -euo pipefail
@@ -83,6 +89,35 @@ else
   echo "no openvpn at ${OPENVPN_BIN}: the app ships without it; tunnels won't be available on macOS" >&2
 fi
 
+# The same for charon-cmd (GPL-2.0-or-later, with RiftRoute's patch: the
+# licenses, the patch and SOURCES.txt go wherever it goes).
+CHARON_BIN="${CHARON_BIN:-${ROOT}/build/strongswan/universal/charon-cmd}"
+CHARON_LICENSES="$(dirname "$CHARON_BIN")/licenses"
+rm -f "${BINDIR}/charon-cmd"
+have_charon_licenses() {
+  local l="$1" f
+  for f in SOURCES.txt strongswan/COPYING strongswan/LICENSE openssl/LICENSE.txt; do
+    [ -f "${l}/${f}" ] || return 1
+  done
+  ls "${l}"/strongswan/*.patch >/dev/null 2>&1
+}
+if [ -f "$CHARON_BIN" ] && have_charon_licenses "$CHARON_LICENSES"; then
+  echo "bundling charon-cmd from ${CHARON_BIN}, with ${CHARON_LICENSES}"
+  lipo "$CHARON_BIN" -verify_arch arm64 x86_64 || {
+    echo "${CHARON_BIN} must be universal (arm64 + x86_64)" >&2; exit 1; }
+  cp "$CHARON_BIN" "${BINDIR}/charon-cmd"
+  chmod 755 "${BINDIR}/charon-cmd"
+  mkdir -p "${APP}/Contents/Resources/licenses"
+  cp -R "$CHARON_LICENSES" "${APP}/Contents/Resources/licenses/charon-cmd"
+elif [ -n "${REQUIRE_STRONGSWAN:-}" ]; then
+  echo "missing ${CHARON_BIN} or its licenses (${CHARON_LICENSES}/) — build both with" \
+    "scripts/build-strongswan.sh universal" >&2
+  exit 1
+else
+  echo "no charon-cmd (with its licenses) at ${CHARON_BIN}: the app ships without it; IKEv2 tunnels" \
+    "won't be available on macOS" >&2
+fi
+
 # The bundle says which release it is (Finder's Get Info; Wails' template
 # leaves 1.0.0).
 plutil -replace CFBundleShortVersionString -string "${VERSION}" "${APP}/Contents/Info.plist"
@@ -101,18 +136,27 @@ if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
     codesign --force --options runtime --timestamp --identifier com.riftroute.openvpn \
       --sign "${MAC_SIGN_IDENTITY}" "${BINDIR}/openvpn"
   fi
+  if [ -f "${BINDIR}/charon-cmd" ]; then
+    codesign --force --options runtime --timestamp --identifier com.riftroute.charon-cmd \
+      --sign "${MAC_SIGN_IDENTITY}" "${BINDIR}/charon-cmd"
+  fi
   codesign --force --options runtime --timestamp --deep --sign "${MAC_SIGN_IDENTITY}" "$APP"
 else
   echo "no Developer ID — ad-hoc signing (valid signature so macOS won't call it 'damaged')"
   if [ -f "${BINDIR}/openvpn" ]; then
     codesign --force --identifier com.riftroute.openvpn --sign - "${BINDIR}/openvpn"
   fi
+  if [ -f "${BINDIR}/charon-cmd" ]; then
+    codesign --force --identifier com.riftroute.charon-cmd --sign - "${BINDIR}/charon-cmd"
+  fi
   codesign --force --deep --sign - "$APP"
 fi
-if [ -f "${BINDIR}/openvpn" ]; then
-  codesign --verify --strict --verbose=2 "${BINDIR}/openvpn" || {
-    echo "openvpn signature verification failed" >&2; exit 1; }
-fi
+for h in openvpn charon-cmd; do
+  if [ -f "${BINDIR}/${h}" ]; then
+    codesign --verify --strict --verbose=2 "${BINDIR}/${h}" || {
+      echo "${h} signature verification failed" >&2; exit 1; }
+  fi
+done
 codesign --verify --deep --strict --verbose=2 "$APP" || {
   echo "code signature verification failed" >&2; exit 1; }
 

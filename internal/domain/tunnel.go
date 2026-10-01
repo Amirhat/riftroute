@@ -17,6 +17,11 @@ const TunnelOpenVPN TunnelType = "openvpn"
 // routes, and its DNS and hooks are ignored.
 const TunnelWireGuard TunnelType = "wireguard"
 
+// TunnelIKEv2 is an IKEv2 connection imported from a configuration profile
+// (.mobileconfig), run on strongSwan; the profile's full tunnel, DNS and
+// on-demand rules are ignored.
+const TunnelIKEv2 TunnelType = "ikev2"
+
 // TunnelVia is how a managed tunnel reaches its own server.
 type TunnelVia string
 
@@ -104,6 +109,9 @@ type TunnelStatus struct {
 	// another VPN, to these networks too. (Include rules for destinations
 	// yield to a live tunnel's networks; an app's can't.)
 	Captured []TunnelBlocked `json:"captured,omitempty"`
+	// CertExpires is when the tunnel's login certificate stops working
+	// (IKEv2 profiles that log in with one).
+	CertExpires *time.Time `json:"cert_expires,omitempty"`
 	// Profiles are the tunnel-mode profiles that send their destinations
 	// into it (Profile.Tunnel), enabled or not.
 	Profiles []TunnelProfileRef `json:"profiles,omitempty"`
@@ -154,6 +162,9 @@ type TunnelEngine struct {
 	// unsafe permissions, unsupported OS); empty when Available.
 	Problem string         `json:"problem,omitempty"`
 	Install *TunnelInstall `json:"install,omitempty"`
+	// IKEv2 is the same report for IKEv2 tunnels' strongSwan (charon-cmd),
+	// beside openvpn's; absent from daemons without IKEv2.
+	IKEv2 *TunnelEngine `json:"ikev2,omitempty"`
 }
 
 // TunnelInstall is how to install (or fix) openvpn on this system: on macOS,

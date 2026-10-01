@@ -1167,6 +1167,8 @@ export namespace domain {
 	    ignored?: string[];
 	    blocked?: TunnelBlocked[];
 	    captured?: TunnelBlocked[];
+	    // Go type: time
+	    cert_expires?: any;
 	    profiles?: TunnelProfileRef[];
 	    unreadable?: boolean;
 	    state: string;
@@ -1200,6 +1202,7 @@ export namespace domain {
 	        this.ignored = source["ignored"];
 	        this.blocked = this.convertValues(source["blocked"], TunnelBlocked);
 	        this.captured = this.convertValues(source["captured"], TunnelBlocked);
+	        this.cert_expires = this.convertValues(source["cert_expires"], null);
 	        this.profiles = this.convertValues(source["profiles"], TunnelProfileRef);
 	        this.unreadable = source["unreadable"];
 	        this.state = source["state"];
@@ -1399,6 +1402,7 @@ export namespace domain {
 	    version?: string;
 	    problem?: string;
 	    install?: TunnelInstall;
+	    ikev2?: TunnelEngine;
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelEngine(source);
@@ -1411,6 +1415,7 @@ export namespace domain {
 	        this.version = source["version"];
 	        this.problem = source["problem"];
 	        this.install = this.convertValues(source["install"], TunnelInstall);
+	        this.ikev2 = this.convertValues(source["ikev2"], TunnelEngine);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1520,6 +1525,7 @@ export namespace main {
 	    username: string;
 	    password: string;
 	    error: string;
+	    cert_expires?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelProfileFile(source);
@@ -1538,6 +1544,7 @@ export namespace main {
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.error = source["error"];
+	        this.cert_expires = source["cert_expires"];
 	    }
 	}
 

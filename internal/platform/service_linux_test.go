@@ -13,6 +13,9 @@ func TestLinuxShipsNoOpenVPN(t *testing.T) {
 	if got := InstalledOpenVPNPath(); got != "" {
 		t.Fatalf("InstalledOpenVPNPath = %q", got)
 	}
+	if got := Helpers(); len(got) != 0 {
+		t.Fatalf("Helpers = %+v (Linux uses the distribution's openvpn and strongSwan)", got)
+	}
 	dir := t.TempDir()
 	writeExe(t, filepath.Join(dir, "riftrouted"), "daemon")
 	writeExe(t, filepath.Join(dir, "openvpn"), "openvpn")

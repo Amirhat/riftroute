@@ -6,7 +6,7 @@ in `go.mod`.
 ## openvpn (macOS)
 
 On macOS, RiftRoute also ships a separate program: `openvpn`, which the daemon
-runs (as root) for [tunnels](README.md#tunnels--an-openvpn-connection-next-to-your-main-vpn).
+runs (as root) for [tunnels](README.md#tunnels--an-openvpn-wireguard-or-ikev2-connection-next-to-your-main-vpn).
 It is not linked into RiftRoute; RiftRoute starts it as its own process.
 
 It is built by [`scripts/build-openvpn.sh`](scripts/build-openvpn.sh) from
@@ -50,7 +50,44 @@ artifact lists them too. `openvpn` is never packaged without `licenses/`.
 "OpenVPN" is a trademark of OpenVPN Inc. RiftRoute is not affiliated with or
 endorsed by OpenVPN Inc.
 
+## charon-cmd — strongSwan (macOS)
+
+For IKEv2 tunnels (`.mobileconfig` profiles, [design](docs/tunnels-ikev2.md)),
+RiftRoute on macOS also ships `charon-cmd`, strongSwan's command-line IKE
+client, which the daemon runs (as root) as its own process, one per tunnel.
+
+It is built by [`scripts/build-strongswan.sh`](scripts/build-strongswan.sh),
+statically, with only the plugins it needs, from:
+
+| Component | Version | License | Source (the exact tarball) | SHA-256 |
+|---|---|---|---|---|
+| strongSwan | 6.1.0 | GPL-2.0-or-later | [strongswan-6.1.0.tar.bz2](https://download.strongswan.org/strongswan-6.1.0.tar.bz2) | `fe6c97481298767213cfc2e9a1da29fdd8018d481ff4cb9cf0283099654f20d4` |
+| OpenSSL | 3.5.8 | Apache-2.0 | the same tarball as openvpn's, above | as above |
+
+strongSwan's tarball is the one whose GPG signature verifies with the
+strongSwan release key `948F158A4E76A27BF3D07532DF42C170B34DBA77`.
+
+**One change** to strongSwan: [`packaging/strongswan/kernel-libipsec-install-routes.patch`](packaging/strongswan/kernel-libipsec-install-routes.patch)
+makes its userspace IPsec backend honour `install_routes = no`, as the
+kernel backends do, so charon never adds routes (RiftRoute routes the
+networks it sends into a tunnel itself). The patch ships with the program,
+in `licenses/charon-cmd/strongswan/`.
+
+Where it ships, with its licenses beside it: the macOS release tarballs
+(`charon-cmd`, licenses in `licenses/charon-cmd/`); the app
+(`Contents/Resources/bin/charon-cmd`, `Contents/Resources/licenses/charon-cmd/`);
+the Homebrew formula (`libexec/charon-cmd`); once the daemon is installed,
+`/Library/PrivilegedHelperTools/riftroute-charon-cmd` — put back by the
+daemon's update check when it's missing.
+
+**Source code.** strongSwan's tarball and the patch are attached to every
+release that ships `charon-cmd` (OpenSSL's tarball is already there, for
+openvpn); `licenses/charon-cmd/SOURCES.txt` lists them. `charon-cmd` is never
+packaged without its licenses.
+
 ## Linux
 
-RiftRoute ships no openvpn for Linux: tunnels use the distribution's own
-`openvpn` package, which the `.deb` recommends.
+RiftRoute ships no openvpn or strongSwan for Linux: tunnels use the
+distribution's own `openvpn` package, which the `.deb` recommends, and IKEv2
+tunnels its `charon-cmd` and kernel-libipsec plugin, which the `.deb`
+suggests.

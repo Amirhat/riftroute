@@ -20,6 +20,15 @@ func ownProcessGroup(cmd *exec.Cmd) {
 	parentDeath(cmd.SysProcAttr)
 }
 
+// ownSession is ownProcessGroup in a session of its own, with no
+// controlling terminal: charon-cmd asks for secrets with getpass, which
+// reads the terminal when there is one — a dev daemon's — and stdin (what
+// the daemon hands it) only when there isn't.
+func ownSession(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	parentDeath(cmd.SysProcAttr)
+}
+
 func terminate(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
 
 func forceKill(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }

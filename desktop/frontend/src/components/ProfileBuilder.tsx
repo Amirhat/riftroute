@@ -15,6 +15,7 @@ import {
   type AppStrategy,
 } from '../lib/validate'
 import type { ApplyResult, ConfigImportResult, Diff, Plan, Profile, Rule } from '../types'
+import { tunnelTypeName } from '../lib/tunnels'
 
 // A profile's target: around the main VPN, into it, or into one of
 // RiftRoute's own tunnels.
@@ -313,7 +314,7 @@ export function ProfileBuilder({
                     <option value="">Choose a tunnel…</option>
                     {tunnels.map((t) => (
                       <option key={t.name} value={t.name}>
-                        {t.name} · {t.type === 'wireguard' ? 'WireGuard' : 'OpenVPN'}
+                        {t.name} · {tunnelTypeName(t.type || 'openvpn')}
                       </option>
                     ))}
                     {tunnel && !tunnels.some((t) => t.name === tunnel) && (

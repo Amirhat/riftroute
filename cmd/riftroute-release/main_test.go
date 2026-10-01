@@ -169,3 +169,18 @@ func TestBuildManifestRefusesAMacTarballWithoutOpenVPN(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// From 0.6.0 on, the same for charon-cmd (IKEv2 tunnels).
+func TestBuildManifestRefusesAMacTarballWithoutCharonCmd(t *testing.T) {
+	api := "https://api.github.com/repos/Amirhat/riftroute"
+	_, err := buildManifest(context.Background(), fakeReleaseOf(t, "0.6.0", tgz(t, "riftroute", "riftrouted", "openvpn"), false), api, "v0.6.0", "stable", "", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "no charon-cmd") {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+	if _, err := buildManifest(context.Background(), fakeReleaseOf(t, "0.6.0", tgz(t, "riftroute", "riftrouted", "openvpn", "charon-cmd"), false), api, "v0.6.0", "stable", "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildManifest(context.Background(), fakeReleaseOf(t, "0.5.1", tgz(t, "riftroute", "riftrouted", "openvpn"), false), api, "v0.5.1", "stable", "", io.Discard); err != nil {
+		t.Fatal(err)
+	}
+}

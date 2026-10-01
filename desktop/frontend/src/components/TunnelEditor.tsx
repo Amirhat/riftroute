@@ -4,6 +4,7 @@ import { Badge, Label, Toggle, fieldCls } from './ui'
 import { api } from '../lib/api'
 import { friendly } from '../lib/format'
 import { validateRouteTarget } from '../lib/validate'
+import { KINDS, certExpiry, kindOf } from '../lib/tunnels'
 import type { ConfigIssue, TunnelProfileFile, TunnelStatus, TunnelVia, TunnelWhenDown } from '../types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
@@ -26,8 +27,8 @@ function parseRoutes(text: string): { routes: string[]; errors: RouteError[] } {
 
 type RouteError = { line: number; value: string; msg: string }
 
-// TunnelEditor adds or edits a RiftRoute-run tunnel — OpenVPN or WireGuard,
-// by the file chosen: the profile or configuration, the login (OpenVPN), the
+// TunnelEditor adds or edits a RiftRoute-run tunnel — OpenVPN, WireGuard or
+// IKEv2, by the file chosen: the profile or configuration, the login (OpenVPN), the
 // networks that go through it, and how its own connection reaches the
 // server. The configuration and password are write-only: an edit that leaves
 // them alone keeps what the daemon has saved.
@@ -35,6 +36,7 @@ export function TunnelEditor({
   existing,
   takenNames,
   canConnect,
+  canConnectIKEv2,
   onClose,
   onSaved,
 }: {
@@ -43,6 +45,8 @@ export function TunnelEditor({
   // False when the openvpn program isn't usable: saving still works, but
   // connecting an OpenVPN tunnel would only fail. WireGuard is built in.
   canConnect: boolean
+  // The same for IKEv2 tunnels' strongSwan (charon-cmd).
+  canConnectIKEv2: boolean
   onClose: () => void
   onSaved: (t: TunnelStatus, warnings: string[], connect: boolean) => void
 }) {
@@ -63,12 +67,16 @@ export function TunnelEditor({
   const titleId = useId()
 
   // The tunnel's type: the saved one when editing, else the chosen file's.
-  const kind = existing?.type || profile?.type || 'openvpn'
+  const kind = kindOf(existing?.type || profile?.type)
+  const info = KINDS[kind]
   const wireguard = kind === 'wireguard'
+  const ikev2 = kind === 'ikev2'
   // Editing takes a file of the tunnel's own type only.
-  const wrongType = editing && profile && (profile.type || 'openvpn') !== kind
-  const connectable = wireguard || canConnect
-  const needsAuth = !wireguard && (profile ? profile.needs_auth : !!existing?.needs_auth)
+  const wrongType = editing && profile && kindOf(profile.type) !== kind
+  const connectable = wireguard || (ikev2 ? canConnectIKEv2 : canConnect)
+  // Only an OpenVPN profile may ask for a login: the others carry theirs.
+  const needsAuth = kind === 'openvpn' && (profile ? profile.needs_auth : !!existing?.needs_auth)
+  const expiry = certExpiry(profile ? profile.cert_expires : existing?.cert_expires)
   const servers = profile ? (profile.servers ?? []) : (existing?.servers ?? [])
   const ignored = profile ? (profile.ignored ?? []) : (existing?.ignored ?? [])
   const nameError =
@@ -96,7 +104,7 @@ export function TunnelEditor({
       if (f.password) setPassword(f.password)
       if (!editing && !name) {
         const base = f.name
-          .replace(/\.(ovpn|conf)$/i, '')
+          .replace(/\.(ovpn|conf|mobileconfig)$/i, '')
           .toLowerCase()
           .replace(/[^a-z0-9_-]+/g, '-')
         setName(base.replace(/^[-_]+/, '').slice(0, 32))
@@ -115,8 +123,8 @@ export function TunnelEditor({
         name,
         type: kind,
         config: profile?.config || undefined,
-        username: (!wireguard && username) || undefined,
-        password: (!wireguard && password) || undefined,
+        username: (kind === 'openvpn' && username) || undefined,
+        password: (kind === 'openvpn' && password) || undefined,
         via,
         routes: parsed.routes,
         auto_connect: autoConnect,
@@ -146,11 +154,9 @@ export function TunnelEditor({
     !wrongType &&
     parsed.errors.length === 0 &&
     (editing || (profile && !profile.error))
-  const fileWord = wireguard ? 'configuration' : 'profile'
+  const fileWord = info.word
   const pickLabel = editing
-    ? wireguard
-      ? 'Replace .conf…'
-      : 'Replace .ovpn…'
+    ? `Replace ${info.ext}…`
     : profile
       ? 'Choose another…'
       : 'Choose a file…'
@@ -164,9 +170,7 @@ export function TunnelEditor({
               ? `Edit tunnel ${existing.name}`
               : !profile
                 ? 'Add a tunnel'
-                : wireguard
-                  ? 'Add a WireGuard tunnel'
-                  : 'Add an OpenVPN tunnel'}
+                : `Add ${info.a} tunnel`}
           </h2>
           <p className="mt-1 text-sm text-muted">
             RiftRoute runs the connection itself and sends only the networks you list through it. Your main VPN keeps
@@ -177,10 +181,8 @@ export function TunnelEditor({
         <div className="space-y-1.5">
           <Label>
             {editing
-              ? wireguard
-                ? 'WireGuard configuration'
-                : 'OpenVPN profile'
-              : 'OpenVPN profile (.ovpn) or WireGuard configuration (.conf)'}
+              ? info.file
+              : 'OpenVPN profile (.ovpn), WireGuard configuration (.conf) or IKEv2 profile (.mobileconfig)'}
           </Label>
           <div className="flex items-center gap-3">
             <button
@@ -196,8 +198,8 @@ export function TunnelEditor({
           </div>
           {wrongType && (
             <p className="text-sm text-danger">
-              This is {wireguard ? 'a WireGuard' : 'an OpenVPN'} tunnel; choose {wireguard ? 'a .conf' : 'an .ovpn'}{' '}
-              file. To switch types, delete it and add a new tunnel.
+              This is {info.a} tunnel; choose {wireguard ? 'a' : 'an'} {info.ext} file. To switch types, delete it and add
+              a new tunnel.
             </p>
           )}
           {profile?.error && <p className="text-sm text-danger">{profile.error}</p>}
@@ -218,6 +220,19 @@ export function TunnelEditor({
             <p className="text-xs text-muted">
               Its <span className="font-mono">AllowedIPs</span> only decide what the server may send back; they never
               become routes. List the networks to send through it below.
+            </p>
+          )}
+          {ikev2 && (
+            <p className="text-xs text-muted">
+              It logs in with what the profile carries. Its full tunnel never becomes routes: list the networks to send
+              through it below.
+            </p>
+          )}
+          {expiry && (
+            <p className={`text-xs ${expiry.soon ? 'text-warning' : 'text-muted'}`}>
+              {expiry.days < 0
+                ? 'Its certificate has expired — ask for a new profile.'
+                : `Its certificate expires in ${expiry.days} day${expiry.days === 1 ? '' : 's'}${expiry.soon ? ' — ask for a new profile soon' : ''}.`}
             </p>
           )}
           {files.length > 0 && (
@@ -297,9 +312,9 @@ export function TunnelEditor({
               [
                 'direct',
                 'Directly',
-                wireguard
-                  ? 'Around your main VPN, over your own network.'
-                  : 'Around your main VPN, over your own network (like OpenVPN Connect does).',
+                kind === 'openvpn'
+                  ? 'Around your main VPN, over your own network (like OpenVPN Connect does).'
+                  : 'Around your main VPN, over your own network.',
               ],
               [
                 'default',
@@ -371,7 +386,9 @@ export function TunnelEditor({
         <div className="flex items-center justify-end gap-2 border-t border-line pt-4">
           {!connectable && (
             <p id={engineHintId} className="me-auto text-xs text-muted">
-              OpenVPN isn't usable yet — save now, connect once it is (see the Tunnels page).
+              {ikev2
+                ? "strongSwan, which IKEv2 tunnels run on, isn't usable yet — save now, connect once it is (see the Tunnels page)."
+                : "OpenVPN isn't usable yet — save now, connect once it is (see the Tunnels page)."}
             </p>
           )}
           <button
@@ -393,7 +410,13 @@ export function TunnelEditor({
             <button
               onClick={() => save(true)}
               disabled={!canSave || !connectable}
-              title={connectable ? undefined : "OpenVPN isn't usable yet (see the Tunnels page)"}
+              title={
+                connectable
+                  ? undefined
+                  : ikev2
+                    ? "strongSwan isn't usable yet (see the Tunnels page)"
+                    : "OpenVPN isn't usable yet (see the Tunnels page)"
+              }
               aria-describedby={connectable ? undefined : engineHintId}
               className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast hover:opacity-90 disabled:opacity-50"
             >

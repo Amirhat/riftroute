@@ -231,8 +231,21 @@ func TestPlistGivesTheDaemonTimeToStop(t *testing.T) {
 	}
 }
 
-// macOS ships RiftRoute's own openvpn, installed beside the daemon in the
-// root-only helper directory — never a Homebrew path.
+// macOS ships RiftRoute's own openvpn and charon-cmd, installed beside the
+// daemon in the root-only helper directory — never a Homebrew path.
+func TestHelpersInstallBesideTheDaemon(t *testing.T) {
+	want := []Helper{
+		{Name: "openvpn", Installed: "/Library/PrivilegedHelperTools/riftroute-openvpn"},
+		{Name: "charon-cmd", Installed: "/Library/PrivilegedHelperTools/riftroute-charon-cmd"},
+	}
+	if got := Helpers(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Helpers = %+v", got)
+	}
+	if InstalledCharonCmdPath() != want[1].Installed {
+		t.Fatalf("InstalledCharonCmdPath = %q", InstalledCharonCmdPath())
+	}
+}
+
 func TestOpenVPNInstallsBesideTheDaemon(t *testing.T) {
 	if got := InstalledOpenVPNPath(); got != "/Library/PrivilegedHelperTools/riftroute-openvpn" {
 		t.Fatalf("InstalledOpenVPNPath = %q", got)

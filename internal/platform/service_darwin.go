@@ -142,7 +142,9 @@ const (
 	// The openvpn that ships with RiftRoute, which the daemon runs as root for
 	// tunnels: beside the daemon, for the same reason (never Homebrew's).
 	installedOpenVPN = installDir + "/riftroute-openvpn"
-	logDir           = "/var/log/riftroute"
+	// strongSwan's charon-cmd, which it runs as root for IKEv2 tunnels.
+	installedCharonCmd = installDir + "/riftroute-charon-cmd"
+	logDir             = "/var/log/riftroute"
 )
 
 type launchdManager struct{}
@@ -191,12 +193,15 @@ func (launchdManager) Install(daemonBin, socket string, allowUID int) error {
 	if err := secureRootFile(installedBin, 0o755); err != nil {
 		return fmt.Errorf("secure binary: %w", err)
 	}
-	// Tunnels run the openvpn shipped next to the daemon binary. A build
-	// without one leaves an earlier copy alone; until there is one, tunnels
-	// say how to get it (the CLI reports which case this is).
-	if src := BundledOpenVPN(daemonBin); src != "" {
-		if err := installOpenVPN(src, installedOpenVPN, secureRootFile); err != nil {
-			return err
+	// Tunnels run the helpers (openvpn, charon-cmd) shipped next to the
+	// daemon binary. A build without one leaves an earlier copy alone; until
+	// there is one, tunnels say how to get it (the CLI reports which case
+	// this is).
+	for _, h := range Helpers() {
+		if src := h.Bundled(daemonBin); src != "" {
+			if err := installHelper(h.Name, src, h.Installed, secureRootFile); err != nil {
+				return err
+			}
 		}
 	}
 	// Harden the log dir; reject a pre-planted symlink (arbitrary-root-write).
@@ -224,7 +229,9 @@ func (launchdManager) Uninstall() error {
 	}
 	_ = os.Remove(launchdPlist)
 	_ = os.Remove(installedBin) // remove the privileged binaries too
-	_ = os.Remove(installedOpenVPN)
+	for _, h := range Helpers() {
+		_ = os.Remove(h.Installed)
+	}
 	clearUpdateFiles()
 	return nil
 }

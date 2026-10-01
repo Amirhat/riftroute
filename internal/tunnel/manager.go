@@ -47,6 +47,9 @@ type Options struct {
 	OnChange func()
 	// WireGuard makes WireGuard's tun devices; nil is this OS's own.
 	WireGuard WGSystem
+	// IKE starts IKEv2 sessions (charon-cmd); nil: IKEv2 tunnels don't
+	// connect.
+	IKE IKELauncher
 	// Owned reads the routes RiftRoute owns (the ownership map). A tunnel's
 	// own — tagged tunnel:<name>, on-link — include what tunnel-mode
 	// profiles send into it, which only the engine knows: on macOS they stay
@@ -171,6 +174,7 @@ func New(o Options) (*Manager, error) {
 	m.drivers = map[domain.TunnelType]driver{
 		domain.TunnelOpenVPN:   ovpnDriver{o: &m.o},
 		domain.TunnelWireGuard: wgDriver{o: &m.o},
+		domain.TunnelIKEv2:     ikev2Driver{o: &m.o},
 	}
 	m.ap = newApplier(func(ctx context.Context) error {
 		if m.o.Apply == nil {
@@ -310,6 +314,10 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
+		if p.ike != nil && !p.ike.CertExpires().IsZero() {
+			exp := p.ike.CertExpires()
+			s.CertExpires = &exp
+		}
 	}
 	if err := m.perrs[name]; err != nil && r.sess == nil {
 		s.State, s.LastError = domain.TunnelFailed, "profile is no longer valid: "+err.Error()
@@ -471,6 +479,9 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if spec.Type == domain.TunnelWireGuard && (spec.Username != "" || spec.Password != "") {
 		bad("username", "a WireGuard tunnel has no username or password; its keys are in the configuration")
 	}
+	if spec.Type == domain.TunnelIKEv2 && (spec.Username != "" || spec.Password != "") {
+		bad("username", "an IKEv2 tunnel logs in with what its profile carries (a certificate, or a username and password in it)")
+	}
 
 	m.mu.Lock()
 	prev := m.defs[spec.Name]
@@ -505,6 +516,8 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if strings.TrimSpace(d.Config) == "" {
 		if d.Type == domain.TunnelWireGuard {
 			bad("config", "a WireGuard configuration (.conf) is required")
+		} else if d.Type == domain.TunnelIKEv2 {
+			bad("config", "a configuration profile (.mobileconfig) is required")
 		} else {
 			bad("config", "an OpenVPN profile (.ovpn) is required")
 		}
@@ -699,6 +712,11 @@ func (m *Manager) Connect(name string) error {
 		return fmt.Errorf("tunnel %s needs a username and password", name)
 	}
 	drv := m.drivers[d.Type]
+	if c, ok := drv.(interface{ check(*parsed) error }); ok {
+		if err := c.check(p); err != nil {
+			return fmt.Errorf("tunnel %s: %w", name, err)
+		}
+	}
 	if e := drv.engine(); !e.Available {
 		return &EngineError{Engine: e}
 	}
@@ -1593,7 +1611,9 @@ func (m *Manager) reapStale() {
 				}
 			}
 			_ = os.Remove(filepath.Join(m.runDir, n))
-		case strings.HasSuffix(n, ".sock"), strings.HasSuffix(n, ".ovpn"), strings.HasPrefix(n, ".tmp-"):
+		case strings.HasSuffix(n, ".sock"), strings.HasSuffix(n, ".ovpn"), strings.HasPrefix(n, ".tmp-"),
+			// an IKEv2 session's (ikeconf.go): its config, keys and socket
+			strings.HasSuffix(n, ".conf"), strings.HasSuffix(n, ".pem"), strings.HasSuffix(n, ".p12"), strings.HasSuffix(n, ".vici"):
 			_ = os.Remove(filepath.Join(m.runDir, n))
 		}
 	}
@@ -1616,13 +1636,20 @@ func stopProcess(pid int, ours func(int) bool) bool {
 }
 
 // Engine reports whether tunnels can run on this machine, and if not, how
-// to install what's missing.
-func (m *Manager) Engine() domain.TunnelEngine { return m.o.Launcher.Engine() }
+// to install what's missing: openvpn's, with IKEv2's (strongSwan) beside it.
+// WireGuard is built in.
+func (m *Manager) Engine() domain.TunnelEngine {
+	e := m.o.Launcher.Engine()
+	ike := m.drivers[domain.TunnelIKEv2].engine()
+	e.IKEv2 = &ike
+	return e
+}
 
-// ourCommandLine reports whether a process's command line is an openvpn we
-// started: the binary recorded with its pid (any openvpn by name for a pid
-// file without one), running a config from our run directory — so a
-// recycled pid, or an openvpn the user started themselves, is never killed.
+// ourCommandLine reports whether a process's command line is an openvpn or
+// charon-cmd we started: the binary recorded with its pid (any openvpn by
+// name for a pid file without one, from before charon-cmd), running a config
+// (openvpn) or key (charon-cmd) from our run directory — so a recycled pid,
+// or one the user started themselves, is never killed.
 func ourCommandLine(args, bin, runDir string) bool {
 	argv0, rest, _ := strings.Cut(args, " ")
 	if bin != "" {
@@ -1632,7 +1659,9 @@ func ourCommandLine(args, bin, runDir string) bool {
 	} else if b := filepath.Base(argv0); b != "openvpn" && b != "riftroute-openvpn" {
 		return false
 	}
-	return strings.Contains(" "+rest, " --config "+runDir+string(filepath.Separator))
+	dir := runDir + string(filepath.Separator)
+	return strings.Contains(" "+rest, " --config "+dir) || strings.Contains(" "+rest, " --priv "+dir) ||
+		strings.Contains(" "+rest, " --p12 "+dir)
 }
 
 // processArgs returns a process's command line, or "" if it's gone. Linux

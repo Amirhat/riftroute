@@ -54,10 +54,13 @@ func tunnelListCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), ts)
 			}
 			if len(ts) == 0 || slices.ContainsFunc(ts, isOpenVPN) {
-				defer printEngineProblem(cmd)
+				defer printEngineProblem(cmd, domain.TunnelOpenVPN)
+			}
+			if slices.ContainsFunc(ts, isIKEv2) {
+				defer printEngineProblem(cmd, domain.TunnelIKEv2)
 			}
 			if len(ts) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "no tunnels — add one with: riftroute tunnel add <name> <profile.ovpn | wg.conf> --route <cidr>")
+				fmt.Fprintln(cmd.OutOrStdout(), "no tunnels — add one with: riftroute tunnel add <name> <profile.ovpn | wg.conf | profile.mobileconfig> --route <cidr>")
 				return nil
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
@@ -182,11 +185,12 @@ func tunnelAddCmd() *cobra.Command {
 		replace bool
 	)
 	cmd := &cobra.Command{
-		Use:   "add <name> <profile.ovpn | wg.conf>",
-		Short: "Import an OpenVPN profile or a WireGuard configuration as a tunnel",
+		Use:   "add <name> <profile.ovpn | wg.conf | profile.mobileconfig>",
+		Short: "Import an OpenVPN profile, a WireGuard configuration or an IKEv2 profile (.mobileconfig) as a tunnel",
 		Example: "  riftroute tunnel add infra ~/Downloads/office.ovpn \\\n" +
 			"    --route 192.168.70.0/24 --route 192.168.72.11 --connect\n" +
-			"  riftroute tunnel add lab ~/Downloads/lab-wg0.conf --route 10.20.0.0/16 --when-down block",
+			"  riftroute tunnel add lab ~/Downloads/lab-wg0.conf --route 10.20.0.0/16 --when-down block\n" +
+			"  riftroute tunnel add ops ~/Downloads/ops.mobileconfig --route 10.30.0.0/16",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := f.checkPasswordStdin(cmd); err != nil {
@@ -197,6 +201,22 @@ func tunnelAddCmd() *cobra.Command {
 			}
 			if _, err := findTunnel(cmd.Context(), args[0]); err == nil && !replace {
 				return fmt.Errorf("a tunnel named %q already exists — change it with `riftroute tunnel edit %s`, or pass --replace", args[0], args[0])
+			}
+			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && tunnel.IsMobileconfig(raw) {
+				if f.username != "" || f.passwordStdin {
+					return errors.New("an IKEv2 tunnel logs in with what its profile carries; it takes no --username or password")
+				}
+				if _, err := tunnel.ParseMobileconfig(raw); err != nil {
+					return fmt.Errorf("%s: %w", args[1], err)
+				}
+				spec := domain.TunnelSpec{
+					Name: args[0], Type: domain.TunnelIKEv2, Config: raw, Routes: f.routes,
+					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
+				}
+				if len(f.routes) == 0 {
+					fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes (the profile's full tunnel never becomes routes)")
+				}
+				return saveTunnel(cmd, spec, f.connect)
 			}
 			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && tunnel.IsWireGuard(raw) {
 				if f.username != "" || f.passwordStdin {
@@ -281,12 +301,18 @@ func tunnelEditCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				wg := tunnel.IsWireGuard(raw)
+				kind := domain.TunnelOpenVPN
 				switch {
-				case wg != (cur.Type == domain.TunnelWireGuard):
+				case tunnel.IsMobileconfig(raw):
+					kind = domain.TunnelIKEv2
+				case tunnel.IsWireGuard(raw):
+					kind = domain.TunnelWireGuard
+				}
+				switch {
+				case kind != cur.Type:
 					return fmt.Errorf("%s is a %s tunnel; --profile takes %s — to change its type, `riftroute tunnel add %s <file> --replace`",
-						cur.Name, cur.Type, map[bool]string{true: "a WireGuard configuration (.conf)", false: "an OpenVPN profile (.ovpn)"}[cur.Type == domain.TunnelWireGuard], cur.Name)
-				case wg:
+						cur.Name, cur.Type, profileKind(cur.Type), cur.Name)
+				case kind != domain.TunnelOpenVPN:
 					spec.Config = raw
 				default:
 					text, creds, err := readProfile(cmd, profile)
@@ -379,7 +405,7 @@ func tunnelDownCmd() *cobra.Command {
 func tunnelLogCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "log <name>",
-		Short: "Show a tunnel's recent log — openvpn's output, or WireGuard's (why it won't connect)",
+		Short: "Show a tunnel's recent log — openvpn's, WireGuard's or strongSwan's output (why it won't connect)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			lines, err := client().TunnelLog(cmd.Context(), args[0])
@@ -510,8 +536,8 @@ func saveTunnel(cmd *cobra.Command, spec domain.TunnelSpec, connect bool) error 
 	if connect {
 		return connectTunnel(cmd, t.Name, true) // its JSON is the one document
 	}
-	if isOpenVPN(*t) {
-		printEngineProblem(cmd)
+	if isOpenVPN(*t) || isIKEv2(*t) {
+		printEngineProblem(cmd, t.Type)
 	}
 	if g.json {
 		return printJSON(cmd.OutOrStdout(), t)
@@ -534,17 +560,30 @@ func isOpenVPN(t domain.TunnelStatus) bool {
 	return t.Type == domain.TunnelOpenVPN || t.Type == ""
 }
 
-// printEngineProblem tells the user, when openvpn isn't usable on the
-// daemon's machine, what's wrong and how to install it there. It says
-// nothing when OpenVPN tunnels can run (or the daemon predates the check).
-// WireGuard is built in.
-func printEngineProblem(cmd *cobra.Command) bool {
+func isIKEv2(t domain.TunnelStatus) bool { return t.Type == domain.TunnelIKEv2 }
+
+// printEngineProblem tells the user, when the program a tunnel type runs on
+// (openvpn; strongSwan's charon-cmd for IKEv2) isn't usable on the daemon's
+// machine, what's wrong and how to install it there. It says nothing when
+// those tunnels can run (or the daemon predates the check). WireGuard is
+// built in.
+func printEngineProblem(cmd *cobra.Command, typ domain.TunnelType) bool {
 	e, err := client().TunnelEngine(cmd.Context())
-	if err != nil || e.Available {
+	if err != nil {
+		return false
+	}
+	what := "OpenVPN tunnels"
+	if typ == domain.TunnelIKEv2 {
+		if e.IKEv2 == nil {
+			return false
+		}
+		e, what = *e.IKEv2, "IKEv2 tunnels"
+	}
+	if e.Available {
 		return false
 	}
 	w := cmd.ErrOrStderr()
-	fmt.Fprintf(w, "\n%s — OpenVPN tunnels can't connect until it's fixed.\n", e.Problem)
+	fmt.Fprintf(w, "\n%s — %s can't connect until it's fixed.\n", e.Problem, what)
 	if in := e.Install; in != nil {
 		if len(in.Commands) > 0 {
 			fmt.Fprintf(w, "On %s, run:\n\n", in.System)
@@ -568,7 +607,7 @@ func printEngineProblem(cmd *cobra.Command) bool {
 // has failed.
 func connectTunnel(cmd *cobra.Command, name string, wait bool) error {
 	ctx := cmd.Context()
-	if cur, err := findTunnel(ctx, name); err == nil && isOpenVPN(cur) && printEngineProblem(cmd) {
+	if cur, err := findTunnel(ctx, name); err == nil && (isOpenVPN(cur) || isIKEv2(cur)) && printEngineProblem(cmd, cur.Type) {
 		return fmt.Errorf("%s not connected", name)
 	}
 	st, err := client().ConnectTunnel(ctx, name)
@@ -635,4 +674,15 @@ func orStr(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// profileKind names the file a tunnel type is configured from.
+func profileKind(t domain.TunnelType) string {
+	switch t {
+	case domain.TunnelWireGuard:
+		return "a WireGuard configuration (.conf)"
+	case domain.TunnelIKEv2:
+		return "a configuration profile (.mobileconfig)"
+	}
+	return "an OpenVPN profile (.ovpn)"
 }

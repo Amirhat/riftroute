@@ -1,0 +1,32 @@
+# The same as Dockerfile, but the client's charon-cmd is the one RiftRoute
+# builds for macOS — strongSwan 6.1.0 from the same pinned tarball, with the
+# same patch (packaging/strongswan) and the same plugins, monolithic and
+# static — with kernel-netlink in place of kernel-pfroute. It checks, on
+# Linux, what's the same on macOS: --priv, the patch keeping charon's routes
+# out altogether, the config. (The server stays Debian's strongSwan 5.9.)
+FROM debian:bookworm-slim AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential libssl-dev pkg-config ca-certificates curl bzip2 patch python3
+ARG STRONGSWAN_VERSION=6.1.0
+ARG STRONGSWAN_SHA256=fe6c97481298767213cfc2e9a1da29fdd8018d481ff4cb9cf0283099654f20d4
+COPY *.patch /src/patches/
+RUN cd /src && curl -fsSL --proto '=https' -o strongswan.tar.bz2 \
+      "https://download.strongswan.org/strongswan-${STRONGSWAN_VERSION}.tar.bz2" \
+    && echo "${STRONGSWAN_SHA256}  strongswan.tar.bz2" | sha256sum -c - \
+    && tar -xjf strongswan.tar.bz2 && cd "strongswan-${STRONGSWAN_VERSION}" \
+    && for p in /src/patches/*.patch; do patch -p1 -N -s < "$p"; done \
+    && ./configure --prefix=/opt/rr-swan --sysconfdir=/opt/rr-swan/etc --disable-defaults \
+         --enable-cmd --enable-ikev2 --enable-vici \
+         --enable-kernel-libipsec --enable-kernel-netlink --enable-socket-default \
+         --enable-openssl --enable-nonce --enable-kdf \
+         --enable-x509 --enable-pubkey --enable-pkcs1 --enable-pkcs8 --enable-pem --enable-constraints \
+         --enable-eap-identity --enable-eap-mschapv2 --enable-md4 --enable-des \
+         --enable-monolithic --enable-static --disable-shared >/dev/null \
+    && make -j"$(nproc)" >/dev/null && cp src/charon-cmd/charon-cmd /charon-cmd
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      iproute2 iputils-ping openssl ca-certificates \
+      libstrongswan-standard-plugins strongswan-swanctl strongswan-charon \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /charon-cmd /usr/sbin/charon-cmd

@@ -21,8 +21,9 @@ import (
 type TunnelProfileFile struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
-	// Type is the tunnel type the file is for: openvpn, or wireguard (a
-	// wg-quick file, recognized by its [Interface]).
+	// Type is the tunnel type the file is for: openvpn, wireguard (a
+	// wg-quick file, recognized by its [Interface]), or ikev2 (a
+	// configuration profile, .mobileconfig).
 	Type      domain.TunnelType `json:"type"`
 	Config    string            `json:"config"`
 	Servers   []string `json:"servers"`
@@ -37,15 +38,18 @@ type TunnelProfileFile struct {
 	Password string `json:"password"`
 	// Error is why the profile can't be used (shown inline; empty = usable).
 	Error string `json:"error"`
+	// CertExpires is when an IKEv2 profile's login certificate stops
+	// working (RFC 3339; empty without one).
+	CertExpires string `json:"cert_expires,omitempty"`
 }
 
 // OpenTunnelProfileDialog picks a .ovpn or WireGuard .conf file. An empty
 // Path with a nil error means the user cancelled.
 func (a *App) OpenTunnelProfileDialog() (TunnelProfileFile, error) {
 	path, err := wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
-		Title: "Choose an OpenVPN profile or a WireGuard configuration",
+		Title: "Choose an OpenVPN profile, a WireGuard configuration, or an IKEv2 profile",
 		Filters: []wruntime.FileFilter{
-			{DisplayName: "VPN configuration (*.ovpn, *.conf)", Pattern: "*.ovpn;*.conf"},
+			{DisplayName: "VPN configuration (*.ovpn, *.conf, *.mobileconfig)", Pattern: "*.ovpn;*.conf;*.mobileconfig"},
 			{DisplayName: "All files", Pattern: "*"},
 		},
 	})
@@ -62,6 +66,23 @@ func loadTunnelProfile(path string) (TunnelProfileFile, error) {
 		return TunnelProfileFile{}, fmt.Errorf("could not read the profile: %w", err)
 	}
 	out := TunnelProfileFile{Path: path, Name: filepath.Base(path), Type: domain.TunnelOpenVPN, Servers: []string{}, Ignored: []string{}, Files: []string{}}
+	if tunnel.IsMobileconfig(text) {
+		// Self-contained too: the login and CAs are payloads in it.
+		out.Type, out.Config = domain.TunnelIKEv2, text
+		c, err := tunnel.ParseMobileconfig(text)
+		if err != nil {
+			out.Error = err.Error()
+			return out, nil
+		}
+		out.Servers = c.Servers()
+		if c.Ignored != nil {
+			out.Ignored = c.Ignored
+		}
+		if exp := c.CertExpires(); !exp.IsZero() {
+			out.CertExpires = exp.UTC().Format(time.RFC3339)
+		}
+		return out, nil
+	}
 	if tunnel.IsWireGuard(text) {
 		// Nothing to inline: a wg-quick file carries its keys itself.
 		out.Type, out.Config = domain.TunnelWireGuard, text

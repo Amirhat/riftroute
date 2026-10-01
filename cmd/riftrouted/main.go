@@ -81,7 +81,7 @@ func run() error {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&selfTest, "selftest", false, "check this binary against a database copy (-db) and exit (used by the updater)")
 	flag.StringVar(&channel, "update-channel", "stable", "update channel")
-	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn weren't installed (shows the install help)")
+	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn and strongSwan weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
 
@@ -214,6 +214,9 @@ func run() error {
 		logger.Debug("openvpn", "tunnel", name, "line", line)
 	}}
 	var wireguard tunnel.WGSystem // this OS's
+	var ike tunnel.IKELauncher = &tunnel.ExecIKELauncher{Output: func(name, line string) {
+		logger.Debug("charon-cmd", "tunnel", name, "line", line)
+	}}
 	if fp, ok := prov.(*fake.Provider); ok {
 		launcher = &tunnel.FakeLauncher{ // never run a real openvpn under -provider fake
 			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
@@ -222,6 +225,11 @@ func run() error {
 		}
 		// …nor create a real WireGuard interface.
 		wireguard = tunnel.NoWireGuard{Why: "WireGuard tunnels don't run under -provider fake (they would create a real interface)"}
+		ike = &tunnel.FakeIKE{ // …nor a real charon-cmd
+			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
+			OnDown:  func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
+			Missing: fakeNoVPN,
+		}
 	}
 	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
 	// Tunnel state changes come in bursts (every openvpn STATE line) and
@@ -243,6 +251,7 @@ func run() error {
 		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher:  launcher,
 		WireGuard: wireguard,
+		IKE:       ike,
 		Owned: func() []domain.ManagedRoute {
 			owned, _ := st.ListOwned()
 			return owned

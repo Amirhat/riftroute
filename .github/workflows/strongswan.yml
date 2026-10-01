@@ -1,0 +1,51 @@
+name: strongswan (macOS)
+
+# Builds RiftRoute's own charon-cmd for macOS IKEv2 tunnels
+# (scripts/build-strongswan.sh, with the patch in packaging/strongswan) when
+# the script, the patches or this workflow change. It is slow (OpenSSL from
+# source), so it isn't part of every PR's CI; the release workflow builds it
+# for real (cached by the same hash).
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-strongswan.sh
+      - scripts/check-strongswan.sh
+      - packaging/strongswan/**
+      - .github/workflows/strongswan.yml
+  pull_request:
+    paths:
+      - scripts/build-strongswan.sh
+      - scripts/check-strongswan.sh
+      - packaging/strongswan/**
+      - .github/workflows/strongswan.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # All three builds a release ships, so a release never meets one for the
+  # first time. On main this also saves the cache the release restores (a
+  # tag can only restore caches saved on the default branch).
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: |
+            build/strongswan
+            build/strongswan-work/sources
+          key: strongswan-${{ runner.os }}-${{ hashFiles('scripts/build-strongswan.sh', 'packaging/strongswan/*.patch') }}
+      - name: Build charon-cmd (arm64, x86_64, universal)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          scripts/build-strongswan.sh arm64 build/strongswan/arm64
+          scripts/build-strongswan.sh x86_64 build/strongswan/x86_64
+          scripts/build-strongswan.sh universal build/strongswan/universal
+      # The script already refuses a binary that links anything but macOS's
+      # own libraries; check again, independently of it.
+      - name: Check it
+        run: scripts/check-strongswan.sh build/strongswan

@@ -13,6 +13,8 @@ import (
 
 func ownProcessGroup(*exec.Cmd) {}
 
+func ownSession(*exec.Cmd) {}
+
 func unprivileged(*exec.Cmd) {}
 
 func terminate(int) error { return errors.New("not supported on windows") }

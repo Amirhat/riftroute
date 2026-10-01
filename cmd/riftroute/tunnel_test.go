@@ -340,3 +340,45 @@ func TestExplainSaysBlocked(t *testing.T) {
 		t.Fatalf("explain:\n%s", got)
 	}
 }
+
+// pskProfile is a configuration profile with an IKEv2 VPN that logs in with
+// a shared secret.
+const pskProfile = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadContent</key><array><dict>
+    <key>PayloadType</key><string>com.apple.vpn.managed</string>
+    <key>VPNType</key><string>IKEv2</string>
+    <key>UserDefinedName</key><string>Office</string>
+    <key>IKEv2</key><dict>
+      <key>RemoteAddress</key><string>198.51.100.20</string>
+      <key>AuthenticationMethod</key><string>SharedSecret</string>
+      <key>SharedSecret</key><string>shh</string>
+    </dict>
+  </dict></array>
+</dict></plist>`
+
+// `tunnel add` takes a .mobileconfig as an IKEv2 tunnel: no login flags,
+// its server listed; editing it takes a profile, not an .ovpn.
+func TestTunnelAddMobileconfig(t *testing.T) {
+	sock := tunnelDaemon(t)
+	p := filepath.Join(t.TempDir(), "Office.mobileconfig")
+	if err := os.WriteFile(p, []byte(pskProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "add", "office", p, "--username", "alice"); err == nil ||
+		!strings.Contains(err.Error(), "takes no --username") {
+		t.Fatalf("a login for IKEv2: %v", err)
+	}
+	out, errOut, err := runCLI(t, sock, "", "tunnel", "add", "office", p, "--route", "10.30.0.0/16")
+	if err != nil {
+		t.Fatalf("add: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "saved tunnel office (ikev2: 198.51.100.20 (IKEv2)") {
+		t.Fatalf("stdout:\n%s", out)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "edit", "office", "--profile", writeProfile(t, plainProfile)); err == nil ||
+		!strings.Contains(err.Error(), "configuration profile (.mobileconfig)") {
+		t.Fatalf("an .ovpn for an IKEv2 tunnel: %v", err)
+	}
+}

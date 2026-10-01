@@ -65,11 +65,14 @@ type Env struct {
 	// daemon (platform.InstalledOpenVPNPath: macOS). A release's openvpn is
 	// installed there together with its daemon, and rolled back with it (one
 	// the update added stays); a missing one is taken from the newest
-	// release (repairOpenVPN). "" where none ships (Linux uses the
+	// release (repairHelpers). "" where none ships (Linux uses the
 	// distribution's).
-	OpenVPN  string
-	StateDir string // marker, status, staging, database backup
-	DBPath   string
+	OpenVPN string
+	// CharonCmd is strongSwan's charon-cmd (IKEv2 tunnels), kept like
+	// OpenVPN (platform.InstalledCharonCmdPath).
+	CharonCmd string
+	StateDir  string // marker, status, staging, database backup
+	DBPath    string
 
 	// SelfUpdatable is false where files must not be replaced (package-managed
 	// install, a daemon not running as the installed service).
@@ -320,13 +323,13 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 	})
 	u.env.Log.Info("update check", "latest", f.m.Version, "source", f.source, "action", d.Action, "reason", d.Reason)
 	if d.Action != update.ActionInstall {
-		// An update being installed brings its openvpn with it. Otherwise a
+		// An update being installed brings its helpers with it. Otherwise a
 		// missing one comes from this release, before the verdict is
 		// reported: a "check now" meant to bring it back answers once it's in
 		// place (or decideWait has passed). Never from a halted release: a
-		// halt may be about that very openvpn.
+		// halt may be about that very helper.
 		if f.advice == nil || !f.advice.Halt {
-			u.repairOpenVPN(ctx, f.m)
+			u.repairHelpers(ctx, f.m)
 		}
 	}
 	signal()
@@ -485,9 +488,9 @@ func (u *Updater) stillWanted(ctx context.Context, version string) bool {
 
 // swap backs up the database and the current binaries, puts the new ones in
 // place atomically, and leaves the marker BootGuard reads on the next start.
-// openvpn goes first and the daemon last: the daemon's rename is the commit
-// point. A crash before it leaves the previous daemon running, and BootGuard
-// puts the previous openvpn back beside it.
+// The helpers go first and the daemon last: the daemon's rename is the
+// commit point. A crash before it leaves the previous daemon running, and
+// BootGuard puts the previous helpers back beside it.
 func (u *Updater) swap(s *staged) error {
 	dir := u.env.StateDir
 	_ = os.Remove(backupPath(dir))
@@ -497,7 +500,7 @@ func (u *Updater) swap(s *staged) error {
 	if err := copyFileAtomic(u.env.Binary, prevBinary(u.env.Binary), 0o755); err != nil {
 		return fmt.Errorf("keep current binary: %w", err)
 	}
-	how, err := u.keepOpenVPN(s)
+	hows, err := u.keepHelpers(s)
 	if err != nil {
 		return err
 	}
@@ -505,58 +508,68 @@ func (u *Updater) swap(s *staged) error {
 		return err
 	}
 	u.keepRunningManifest(s)
-	if s.openvpn != "" {
-		if err := copyFileAtomic(s.openvpn, u.env.OpenVPN, 0o755); err != nil {
+	putBack := func() {
+		for _, h := range u.helpers() {
+			if rerr := restoreHelper(h.path, hows[h.name]); rerr != nil {
+				u.env.Log.Error("update: putting the previous "+h.name+" back failed", "err", rerr)
+			}
+		}
+	}
+	for _, h := range s.helpers {
+		if err := copyFileAtomic(h.file, h.path, 0o755); err != nil {
 			_ = os.Remove(pendingPath(dir))
-			return fmt.Errorf("install openvpn: %w", err)
+			putBack()
+			return fmt.Errorf("install %s: %w", h.name, err)
 		}
 	}
 	if err := copyFileAtomic(s.path, u.env.Binary, 0o755); err != nil {
 		_ = os.Remove(pendingPath(dir))
-		if rerr := restoreOpenVPN(u.env.OpenVPN, how); rerr != nil {
-			u.env.Log.Error("update: putting the previous openvpn back failed", "err", rerr)
-		}
+		putBack()
 		return fmt.Errorf("install binary: %w", err)
 	}
 	_ = os.RemoveAll(stagingDir(dir))
 	return nil
 }
 
-// keepOpenVPN prepares openvpn's side of a swap and records it, so that a
-// rollback — by BootGuard or by the user, however much later — puts back
+// keepHelpers prepares each helper's side of a swap and records it, so that
+// a rollback — by BootGuard or by the user, however much later — puts back
 // exactly what was there:
-//   - the release ships openvpn and one is installed: it is kept as .prev
-//     (openvpnReplaced);
-//   - it ships one and none is installed: nothing to keep (openvpnAdded — a
-//     rollback keeps it: every openvpn RiftRoute ships runs every daemon's
-//     tunnels, and a daemon from before tunnels ignores it);
-//   - it ships none: openvpn isn't touched, and a .prev left by an earlier
-//     update goes, since it doesn't belong to this one.
-func (u *Updater) keepOpenVPN(s *staged) (string, error) {
-	how := ""
-	if u.env.OpenVPN != "" {
-		prev := prevBinary(u.env.OpenVPN)
+//   - the release ships the helper and one is installed: it is kept as
+//     .prev (helperReplaced);
+//   - it ships one and none is installed: nothing to keep (helperAdded — a
+//     rollback keeps it: every helper RiftRoute ships runs every daemon's
+//     tunnels, and a daemon from before it ignores it);
+//   - it ships none: the helper isn't touched, and a .prev left by an
+//     earlier update goes, since it doesn't belong to this one.
+func (u *Updater) keepHelpers(s *staged) (map[string]string, error) {
+	hows := map[string]string{}
+	for _, h := range u.helpers() {
+		prev := prevBinary(h.path)
 		switch {
-		case s.openvpn == "":
+		case !s.has(h.name):
 			_ = os.Remove(prev)
-		case fileExists(u.env.OpenVPN):
-			if err := copyFileAtomic(u.env.OpenVPN, prev, 0o755); err != nil {
-				return "", fmt.Errorf("keep current openvpn: %w", err)
+		case fileExists(h.path):
+			if err := copyFileAtomic(h.path, prev, 0o755); err != nil {
+				return nil, fmt.Errorf("keep current %s: %w", h.name, err)
 			}
-			how = openvpnReplaced
+			hows[h.name] = helperReplaced
 		default:
 			_ = os.Remove(prev)
-			how = openvpnAdded
+			hows[h.name] = helperAdded
 		}
 	}
-	ps, err := updateState(u.env.StateDir, func(ps *persisted) { ps.OpenVPNSwap = how })
+	ps, err := updateState(u.env.StateDir, func(ps *persisted) {
+		for _, name := range helperNames { // every kind, shipped here or not
+			ps.setSwap(name, hows[name])
+		}
+	})
 	if err != nil {
-		return "", fmt.Errorf("record the openvpn swap: %w", err)
+		return nil, fmt.Errorf("record the helpers' swap: %w", err)
 	}
 	u.mu.Lock()
 	u.ps = ps
 	u.mu.Unlock()
-	return how, nil
+	return hows, nil
 }
 
 // RollingBack reports whether the daemon is restarting into the previous

@@ -439,6 +439,8 @@ export interface TunnelStatus {
   // deleted (and added again). last_error says why; the other fields are
   // placeholders (via "direct", no routes or servers).
   unreadable?: boolean
+  // When its login certificate stops working (IKEv2 profiles with one).
+  cert_expires?: string
   state: TunnelState
   detail?: string
   iface?: string
@@ -478,13 +480,13 @@ export interface TunnelProfileRef {
   routes: number
 }
 
-// TunnelProfileFile is a .ovpn (inlined) or a WireGuard .conf picked in the
-// native dialog, and parsed. An empty path means the picker was cancelled;
-// error means unusable.
+// TunnelProfileFile is a .ovpn (inlined), a WireGuard .conf or an IKEv2
+// .mobileconfig picked in the native dialog, and parsed. An empty path means
+// the picker was cancelled; error means unusable.
 export interface TunnelProfileFile {
   path: string
   name: string
-  // openvpn | wireguard; absent from builds before WireGuard (openvpn).
+  // openvpn | wireguard | ikev2; absent from builds before WireGuard (openvpn).
   type?: string
   config: string
   servers: string[] | null
@@ -496,6 +498,8 @@ export interface TunnelProfileFile {
   // Local files the profile referenced and the picker inlined (ca, cert,
   // key, auth-user-pass, …). Absent from builds that don't report them.
   files?: string[] | null
+  // When an IKEv2 profile's login certificate stops working (RFC 3339).
+  cert_expires?: string
 }
 
 export interface TunnelResult {
@@ -511,6 +515,9 @@ export interface TunnelEngine {
   version?: string
   problem?: string
   install?: TunnelInstall
+  // The same for IKEv2 tunnels' strongSwan (charon-cmd); absent from daemons
+  // without IKEv2.
+  ikev2?: TunnelEngine
 }
 
 // What fixes openvpn here (absent from daemons that predate it):
