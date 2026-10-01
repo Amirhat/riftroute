@@ -20,6 +20,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/dns"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/lists"
+	"github.com/Amirhat/riftroute/internal/progress"
 	"github.com/Amirhat/riftroute/internal/provider"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
@@ -302,6 +303,12 @@ func (s *Service) SetAutoApply(on bool) { s.autoApply.Store(on) }
 // AutoApply reports whether auto-apply is currently active.
 func (s *Service) AutoApply() bool { return s.autoApply.Load() }
 
+// domainTTL is how long a domain rule's answer stands. It outlasts the
+// daemon's re-resolve interval (5 min), which refreshes every answer before
+// it expires: a change never waits on a lookup of a name it has seen, only
+// on a new one.
+const domainTTL = 6 * time.Minute
+
 // New builds a Service over a provider and store.
 func New(prov provider.RouteProvider, st *store.Store, version string) *Service {
 	return &Service{
@@ -310,7 +317,7 @@ func New(prov provider.RouteProvider, st *store.Store, version string) *Service 
 		version: version,
 		started: time.Now(),
 		now:     time.Now,
-		domains: dns.NewCache(&dns.SystemResolver{}, 60*time.Second),
+		domains: dns.NewCache(&dns.SystemResolver{}, domainTTL),
 	}
 }
 
@@ -473,6 +480,30 @@ func (s *Service) lookupDomains(ctx context.Context, profiles []domain.Profile) 
 	if s.domains == nil {
 		return m, unresolved
 	}
+	// Wildcards resolve their apex (DNS can't enumerate subdomains); the map
+	// stays keyed by the raw rule value the engine looks up. The names are
+	// looked up together (a change waits for the slowest, not the sum), and
+	// counted for the app that's waiting on the change.
+	var hosts []string
+	for _, p := range profiles {
+		if !p.Enabled {
+			continue
+		}
+		for _, r := range p.Rules {
+			if r.Type == domain.RuleDomain {
+				hosts = append(hosts, domain.DomainRuleHost(r.Value))
+			}
+		}
+	}
+	var answers map[string][]netip.Addr
+	if len(hosts) > 0 {
+		distinct := map[string]bool{}
+		for _, h := range hosts {
+			distinct[h] = true
+		}
+		count := progress.Count(ctx, domain.StepResolving, len(distinct))
+		answers = s.domains.LookupAll(ctx, hosts, count.Add)
+	}
 	for _, p := range profiles {
 		if !p.Enabled {
 			continue
@@ -482,9 +513,7 @@ func (s *Service) lookupDomains(ctx context.Context, profiles []domain.Profile) 
 				continue
 			}
 			var ss []string
-			// Wildcards resolve their apex (DNS can't enumerate subdomains);
-			// the map stays keyed by the raw rule value the engine looks up.
-			for _, a := range s.domains.Lookup(ctx, domain.DomainRuleHost(r.Value)) {
+			for _, a := range answers[domain.DomainRuleHost(r.Value)] {
 				ss = append(ss, a.String())
 			}
 			if len(ss) == 0 {

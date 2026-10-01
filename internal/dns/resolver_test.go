@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -106,5 +107,34 @@ func TestCacheDoesntBlameTheNameForACanceledCaller(t *testing.T) {
 	c.Lookup(context.Background(), "corp.internal")
 	if r.n != 2 {
 		t.Fatalf("%d lookups, want the second caller to try again", r.n)
+	}
+}
+
+// slowResolver answers every name after a delay.
+type slowResolver struct{ d time.Duration }
+
+func (s slowResolver) Resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	time.Sleep(s.d)
+	return []netip.Addr{netip.MustParseAddr("192.0.2.1")}, nil
+}
+
+// LookupAll looks names up together: a change waits for the slowest name,
+// not for the sum of them, and hears as each finishes.
+func TestLookupAllIsConcurrent(t *testing.T) {
+	c := NewCache(slowResolver{100 * time.Millisecond}, time.Minute)
+	hosts := []string{"a", "b", "c", "d", "e", "f", "a"}
+	var done atomic.Int32
+	start := time.Now()
+	got := c.LookupAll(context.Background(), hosts, func() { done.Add(1) })
+	if took := time.Since(start); took > 400*time.Millisecond {
+		t.Errorf("took %s: the names were looked up one after another", took)
+	}
+	if len(got) != 6 || done.Load() != 6 {
+		t.Fatalf("answers %d, done %d", len(got), done.Load())
+	}
+	start = time.Now()
+	c.LookupAll(context.Background(), hosts, nil)
+	if took := time.Since(start); took > 50*time.Millisecond {
+		t.Errorf("cached names took %s", took)
 	}
 }

@@ -21,7 +21,34 @@ const (
 	EventRolledBack EventType = "rolled_back"
 	// EventAudit is appended whenever a new audit entry is written.
 	EventAudit EventType = "audit"
+	// EventApplyProgress is a step of a change a client asked for and is
+	// waiting on (ApplyProgress).
+	EventApplyProgress EventType = "apply_progress"
 )
+
+// ApplyStep is where a change is on its way to the kernel.
+type ApplyStep string
+
+const (
+	// StepWaiting: another change is being made; this one goes next.
+	StepWaiting ApplyStep = "waiting"
+	// StepResolving: looking up the profiles' domain names (Done of Total).
+	StepResolving ApplyStep = "resolving"
+	// StepChecking: working out what changes, and checking it's safe.
+	StepChecking ApplyStep = "checking"
+	// StepApplying: changing routes (Done of Total).
+	StepApplying ApplyStep = "applying"
+)
+
+// ApplyProgress is a step of the change a client tagged with ID (the
+// X-RR-Progress request header), so it can show what's happening while it
+// waits. Done and Total count the step's items where it has them.
+type ApplyProgress struct {
+	ID    string    `json:"id"`
+	Step  ApplyStep `json:"step"`
+	Done  int       `json:"done,omitempty"`
+	Total int       `json:"total,omitempty"`
+}
 
 // Event is the envelope for everything pushed on the SSE stream. Data is the
 // type-specific payload (e.g. a State for EventState).

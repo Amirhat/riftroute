@@ -29,6 +29,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `make test-ikev2-linux`: a real IKEv2 connection in Docker against a
   strongSwan server with a full tunnel, with the distribution's strongSwan
   and with the one RiftRoute ships (`SWAN=6`); in CI too.
+- **You can see a change being made.** While the app makes a change — a
+  profile turned on and applied, a route added, a config imported — it
+  shows each step as it happens: waiting for another change to finish,
+  looking up the profiles' domain addresses (counted), checking the change
+  is safe, changing routes (counted). A quick change shows nothing; a slow
+  one is visibly working instead of looking stuck.
+- **History says how long a change took**, and where a slow one spent the
+  time, and **why a change was rolled back**: the connection was lost, it
+  wasn't kept in time, it was reverted on request, or the daemon stopped.
+  The daemon's log notes any change that took over 2 seconds.
+
+### Changed
+- **A change no longer waits on DNS for names it has looked up before.** A
+  profile's domain answers now last as long as the 5-minute re-resolve that
+  refreshes them. They used to expire after 60 seconds, so most changes
+  looked every name up again, one after another, while every other change
+  waited. Names are also looked up together now, and a name that fails is
+  retried after 2 minutes, not on every change. So a change can use an
+  answer up to about 5 minutes old; the re-resolve still follows a CDN that
+  moves.
+
+### Fixed
+- **The app no longer reports a slow change as failed.** It gave up after
+  10 seconds even though the daemon went on to make the change. A change
+  now has 2 minutes, with its progress shown.
 
 ## [0.5.0] — 2026-09-28
 

@@ -4,8 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -28,6 +32,9 @@ type App struct {
 	client       *apiclient.Client
 	cancelEvents context.CancelFunc
 	appUpd       *appUpdates
+	// changes are the progress ids of this app's changes in flight
+	// (changeCall): their steps are forwarded to React as rr:apply-progress.
+	changes sync.Map
 }
 
 // NewApp constructs the App.
@@ -70,6 +77,15 @@ func (a *App) streamEvents(ctx context.Context) {
 	for ctx.Err() == nil {
 		err := a.client.Events(ctx, func(ev domain.Event) {
 			a.emit("rr:connection", map[string]any{"reachable": true})
+			if ev.Type == domain.EventApplyProgress {
+				var p domain.ApplyProgress
+				if json.Unmarshal(ev.Data, &p) == nil {
+					if _, ours := a.changes.Load(p.ID); ours {
+						a.emit("rr:apply-progress", p)
+					}
+				}
+				return
+			}
 			if ev.Type == domain.EventState {
 				var st domain.State
 				if json.Unmarshal(ev.Data, &st) == nil {
@@ -95,6 +111,36 @@ func (a *App) streamEvents(ctx context.Context) {
 
 func (a *App) call() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(a.ctx, 10*time.Second)
+}
+
+// changeTimeout bounds a call that makes a change: it may wait for another
+// change to finish, look up the profiles' domains and change many routes —
+// the app shows each step meanwhile (rr:apply-progress), so waiting is
+// visible rather than cut off at a read's 10 s.
+const changeTimeout = 2 * time.Minute
+
+var changeSeq atomic.Uint64
+
+// changeCall is call for a change: the daemon reports its steps under a
+// fresh progress id, which the event stream forwards to React while the
+// call runs, between a "started" and a "finished" of the app's own — so the
+// app shows one progress panel for every change, wherever it was made.
+func (a *App) changeCall() (context.Context, context.CancelFunc) { return a.progressCall(false) }
+
+// previewCall is changeCall for a dry run: it works the change out (looking
+// the domains up too) without making it, and the panel says so.
+func (a *App) previewCall() (context.Context, context.CancelFunc) { return a.progressCall(true) }
+
+func (a *App) progressCall(preview bool) (context.Context, context.CancelFunc) {
+	id := fmt.Sprintf("app-%d-%d", os.Getpid(), changeSeq.Add(1))
+	a.changes.Store(id, true)
+	a.emit("rr:apply-progress", map[string]any{"id": id, "step": "started", "preview": preview})
+	ctx, cancel := context.WithTimeout(a.ctx, changeTimeout)
+	return apiclient.WithProgress(ctx, id), func() {
+		cancel()
+		a.changes.Delete(id)
+		a.emit("rr:apply-progress", map[string]any{"id": id, "step": "finished"})
+	}
 }
 
 // --- bound read methods (typed bindings for React) ---
@@ -125,7 +171,7 @@ func (a *App) GetRoutes(family string, owner string) ([]domain.Route, error) {
 // through the plan-level Apply Protocol; interactive, so the returned pending
 // tx feeds commit-confirm. newRoute is ignored for action "delete".
 func (a *App) RouteOp(action string, route domain.Route, newRoute domain.Route) (apiclient.ConfigResult, error) {
-	ctx, cancel := a.call()
+	ctx, cancel := a.changeCall()
 	defer cancel()
 	var np *domain.Route
 	if action == "replace" {
@@ -241,7 +287,7 @@ func (a *App) PlanPreview() (domain.Plan, error) {
 // confirm; the guard still runs). confirmTimeoutSec is the daemon's auto-revert
 // backstop for interactive applies.
 func (a *App) Apply(yes bool, confirmTimeoutSec int) (safety.Result, error) {
-	ctx, cancel := a.call()
+	ctx, cancel := a.changeCall()
 	defer cancel()
 	return a.client.Apply(ctx, apiclient.ApplyOptions{Yes: yes, ConfirmTimeoutSec: confirmTimeoutSec})
 }
@@ -281,7 +327,7 @@ func (a *App) SetProfileEnabled(name string, enable bool) (safety.Result, error)
 // applies interactively (the UI runs the commit-confirm on the returned tx).
 // Validation errors come back in the result's Issues, not as a thrown error.
 func (a *App) SaveProfile(p domain.Profile, dryRun bool) (apiclient.ConfigResult, error) {
-	ctx, cancel := a.call()
+	ctx, cancel := a.progressCall(dryRun) // a dry run looks the domains up too
 	defer cancel()
 	res, err := a.client.SaveProfile(ctx, p, dryRun, false)
 	if err != nil && len(res.Issues) > 0 {
@@ -293,7 +339,7 @@ func (a *App) SaveProfile(p domain.Profile, dryRun bool) (apiclient.ConfigResult
 // DeleteProfile removes a profile by name and reconciles (interactive apply →
 // commit-confirm on the returned tx).
 func (a *App) DeleteProfile(name string) (apiclient.ConfigResult, error) {
-	ctx, cancel := a.call()
+	ctx, cancel := a.changeCall()
 	defer cancel()
 	return a.client.DeleteProfile(ctx, name, false)
 }
@@ -470,7 +516,7 @@ func (a *App) GetSnapshots() ([]domain.Snapshot, error) {
 // RestoreSnapshot restores a snapshot's captured profile set and reconciles
 // (interactive — the returned pending tx feeds commit-confirm).
 func (a *App) RestoreSnapshot(id string) (apiclient.ConfigResult, error) {
-	ctx, cancel := a.call()
+	ctx, cancel := a.changeCall()
 	defer cancel()
 	return a.client.RestoreSnapshot(ctx, id)
 }
