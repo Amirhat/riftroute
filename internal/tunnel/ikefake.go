@@ -98,14 +98,24 @@ func (f *FakeIKE) Drop() {
 	}
 }
 
+// Wedge makes every running charon-cmd stop answering on its control socket
+// (Status fails), its connection status unknown.
+func (f *FakeIKE) Wedge() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.live {
+		p.wedged = true
+	}
+}
+
 type fakeIKEProcess struct {
 	f     *FakeIKE
 	done  chan struct{}
 	iface string
 	vip   netip.Addr
 	// under f.mu:
-	up, announced, gone bool
-	tail                []string
+	up, announced, gone, wedged bool
+	tail                        []string
 }
 
 func (p *fakeIKEProcess) Pid() int    { return os.Getpid() }
@@ -130,6 +140,9 @@ func (p *fakeIKEProcess) Status(context.Context) (IKEStatus, error) {
 	defer p.f.mu.Unlock()
 	if p.gone {
 		return IKEStatus{}, errIKENotRunning
+	}
+	if p.wedged {
+		return IKEStatus{}, context.DeadlineExceeded
 	}
 	if !p.up {
 		return IKEStatus{State: "CONNECTING"}, nil

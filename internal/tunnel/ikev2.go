@@ -232,15 +232,23 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 		st, err := proc.Status(qctx)
 		cancel()
 		now := time.Now()
-		if err != nil {
-			if !seen && now.Sub(start) > ikeStartWait {
+		var lost error // charon answered before, and doesn't now
+		switch {
+		case err != nil && !seen:
+			if now.Sub(start) > ikeStartWait {
 				stop()
 				return false, errors.New("strongSwan didn't start: " + lastLine(proc.Tail(), err.Error()))
 			}
 			continue
+		case err != nil:
+			// A charon that stops answering can't say the connection is
+			// still there: it counts as down, so a wedged one doesn't keep a
+			// dead tunnel "connected" (its routes, no block).
+			lost, st = err, IKEStatus{}
+		default:
+			seen = true
+			m.update(k.name, func(r *live) { r.in, r.out = st.In, st.Out })
 		}
-		seen = true
-		m.update(k.name, func(r *live) { r.in, r.out = st.In, st.Out })
 		switch {
 		case st.Up && !wasUp:
 			if why := k.connected(ctx, st); why != "" {
@@ -255,6 +263,9 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 		case wasUp && now.Sub(downSince) >= ikeDownAfter:
 			// charon-cmd stays up with no connection: restart it.
 			stop()
+			if lost != nil {
+				return true, errors.New("strongSwan stopped answering (" + lost.Error() + ")")
+			}
 			return true, errors.New("the connection to the server dropped")
 		case !wasUp && now.Sub(start) > ikeConnectWait:
 			stop()

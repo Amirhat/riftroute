@@ -156,6 +156,25 @@ func TestIKEv2ReconnectsAfterADrop(t *testing.T) {
 	}
 }
 
+// A charon-cmd that stops answering can't vouch for its connection: after
+// ikeDownAfter it counts as dropped, and is restarted.
+func TestIKEv2WedgedStrongSwanIsRestarted(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	if _, err := h.m.Save(t.Context(), ikeSpec(t, newTestPKI(t))); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("office"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "office", domain.TunnelConnected)
+	fi.Wedge()
+	waitFor(t, "a second charon-cmd", func() bool { return len(fi.Started()) == 2 })
+	st := waitState(t, h.m, "office", domain.TunnelConnected)
+	if fi.Running() != 1 || st.Iface != "utun8" {
+		t.Fatalf("after the wedge: %+v (running %d)", st, fi.Running())
+	}
+}
+
 // A connection that never comes up is retried, then given up, with the
 // reason from charon's output.
 func TestIKEv2GivesUpWithTheReason(t *testing.T) {
