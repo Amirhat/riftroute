@@ -22,9 +22,11 @@ for a in arm64 x86_64 universal; do
   fi
   [ "$(otool -l "$f" | grep -c LC_RPATH || true)" = 0 ] || fail "$f has an LC_RPATH"
   codesign --verify --strict "$f"
-  # The patch is the only code in this build that reads install_routes
-  # (kernel-pfroute doesn't; the kernel backends that do aren't built).
+  # The patches: the only code in this build that reads install_routes
+  # (kernel-pfroute doesn't; the kernel backends that do aren't built), and
+  # charon-cmd's send_cert_always.
   grep -q '%s.install_routes' "$f" || fail "$f was built without the kernel-libipsec patch"
+  grep -q '%s.send_cert_always' "$f" || fail "$f was built without the charon-cmd send-cert patch"
   l="${DIR}/${a}/licenses"
   for x in SOURCES.txt strongswan/COPYING strongswan/LICENSE openssl/LICENSE.txt; do
     [ -f "${l}/${x}" ] || fail "${l}/${x} is missing"

@@ -4,6 +4,18 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **IKEv2 tunnels connect to servers that don't ask for the client's
+  certificate.** charon-cmd sent it only when asked, so against such a
+  server (which waits for it, as Apple's client always sends it) the login
+  went unanswered and the tunnel stayed "connecting". The charon-cmd
+  RiftRoute ships on macOS now always sends it (a second small patch,
+  `packaging/strongswan/charon-cmd-send-cert-always.patch`); the Docker test
+  covers such a server. Linux's distribution charon-cmd still sends it only
+  when asked.
+
 ## [0.6.0] — 2026-10-01
 
 IKEv2 tunnels from configuration profiles, and every change shown as it's made.

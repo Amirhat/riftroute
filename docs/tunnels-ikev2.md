@@ -99,6 +99,13 @@ The alternatives, and why not:
     only: on its own, a rule after main still catches every lookup main
     can't answer (a host's IPv6 on a v4-only network, say — the review
     proved it, and the Docker test now checks it with main emptied).
+- **The certificate is always sent.** Upstream charon-cmd sends the login
+  certificate only when the server asks for it (a CERTREQ); some servers
+  never ask, and wait for it — Apple's client always sends it — so the login
+  went unanswered. The macOS charon-cmd's second patch makes it send it by
+  default (`send_cert_always`, which the config also sets). Linux's
+  distribution charon-cmd ignores the setting: against such a server it
+  fails the same way.
 - **ESP always in UDP.** `kernel-libipsec` has no raw ESP on macOS, and
   charon then forces UDP encapsulation (it reports NAT) — which also
   crosses networks that drop raw ESP.

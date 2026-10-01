@@ -280,7 +280,7 @@ func TestRenderIKE(t *testing.T) {
 		t.Error("cert file isn't the login certificate")
 	}
 	conf := string(files["office.conf"])
-	for _, s := range []string{"install_routes = no", "socket = unix:///run/rr/office.vici", "kernel-libipsec!", "vici!", "port = 0"} {
+	for _, s := range []string{"install_routes = no", "socket = unix:///run/rr/office.vici", "kernel-libipsec!", "vici!", "port = 0", "send_cert_always = yes"} {
 		if !strings.Contains(conf, s) {
 			t.Errorf("config lacks %q:\n%s", s, conf)
 		}
