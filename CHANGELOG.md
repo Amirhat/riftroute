@@ -4,6 +4,19 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A tunnel connects beside a VPN whose interface has a wide netmask.** A
+  tunnel whose server gave it an address in 10.0.0.0/8 was refused next to a
+  main VPN run by Apple's IKEv2 client (Windscribe's, for one): that VPN's
+  `ipsec0` holds its address with a /8 netmask, so the tunnel's address
+  "overlaps 10.0.0.0/8 on ipsec0". macOS routes only that one address to such
+  an interface, and nothing clashed. Another VPN interface's netmask now
+  counts as a network only when the kernel routes that network into the
+  interface; otherwise its address alone does. A LAN's netmask always counts,
+  and so does any netmask when the routes can't be read.
+
 ## [0.6.1] — 2026-10-01
 
 IKEv2 tunnels connect to servers that don't ask for the client's certificate.

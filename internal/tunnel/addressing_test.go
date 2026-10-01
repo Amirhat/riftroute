@@ -82,3 +82,47 @@ func TestVetAddressing(t *testing.T) {
 		}
 	}
 }
+
+// Another tunnel interface's netmask is a network only where the kernel
+// routes it there: Apple's IKEv2 client (another VPN's ipsec0) holds its
+// address with a /8 netmask and a host route, and a tunnel addressed
+// elsewhere in 10/8 beside it is fine. A network the kernel does route into
+// a tunnel interface, a LAN's, and any netmask when the routes can't be
+// read, still count.
+func TestVetAddressingBesideATunnelNetmask(t *testing.T) {
+	env := addressingEnv{
+		iface: "ipsec1",
+		ifaces: []domain.Iface{
+			{Name: "en0", Addrs: []string{"192.168.0.23/24"}},
+			{Name: "ipsec0", IsVPN: true, Addrs: []string{"10.190.0.7/8"}}, // the main VPN
+			{Name: "utun5", IsVPN: true, Addrs: []string{"10.8.0.2/24"}},
+			{Name: "ipsec1", IsVPN: true, Addrs: []string{"10.0.50.10/32"}},
+		},
+	}
+	kernel := []domain.Route{
+		{DstCIDR: "0.0.0.0/0", Iface: "ipsec0"},
+		{DstCIDR: "10.190.0.7/32", Iface: "ipsec0"},
+		{DstCIDR: "10.255.255.0/24", Iface: "ipsec0"},
+		{DstCIDR: "10.8.0.0/24", Iface: "utun5"},
+	}
+	for _, tc := range []struct {
+		name   string
+		net    string
+		routes []domain.Route
+		refuse string // substring of the reason; "" = accepted
+	}{
+		{"beside a netmask nothing routes", "10.0.50.10/32", kernel, ""},
+		{"the other tunnel's own address", "10.190.0.7/32", kernel, "10.190.0.7/32 on ipsec0"},
+		{"a network routed into a tunnel", "10.8.0.9/32", kernel, "10.8.0.0/24 on utun5"},
+		{"a LAN's netmask, no route listed", "192.168.0.9/32", kernel, "192.168.0.0/24 on en0"},
+		{"routes unreadable", "10.0.50.10/32", nil, "10.0.0.0/8 on ipsec0"},
+	} {
+		got := vetAddressing(pfxs(tc.net), tc.routes, env)
+		switch {
+		case tc.refuse == "" && got != "":
+			t.Errorf("%s: refused: %s", tc.name, got)
+		case tc.refuse != "" && !strings.Contains(got, tc.refuse):
+			t.Errorf("%s: got %q, want a refusal mentioning %q", tc.name, got, tc.refuse)
+		}
+	}
+}
