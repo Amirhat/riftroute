@@ -92,10 +92,25 @@ type State struct {
 	Preferences Preferences `json:"preferences"`
 	// Update is the updater's status (nil on daemons without one).
 	Update *UpdateStatus `json:"update,omitempty"`
+	// Tailscale is a Tailscale running beside RiftRoute, as the kernel shows
+	// it (nil: none).
+	Tailscale *TailscaleStatus `json:"tailscale,omitempty"`
 	// TelemetryNotice: telemetry is on and the user hasn't been told yet —
 	// the app shows its notice (POST /telemetry/notice marks it seen).
 	TelemetryNotice bool `json:"telemetry_notice,omitempty"`
 	// Tunnels are the VPN connections RiftRoute runs itself.
 	Tunnels     []TunnelStatus `json:"tunnels,omitempty"`
 	GeneratedAt time.Time      `json:"generated_at"`
+}
+
+// TailscaleStatus is a Tailscale running beside RiftRoute, as the kernel
+// shows it (docs/tailscale.md). RiftRoute never runs or changes it: it keeps
+// out of its way.
+type TailscaleStatus struct {
+	Iface string `json:"iface"`
+	// ExitNode: its exit node is on — what nothing else routes goes to it.
+	ExitNode bool `json:"exit_node"`
+	// Networks are what it routes (its own ranges, the tailnet's subnets),
+	// left to it by RiftRoute's profiles and tunnels.
+	Networks []string `json:"networks"`
 }

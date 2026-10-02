@@ -9,6 +9,7 @@ package routing
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -19,9 +20,21 @@ import (
 // Model B (Linux policy routing) allocation: a dedicated table for include-mode
 // traffic, and a fixed priority band for the selecting rules (spec §4.3/§5.4).
 const (
-	ModelBTable      = "5252"
-	ModelBRulePrio   = 5252
-	ModelBMark       = "0x5252" // fwmark for per-app traffic steered into the table
+	ModelBTable    = "5252"
+	ModelBRulePrio = 5252
+	ModelBMark     = "0x5252" // fwmark for per-app traffic steered into the table
+	// TailscaleRulePrio is just before Model B's rules: what a Tailscale beside
+	// RiftRoute routes is looked up in its table first, so an app rule (which
+	// matches any destination) can't take the tailnet into the VPN.
+	TailscaleRulePrio = ModelBRulePrio - 1
+	tailscaleTag      = "tailscale"
+	// BypassTable holds a copy of RiftRoute's main-table routes while a
+	// Tailscale exit node is on (Linux): its rule at 5270 sends everything
+	// to its table before main is looked up, so RiftRoute's routes are
+	// looked up first, at BypassRulePrio — after Tailscale's rules for its
+	// own packets (5210–5250), so its connection is never touched.
+	BypassTable      = "5253"
+	BypassRulePrio   = 5260
 	modelBProfileTag = "model-b"
 )
 
@@ -64,6 +77,18 @@ type DesiredInput struct {
 	DNSServers []netip.Addr
 	Anchors    []netip.Addr
 
+	// Tailscale are the networks a Tailscale beside RiftRoute routes (its
+	// ranges, the tailnet's subnets; tailscale.Detect): include rules are cut
+	// around them and exclude destinations inside them yield, so RiftRoute
+	// never takes them from it. TailscaleTable is its routing table on Linux
+	// ("52"): with include rules, marked apps' traffic to those networks is
+	// sent there first (TailscaleRulePrio).
+	Tailscale      []netip.Prefix
+	TailscaleTable string
+	// TailscaleExitNode: its exit node is on (Linux: its table's default
+	// route), so RiftRoute's main-table routes are mirrored (MirrorPastTailscale).
+	TailscaleExitNode bool
+
 	Platform      string // "darwin" | "linux" | "fake"
 	PolicyRouting bool   // whether Model B (include mode) is available
 	Now           time.Time
@@ -100,7 +125,7 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			// policy rule beats the tunnel's more specific route, so the
 			// destinations are cut around them (aroundTunnels).
 			for fam, prefixes := range byFamily {
-				byFamily[fam] = aroundTunnels(prefixes, tunnels.nets)
+				byFamily[fam] = aroundTunnels(aroundTunnels(prefixes, tunnels.nets), in.Tailscale)
 			}
 			if in.Platform == "darwin" {
 				// macOS: PF route-to anchors — the Darwin analogue of Model B. No
@@ -137,7 +162,7 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			skipped, families := 0, 0
 			var skipErr error
 			for fam, prefixes := range byFamily {
-				if prefixes = outsideTunnels(prefixes, tunnels.nets); len(prefixes) == 0 {
+				if prefixes = outsideTunnels(outsideTunnels(prefixes, tunnels.nets), in.Tailscale); len(prefixes) == 0 {
 					continue
 				}
 				families++
@@ -177,6 +202,23 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 
 	tunnels.place(seenRoute, &routes)
 
+	// Include rules come before Tailscale's on Linux (5252 < 5270): what it
+	// routes is looked up in its table first, for every family with them.
+	if in.TailscaleTable != "" && in.Platform != "darwin" {
+		for fam := range includeFamilies {
+			for _, n := range in.Tailscale {
+				if famOf(n.Addr()) != fam {
+					continue
+				}
+				pr := domain.PolicyRule{Priority: TailscaleRulePrio, Selector: "to " + n.Masked().String(), Table: in.TailscaleTable, Family: fam, Proto: protoFor(in.Platform)}
+				if k := RuleKey(pr); !seenRule[k] {
+					seenRule[k] = true
+					rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: tailscaleTag, CreatedAt: in.Now})
+				}
+			}
+		}
+	}
+
 	// For each family with include rules, the dedicated table needs a default via
 	// the tunnel (spec §5.4 Model B). Refuse if no tunnel is active (fail-safe).
 	for fam := range includeFamilies {
@@ -199,9 +241,48 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 		addRoute(seenRoute, &routes, rt, modelBProfileTag, in.Now)
 	}
 
+	routes, rules = MirrorPastTailscale(routes, rules, in)
 	sort.SliceStable(routes, func(i, j int) bool { return RouteKey(routes[i].Route) < RouteKey(routes[j].Route) })
 	sort.SliceStable(rules, func(i, j int) bool { return RuleKey(rules[i].PolicyRule) < RuleKey(rules[j].PolicyRule) })
 	return routes, rules, nil
+}
+
+// MirrorPastTailscale gives a desired set its copies for a Tailscale exit
+// node (Linux): every main-table route also in BypassTable, and the rule
+// looking that table up before Tailscale's. Without an exit node, none:
+// whatever copies the set held (an earlier apply's) are dropped.
+func MirrorPastTailscale(routes []domain.ManagedRoute, rules []domain.ManagedRule, in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule) {
+	routes = slices.DeleteFunc(slices.Clone(routes), func(r domain.ManagedRoute) bool { return r.Table == BypassTable })
+	rules = slices.DeleteFunc(slices.Clone(rules), func(r domain.ManagedRule) bool { return r.Table == BypassTable })
+	if !in.TailscaleExitNode || in.TailscaleTable == "" || in.Platform == "darwin" {
+		return routes, rules
+	}
+	families := map[domain.Family]bool{}
+	for _, r := range slices.Clone(routes) {
+		if r.Table != "" {
+			continue
+		}
+		pfx, err := netip.ParsePrefix(r.DstCIDR)
+		if err != nil {
+			continue
+		}
+		// Looked up before Tailscale's table, a copy must not take what
+		// Tailscale routes inside it (a tailnet subnet in 10.0.0.0/8): it's
+		// cut around its networks.
+		for _, part := range subtractNets(pfx.Masked(), in.Tailscale) {
+			c := r
+			c.Table, c.DstCIDR = BypassTable, part.String()
+			routes = append(routes, c)
+			families[r.Family] = true
+		}
+	}
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		if families[fam] {
+			pr := domain.PolicyRule{Priority: BypassRulePrio, Selector: "from all", Table: BypassTable, Family: fam, Proto: protoFor(in.Platform)}
+			rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: tailscaleTag, CreatedAt: in.Now})
+		}
+	}
+	return routes, rules
 }
 
 // buildDarwinInclude emits macOS PF route-to rules for an include-mode profile:
@@ -263,6 +344,13 @@ func buildDarwinInclude(p domain.Profile, byFamily map[domain.Family][]netip.Pre
 			if pr, ok := mkRule("user "+r.Value, fam); ok {
 				add(pr)
 				emitted = true
+				// The user's traffic to what a Tailscale beside us routes
+				// passes first, without route-to: it stays Tailscale's.
+				for _, n := range in.Tailscale {
+					if famOf(n.Addr()) == fam {
+						add(domain.PolicyRule{Priority: TailscaleRulePrio, Selector: "to " + n.Masked().String() + " user " + r.Value, Family: fam, Proto: "riftroute"})
+					}
+				}
 			}
 		}
 		if !emitted {

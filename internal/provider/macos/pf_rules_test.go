@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 func sampleRules() []domain.PolicyRule {
@@ -153,5 +154,23 @@ load anchor "com.apple" from "/etc/pf.anchors/com.apple"
 	// Remove is idempotent / safe when absent.
 	if pfRemoveHook(base) != base {
 		t.Error("pfRemoveHook altered a file without our block")
+	}
+}
+
+// A user's traffic to what Tailscale routes passes first, without route-to
+// (routing.TailscaleRulePrio): rendered ahead of the user's route-to rule,
+// and parsed back from pfctl's echo to the same identity.
+func TestPFPassForTailscaleRoundTrips(t *testing.T) {
+	pass := domain.PolicyRule{Priority: routing.TailscaleRulePrio, Selector: "to 100.64.0.0/10 user 501", Family: domain.FamilyV4, Proto: "riftroute"}
+	routeTo := domain.PolicyRule{Priority: routing.ModelBRulePrio, Selector: "user 501", Family: domain.FamilyV4, Proto: "riftroute", RouteToIface: "utun4"}
+	anchor := RenderAnchor([]domain.PolicyRule{routeTo, pass})
+	lines := strings.Split(strings.TrimSpace(anchor), "\n")
+	if len(lines) != 2 || lines[0] != `pass out quick inet from any to 100.64.0.0/10 user 501 label "riftroute"` || !strings.Contains(lines[1], "route-to utun4") {
+		t.Fatalf("anchor:\n%s", anchor)
+	}
+	echo := `pass out quick inet from any to 100.64.0.0/10 user = 501 flags S/SA keep state label "riftroute"`
+	got := parseAnchorRules(echo)
+	if len(got) != 1 || pfRuleKey(got[0]) != pfRuleKey(pass) {
+		t.Fatalf("parsed %+v, want %+v", got, pass)
 	}
 }

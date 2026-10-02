@@ -148,6 +148,7 @@ func (p *Provider) FlushOwned(ctx context.Context) error {
 		// actually-owned routes individually; this is the belt-and-suspenders sweep.
 		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum)
 		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.ModelBTable)
+		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.BypassTable)
 		// Delete proto-tagged rules enumerated from `ip -j rule show`.
 		if out, e := runCombined(ctx, "ip", "-j", fam, "rule", "show"); e == nil {
 			if rules, perr := parseRulesJSON([]byte(out), famOf(fam)); perr == nil {

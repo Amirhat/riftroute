@@ -96,7 +96,11 @@ func renderRoutes(cmd *cobra.Command, routes []domain.Route) {
 		case gw == "":
 			gw = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.DstCIDR, gw, r.Iface, r.Metric, r.Owner)
+		owner := string(r.Owner)
+		if r.Table != "" {
+			owner += " (table " + r.Table + ")" // Model B's, or the copy past a Tailscale exit node
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.DstCIDR, gw, r.Iface, r.Metric, owner)
 	}
 	_ = tw.Flush()
 	fmt.Fprintf(cmd.OutOrStdout(), "\n%d route(s)\n", len(routes))

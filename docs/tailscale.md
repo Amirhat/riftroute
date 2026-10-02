@@ -1,9 +1,10 @@
 # Tailscale — design (proposal)
 
-Status: proposal, for the owner's approval before any code. The owner chose
-both: RiftRoute must **live beside a Tailscale already on the machine** without
-breaking it, and **send chosen networks through Tailscale** as it does through
-its own tunnels.
+Status: the owner chose both — RiftRoute must **live beside a Tailscale
+already on the machine** without breaking it, and **send chosen networks
+through Tailscale** as it does through its own tunnels — in the order
+recommended below (A, then B1, then B2 only if still wanted). **Part A is
+built** (see "As built" at the end); B1 and B2 are next.
 
 ## What Tailscale does to a machine
 
@@ -89,3 +90,32 @@ Tests: Docker (Linux) with a real `tailscaled` needs a tailnet. Use a
 Headscale container (open-source control server) as the tailnet, with two
 nodes, a subnet router and an exit node. On macOS, the user tests live, as
 for IKEv2.
+
+## As built (Part A)
+
+- **Detection** (`internal/tailscale`, from the kernel's state only):
+  - its interface: `tailscale0`, or a `utun` holding an address in its ranges;
+  - what it routes: the main table's routes into it (macOS) and table 52's (Linux, read only when its interface is there);
+  - whether its exit node is on: a default route, or two /1 halves, into it.
+- **Shown:**
+  - `State.Tailscale`;
+  - the dashboard's VPN card;
+  - `riftroute status`;
+  - `doctor`.
+  On macOS its `utun` counts as the VPN only while its exit node is on.
+- **Its networks stay its own** (`DesiredInput.Tailscale`):
+  - include rules (Linux policy rules at 5252, macOS PF) are cut around them;
+  - exclude destinations inside them yield;
+  - tunnel routes keep them out, since they're `Occupied` (Linux: from table 52), and MagicDNS counts as a resolver.
+- **Marked apps** (include mode's app rules match any destination):
+  - Linux: rules at `TailscaleRulePrio` (5251) send its networks to table 52 first;
+  - macOS: a PF `pass` without `route-to` for the user's traffic to them, ahead of the user's `route-to`.
+- **Its exit node, on Linux:**
+  - while it's on, RiftRoute's main-table routes are copied into `BypassTable` (5253), cut around its networks, and looked up at 5260. That's after its rules for its own packets (5210–5250) and before its capture (5270);
+  - the copies go when the exit node does;
+  - the network watcher sees the exit node turn on and off (its table's default route), and RiftRoute applies again.
+- **The kill switch needs no change:**
+  - it blocks only the physical interfaces, never a tunnel's, so the tailnet (and its exit node) pass;
+  - Tailscale's own connection runs as root (`tailscaled`, macOS's network extension), which the kill switch never blocks.
+- `-provider fake -fake-tailscale on|exit` puts one beside a fake daemon, for development.
+- **Not covered:** a second Tailscale (B2), its auth, and routing chosen destinations through it (B1).

@@ -1284,6 +1284,22 @@ export namespace domain {
 		    return a;
 		}
 	}
+	export class TailscaleStatus {
+	    iface: string;
+	    exit_node: boolean;
+	    networks: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TailscaleStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.iface = source["iface"];
+	        this.exit_node = source["exit_node"];
+	        this.networks = source["networks"];
+	    }
+	}
 	export class UpdateStatus {
 	    mode: string;
 	    current: string;
@@ -1378,6 +1394,7 @@ export namespace domain {
 	    kill_switch_notice?: string;
 	    preferences: Preferences;
 	    update?: UpdateStatus;
+	    tailscale?: TailscaleStatus;
 	    telemetry_notice?: boolean;
 	    tunnels?: TunnelStatus[];
 	    // Go type: time
@@ -1404,6 +1421,7 @@ export namespace domain {
 	        this.kill_switch_notice = source["kill_switch_notice"];
 	        this.preferences = this.convertValues(source["preferences"], Preferences);
 	        this.update = this.convertValues(source["update"], UpdateStatus);
+	        this.tailscale = this.convertValues(source["tailscale"], TailscaleStatus);
 	        this.telemetry_notice = source["telemetry_notice"];
 	        this.tunnels = this.convertValues(source["tunnels"], TunnelStatus);
 	        this.generated_at = this.convertValues(source["generated_at"], null);
@@ -1427,6 +1445,7 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
 	
 	export class TunnelInstall {
 	    system: string;
