@@ -203,7 +203,10 @@ func TestSummaryFlagsAWorseVersion(t *testing.T) {
 	}
 	reps[0].Updates.RolledBackHealth = 1 // an install went back to 0.6.1
 	d, _ := time.Parse(time.DateOnly, day)
-	s := summarize(reps, d.AddDate(0, 0, -6), d)
+	s, err := summarize(newestFirst(reps), d.AddDate(0, 0, -6), d)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(s.Versions) != 2 || s.Versions[0].Version != "0.7.0" || s.Versions[0].Installs != 10 {
 		t.Fatalf("versions %+v", s.Versions)
 	}
@@ -232,5 +235,79 @@ func TestVersionsSortNewestFirst(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "0.10.0 0.7.0 0.6.1 dev" {
 		t.Fatal(got)
+	}
+}
+
+// newestFirst yields reps (oldest first) as the store does for a summary.
+func newestFirst(reps []telemetry.Report) func(func(telemetry.Report)) error {
+	return func(fn func(telemetry.Report)) error {
+		for i := len(reps) - 1; i >= 0; i-- {
+			fn(reps[i])
+		}
+		return nil
+	}
+}
+
+// Reports can't take the shared host's disk, however many are sent: at
+// most the daily cap is kept (a repeat replaces its own and doesn't count),
+// and none past the database's size cap or below the disk's free floor. A
+// refusal is a 503 (the client sends it again later), logged at most hourly
+// and without the sender.
+func TestTelemetryCantFillTheDisk(t *testing.T) {
+	cap, maxDB, minFree := telemetryDailyCap, telemetryMaxDB, telemetryMinFree
+	t.Cleanup(func() { telemetryDailyCap, telemetryMaxDB, telemetryMinFree = cap, maxDB, minFree })
+	e := newEnv(t, "")
+	today := e.now.UTC().Format(time.DateOnly)
+	telemetryDailyCap = 2
+	for i, want := range []int{204, 204, 503} {
+		e.ip = fmt.Sprintf("198.51.100.%d", i+1)
+		if w := e.send(report(i+1, today, "0.7.0")); w.Code != want {
+			t.Fatalf("report %d: %d, want %d", i+1, w.Code, want)
+		}
+	}
+	if w := e.send(report(1, today, "0.7.1")); w.Code != 204 {
+		t.Fatalf("a repeat at the cap: %d", w.Code)
+	}
+	telemetryDailyCap = 100
+	telemetryMaxDB = 1
+	if w := e.send(report(9, today, "0.7.0")); w.Code != 503 {
+		t.Fatalf("past the database's cap: %d", w.Code)
+	}
+	telemetryMaxDB = maxDB
+	telemetryMinFree = 1 << 50 // more than the env's 42 GiB free
+	if w := e.send(report(10, today, "0.7.0")); w.Code != 503 {
+		t.Fatalf("low on disk: %d", w.Code)
+	}
+	telemetryMinFree = minFree
+	if w := e.send(report(11, today, "0.7.0")); w.Code != 204 {
+		t.Fatalf("with room again: %d", w.Code)
+	}
+	if n := strings.Count(e.logs.String(), "telemetry reports refused"); n != 1 {
+		t.Errorf("refusals logged %d times in an hour, want once:\n%s", n, e.logs)
+	}
+	if strings.Contains(e.logs.String(), "198.51.100") {
+		t.Error("the sender's address reached the log")
+	}
+	if reps, _ := e.srv.st.reports(today, today); len(reps) != 3 {
+		t.Fatalf("%d reports kept, want 3", len(reps))
+	}
+}
+
+// A summary is worked out at most once a minute per window.
+func TestTelemetrySummaryIsCached(t *testing.T) {
+	e := newEnv(t, "")
+	today := e.now.UTC().Format(time.DateOnly)
+	e.send(report(1, today, "0.7.0"))
+	first, err := e.srv.summary(7)
+	if err != nil || first.Installs != 1 {
+		t.Fatalf("%+v %v", first, err)
+	}
+	e.send(report(2, today, "0.7.0"))
+	if s, _ := e.srv.summary(7); s.Installs != 1 {
+		t.Fatalf("not cached: %d", s.Installs)
+	}
+	e.now = e.now.Add(summaryTTL)
+	if s, _ := e.srv.summary(7); s.Installs != 2 {
+		t.Fatalf("stale after the TTL: %d", s.Installs)
 	}
 }

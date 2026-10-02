@@ -54,8 +54,12 @@ type telemetryDeps struct {
 // newSender builds the daemon's report sender.
 func newSender(d telemetryDeps, url string, logger *slog.Logger) *telemetry.Sender {
 	return telemetry.NewSender(telemetry.Env{
-		URL:      url,
-		HTTP:     &http.Client{Timeout: time.Minute},
+		URL: url,
+		// No redirects: a report goes to the address it's sent to, or not
+		// at all.
+		HTTP: &http.Client{Timeout: time.Minute, CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
 		Counters: counts,
 		Level: func() domain.TelemetryLevel {
 			p, err := d.st.LoadPreferences()

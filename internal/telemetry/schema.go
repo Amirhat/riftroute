@@ -19,8 +19,9 @@ import (
 // Schema is the report format's version.
 const Schema = 1
 
-// MaxReportBytes bounds a report on the wire.
-const MaxReportBytes = 16 << 10
+// MaxReportBytes bounds a report on the wire: the largest valid one is
+// about 2.5 KiB.
+const MaxReportBytes = 8 << 10
 
 // maxCount caps any one count: a report covers a day (or a few missed ones).
 const maxCount = 1_000_000

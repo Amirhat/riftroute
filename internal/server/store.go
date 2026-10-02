@@ -201,24 +201,47 @@ func (s *store) putReport(r *telemetry.Report, now time.Time) error {
 
 // reports returns the reports for days from..to (YYYY-MM-DD), oldest first.
 func (s *store) reports(from, to string) ([]telemetry.Report, error) {
-	rows, err := s.db.Query(`SELECT doc FROM telemetry_reports WHERE day>=? AND day<=? ORDER BY day, received`, from, to)
+	var out []telemetry.Report
+	err := s.eachReport(from, to, false, func(r telemetry.Report) { out = append(out, r) })
+	return out, err
+}
+
+// eachReport calls fn with each report for days from..to (YYYY-MM-DD),
+// oldest first or, with newest, newest first — one at a time, so a summary
+// over many never holds them all.
+func (s *store) eachReport(from, to string, newest bool, fn func(telemetry.Report)) error {
+	order := "day, received"
+	if newest {
+		order = "day DESC, received DESC"
+	}
+	rows, err := s.db.Query(`SELECT doc FROM telemetry_reports WHERE day>=? AND day<=? ORDER BY `+order, from, to)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
-	var out []telemetry.Report
 	for rows.Next() {
 		var doc string
 		if err := rows.Scan(&doc); err != nil {
-			return nil, err
+			return err
 		}
 		var r telemetry.Report
 		if err := json.Unmarshal([]byte(doc), &r); err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, r)
+		fn(r)
 	}
-	return out, rows.Err()
+	return rows.Err()
+}
+
+// reportsOn counts the reports kept for day, and reports whether install
+// has one among them.
+func (s *store) reportsOn(day, install string) (n int, has bool, err error) {
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM telemetry_reports WHERE day=?`, day).Scan(&n); err != nil {
+		return 0, false, err
+	}
+	var one int
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM telemetry_reports WHERE day=? AND install=?`, day, install).Scan(&one)
+	return n, one > 0, err
 }
 
 // pruneReports deletes reports for days before day.

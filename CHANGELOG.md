@@ -27,9 +27,10 @@ dashboard that shows a bad release before most installs take it.
 - **The exact report.** `riftroute telemetry show`, the notice, and
   Settings → Telemetry show the report as it would be sent now, the last
   one sent, and when the next goes (`GET /telemetry` on the daemon).
-- **Monitoring on the update server.** Reports are taken strictly (16 KiB,
+- **Monitoring on the update server.** Reports are taken strictly (8 KiB,
   schema-checked, one per install per day, throttled, no address
-  recorded) and kept 180 days. The admin dashboard shows, for 7, 30 or 90
+  recorded), kept 180 days, and capped so a flood can't fill the server's
+  disk (5,000 a day; none past 512 MiB of reports or under 1 GiB free). The admin dashboard shows, for 7, 30 or 90
   days, installs per day, each version's unclean starts, updates and
   rollbacks, failed and slow changes and tunnel failures; tunnel sessions
   per protocol with failure causes; why changes were refused or rolled

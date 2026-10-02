@@ -30,8 +30,44 @@ const telemetryKeepDays = 180
 const summaryMaxDays = 90
 
 // newTelemetryLimiter throttles report uploads: one install sends one a day,
-// so 30 an hour from one address covers a large office behind one NAT.
-func newTelemetryLimiter() *limiter { return newLimiter(time.Hour, 30, 20000) }
+// so 30 an hour from one address covers a large office behind one NAT, and
+// 2,000 an hour in all is well past the daily cap's pace.
+func newTelemetryLimiter() *limiter { return newLimiter(time.Hour, 30, 2000) }
+
+// What reports may take of the shared host, whoever sends them (vars for
+// tests): at most telemetryDailyCap kept a day — a repeat of one already
+// kept replaces it, and doesn't count — and none while the database is past
+// telemetryMaxDB or the disk below telemetryMinFree. A valid report is
+// under 2.5 KiB, so a day at the cap is about 12 MiB.
+var (
+	telemetryDailyCap        = 5000
+	telemetryMaxDB    int64  = 512 << 20
+	telemetryMinFree  uint64 = 1 << 30
+)
+
+// telemetryRoom says why no new report for day from install may be kept
+// now, or "".
+func (s *Server) telemetryRoom(day, install string) (string, error) {
+	n, has, err := s.st.reportsOn(day, install)
+	if err != nil {
+		return "", err
+	}
+	if has {
+		return "", nil // replaces its own
+	}
+	switch {
+	case n >= telemetryDailyCap:
+		return "the day's cap", nil
+	case s.st.size() > telemetryMaxDB:
+		return "the database's size cap", nil
+	}
+	if s.cfg.DiskFree != nil {
+		if free, err := s.cfg.DiskFree(s.cfg.DataDir); err == nil && free < telemetryMinFree {
+			return "low disk space", nil
+		}
+	}
+	return "", nil
+}
 
 func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	now := s.cfg.Now()
@@ -65,7 +101,21 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 		reply(http.StatusBadRequest, "report: day out of range")
 		return
 	}
-	if err := s.st.putReport(rep, now); err != nil {
+	full, err := s.telemetryRoom(rep.Day, rep.Install)
+	if err == nil && full != "" {
+		s.tfull.Lock()
+		if now.Sub(s.tfullAt) >= time.Hour {
+			s.tfullAt = now
+			s.cfg.Logger.Warn("telemetry reports refused", "why", full) // at most hourly
+		}
+		s.tfull.Unlock()
+		reply(http.StatusServiceUnavailable, "not taking reports now; try again later")
+		return
+	}
+	if err == nil {
+		err = s.st.putReport(rep, now)
+	}
+	if err != nil {
 		s.cfg.Logger.Error("telemetry report not stored", "err", err)
 		reply(http.StatusInternalServerError, "not stored; try again later")
 		return
@@ -180,11 +230,13 @@ func rate(n, of, min int) *float64 {
 	return &r
 }
 
-// summarize sums reports (oldest first) for the window [from, to].
-func summarize(reports []telemetry.Report, from, to time.Time) Summary {
+// summarize sums the reports each yields, newest first, for the window
+// [from, to]. It keeps per install only its id (the newest report says its
+// platform and usage), so a window with many installs costs little memory.
+func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (Summary, error) {
 	days := int(to.Sub(from).Hours()/24) + 1
 	sum := Summary{
-		Days: days, From: from.Format(time.DateOnly), To: to.Format(time.DateOnly), Reports: len(reports),
+		Days: days, From: from.Format(time.DateOnly), To: to.Format(time.DateOnly),
 		Platforms: Platforms{OS: map[string]int{}, Arch: map[string]int{}, Distro: map[string]int{}, Level: map[string]int{}, Channel: map[string]int{}},
 		Tunnels:   map[string]TunnelSummary{},
 		Usage: UsageSummary{
@@ -202,17 +254,54 @@ func summarize(reports []telemetry.Report, from, to time.Time) Summary {
 	}
 	versions := map[string]*VersionSummary{}
 	versionInstalls := map[string]map[string]bool{}
-	latest := map[string]telemetry.Report{}     // by install
-	latestFull := map[string]telemetry.Report{} // by install
+	seen := map[string]bool{}     // installs whose newest report was counted
+	seenFull := map[string]bool{} // …and newest full one
 	healthRollbacks := 0
-	for _, r := range reports {
+	err := each(func(r telemetry.Report) {
+		sum.Reports++
 		if d := daily[r.Day]; d != nil {
 			d.Installs++
 			if r.Level == "full" {
 				d.Full++
 			}
 		}
-		latest[r.Install] = r
+		if !seen[r.Install] {
+			seen[r.Install] = true
+			p := &sum.Platforms
+			system := r.App.OS
+			if r.App.OSMajor > 0 {
+				system += " " + strconv.Itoa(r.App.OSMajor)
+			}
+			p.OS[system]++
+			p.Arch[r.App.Arch]++
+			if r.App.Distro != "" {
+				p.Distro[r.App.Distro]++
+			}
+			p.Level[r.Level]++
+			p.Channel[r.App.Channel]++
+			if r.App.Service {
+				p.Service++
+			}
+		}
+		if u := r.Usage; r.Level == "full" && u != nil && !seenFull[r.Install] {
+			seenFull[r.Install] = true
+			us := &sum.Usage
+			us.Installs++
+			us.Profiles += u.Profiles
+			us.KillSwitch += b2i(u.KillSwitch)
+			us.SplitDNS += b2i(u.SplitDNS)
+			us.AutoApply += b2i(u.AutoApply)
+			us.RemoteLists += b2i(u.ListsRemote > 0)
+			for k, n := range u.ProfileModes {
+				us.ProfileModes[k] += b2i(n > 0)
+			}
+			for k, n := range u.Rules {
+				us.RuleKinds[k] += b2i(n > 0)
+			}
+			for k, n := range u.Tunnels {
+				us.TunnelTypes[k] += b2i(n > 0)
+			}
+		}
 		v := versions[r.App.Version]
 		if v == nil {
 			v = &VersionSummary{Version: r.App.Version, Applies: telemetry.Applies{Refused: map[string]int{}, RolledBack: map[string]int{}, MS: map[string]int{}}}
@@ -260,49 +349,14 @@ func summarize(reports []telemetry.Report, from, to time.Time) Summary {
 			v.tunnelOK += t.Connected
 			sum.Tunnels[typ] = ts
 		}
-		if r.Level == "full" && r.Usage != nil {
-			latestFull[r.Install] = r
-		}
+	})
+	if err != nil {
+		return Summary{}, err
 	}
-	sum.Installs = len(latest)
+	sum.Installs = len(seen)
 	for typ, ts := range sum.Tunnels {
 		ts.ConnectRate = rate(ts.Connected, ts.Connected+ts.Failed, minAttempts)
 		sum.Tunnels[typ] = ts
-	}
-	for _, r := range latest {
-		p := &sum.Platforms
-		system := r.App.OS
-		if r.App.OSMajor > 0 {
-			system += " " + strconv.Itoa(r.App.OSMajor)
-		}
-		p.OS[system]++
-		p.Arch[r.App.Arch]++
-		if r.App.Distro != "" {
-			p.Distro[r.App.Distro]++
-		}
-		p.Level[r.Level]++
-		p.Channel[r.App.Channel]++
-		if r.App.Service {
-			p.Service++
-		}
-	}
-	for _, r := range latestFull {
-		u, us := r.Usage, &sum.Usage
-		us.Installs++
-		us.Profiles += u.Profiles
-		us.KillSwitch += b2i(u.KillSwitch)
-		us.SplitDNS += b2i(u.SplitDNS)
-		us.AutoApply += b2i(u.AutoApply)
-		us.RemoteLists += b2i(u.ListsRemote > 0)
-		for k, n := range u.ProfileModes {
-			us.ProfileModes[k] += b2i(n > 0)
-		}
-		for k, n := range u.Rules {
-			us.RuleKinds[k] += b2i(n > 0)
-		}
-		for k, n := range u.Tunnels {
-			us.TunnelTypes[k] += b2i(n > 0)
-		}
 	}
 	for name, v := range versions {
 		v.Installs = len(versionInstalls[name])
@@ -314,7 +368,12 @@ func summarize(reports []telemetry.Report, from, to time.Time) Summary {
 	}
 	sortVersions(sum.Versions)
 	sum.Flags = flags(sum.Versions, healthRollbacks)
-	return sum
+	for _, d := range sum.Daily {
+		if d.Installs >= telemetryDailyCap {
+			sum.Flags = append(sum.Flags, Flag{What: fmt.Sprintf("%s reached the daily cap of %d reports: more were refused — a flood, or time to raise the cap", d.Day, telemetryDailyCap)})
+		}
+	}
+	return sum, nil
 }
 
 // flags compares each version with the one before it.
@@ -398,15 +457,36 @@ func pct(r *float64) string {
 	return fmt.Sprintf("%.0f%%", p)
 }
 
+// summaryTTL is how long a summary is served before it's worked out again
+// (the dashboard and the API ask often; reports come once a day).
+const summaryTTL = time.Minute
+
 // summary reads and sums the last days days.
 func (s *Server) summary(days int) (Summary, error) {
-	to := utcDay(s.cfg.Now())
+	now := s.cfg.Now()
+	s.sumMu.Lock()
+	defer s.sumMu.Unlock() // one at a time: a summary of many reports is work
+	if c, ok := s.sums[days]; ok && now.Sub(c.at) < summaryTTL && !now.Before(c.at) {
+		return c.sum, nil
+	}
+	to := utcDay(now)
 	from := to.AddDate(0, 0, -(days - 1))
-	reports, err := s.st.reports(from.Format(time.DateOnly), to.Format(time.DateOnly))
+	sum, err := summarize(func(fn func(telemetry.Report)) error {
+		return s.st.eachReport(from.Format(time.DateOnly), to.Format(time.DateOnly), true, fn)
+	}, from, to)
 	if err != nil {
 		return Summary{}, err
 	}
-	return summarize(reports, from, to), nil
+	if s.sums == nil {
+		s.sums = map[int]cachedSummary{}
+	}
+	s.sums[days] = cachedSummary{at: now, sum: sum}
+	return sum, nil
+}
+
+type cachedSummary struct {
+	at  time.Time
+	sum Summary
 }
 
 // windowDays reads ?days= (default 7, at most summaryMaxDays).

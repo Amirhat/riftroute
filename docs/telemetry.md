@@ -156,12 +156,22 @@ nothing.
 
 ## Server
 
-- `POST /api/v1/telemetry`: JSON only, at most 16 KiB, decoded strictly
-  (unknown fields, keys or values refused with 400); its `day` must be
-  within a day of the server's; one report per install per day (a repeat
-  replaces it). Throttled to 30 an hour per client and 20,000 an hour in
-  all — the client is known only as a keyed hash, in memory, for the hour.
-  No address is recorded; the response carries nothing back but a status.
+- `POST /api/v1/telemetry`: JSON only, at most 8 KiB (the largest valid
+  report is about 2.5 KiB), decoded strictly (unknown fields, keys or
+  values refused with 400); its `day` must be within a day of the server's;
+  one report per install per day (a repeat replaces it). Throttled to 30
+  an hour per client and 2,000 an hour in all — the client is known only as
+  a keyed hash, in memory, for the hour. No address is recorded; the
+  response carries nothing back but a status.
+- **It can't take the shared host's disk**, however many are sent: at most
+  5,000 reports are kept a day (a repeat of one already kept replaces it and
+  doesn't count; a day at the cap is about 12 MiB, and the dashboard flags
+  it), and none while the database is past 512 MiB or the disk has less
+  than 1 GiB free. A refusal is a 503 — the client sends the report again
+  later — logged at most hourly, without the sender.
+- A summary (the dashboard's, the API's) reads the reports one at a time,
+  keeping per install only its id, and is worked out at most once a minute
+  per window.
 - Stored in the server's SQLite (`telemetry_reports`: day, install, level,
   version, os, arch, channel, and the validated report encoded again —
   never the bytes that came in); kept 180 days, then deleted (hourly

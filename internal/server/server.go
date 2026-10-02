@@ -24,6 +24,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/buildinfo"
@@ -74,6 +75,11 @@ type Server struct {
 	assetHash string
 	started   time.Time
 	mux       *http.ServeMux
+
+	tfull   sync.Mutex
+	tfullAt time.Time // when refusing reports was last logged
+	sumMu   sync.Mutex
+	sums    map[int]cachedSummary // by window, for summaryTTL
 }
 
 // New opens the data directory's database and prepares the handlers.
