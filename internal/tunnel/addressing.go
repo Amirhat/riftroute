@@ -40,11 +40,15 @@ type addressingEnv struct {
 	// configured: the addresses come from the tunnel's own configuration
 	// (WireGuard's Address), not from its server.
 	configured bool
+	// routes: the kernel's, every interface's (vetAddressing sets it): what
+	// another tunnel interface's netmask is checked against (reach).
+	routes []domain.Route
 }
 
 // vetAddressing checks the tunnel's networks and the routes the kernel put
 // into its interface that RiftRoute didn't. It returns why it refuses, or "".
 func vetAddressing(nets []netip.Prefix, routes []domain.Route, env addressingEnv) string {
+	env.routes = routes
 	var own []netip.Prefix
 	for _, n := range nets {
 		n = n.Masked()
@@ -122,12 +126,34 @@ func vetNetwork(n netip.Prefix, env addressingEnv) string {
 			if err != nil || o.Addr().IsLoopback() || o.Addr().IsLinkLocalUnicast() {
 				continue
 			}
-			if o = o.Masked(); o.Overlaps(n) {
+			if o = reach(o, ifc, env.routes); o.Overlaps(n) {
 				return fmt.Sprintf("overlaps %s on %s", o, ifc.Name)
 			}
 		}
 	}
 	return ""
+}
+
+// reach is the network an interface's address puts on it: its netmask's —
+// except on a tunnel interface the kernel routes no such network into, where
+// it's the address alone. A tunnel's netmask needn't be a network: macOS
+// routes a point-to-point interface only what it's told to, and Apple's
+// IKEv2 client (another VPN's ipsec0) holds its address with a /8 netmask
+// and a host route. Without the kernel's routes to tell, the netmask stands.
+func reach(o netip.Prefix, ifc domain.Iface, routes []domain.Route) netip.Prefix {
+	network := o.Masked()
+	if !ifc.IsVPN || len(routes) == 0 {
+		return network
+	}
+	for _, r := range routes {
+		if r.Iface != ifc.Name {
+			continue
+		}
+		if dst, err := netip.ParsePrefix(r.DstCIDR); err == nil && dst.Masked() == network {
+			return network
+		}
+	}
+	return netip.PrefixFrom(o.Addr(), o.Addr().BitLen())
 }
 
 // holdsProtected says which protected address or own server n holds, or "".
