@@ -75,7 +75,14 @@ fi
 VERSION=$(git describe --tags --always)
 OUT=dist/server/riftroute-server
 mkdir -p "$(dirname "$OUT")"
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$OUT" ./cmd/riftroute-server
+# The commit is stamped at link time too: in a git worktree (.git is a file)
+# the toolchain stamps none, and the health check below would never see it.
+BI=github.com/Amirhat/riftroute/internal/buildinfo
+COMMIT=$(git rev-parse HEAD)
+COMMIT_TIME=$(TZ=UTC0 git log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format=%cd)
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
+  -ldflags "-s -w -X main.version=$VERSION -X $BI.linkCommit=$COMMIT -X $BI.linkCommitTime=$COMMIT_TIME -X $BI.linkModified=false" \
+  -o "$OUT" ./cmd/riftroute-server
 SUM=$(shasum -a 256 "$OUT" | cut -d' ' -f1)
 EXPECT=$(git rev-parse HEAD | cut -c1-7)
 echo "built riftroute-server $VERSION ($EXPECT, $SUM)"

@@ -6,8 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Beside Tailscale.** A Tailscale running on the machine is recognized
+  (its interface, what it routes, whether its exit node is on), shown on the
+  dashboard, in `status` and `doctor`, and left alone: include profiles —
+  their app rules too — no longer take the tailnet into the main VPN,
+  exclude profiles and tunnel routes leave its networks and MagicDNS to it,
+  and on Linux, with its exit node on, RiftRoute's routes still take effect
+  (they're looked up before Tailscale's). A tunnel route inside what
+  Tailscale routes is left to it, and the tunnel's card says so. RiftRoute
+  never runs or changes Tailscale (docs/tailscale.md).
+
+## [0.7.0] — 2026-10-02
+
 Anonymous telemetry, with the exact report always one click away, and a
-dashboard that shows a bad release before most installs take it.
+dashboard that shows a bad release before most installs take it. IKEv2
+tunnels log in with a username and password or a shared secret, and a
+tunnel route keeps out what it mustn't carry and routes the rest.
 
 ### Added
 - **An anonymous daily report** (docs/telemetry.md). Counts and versions
@@ -63,19 +78,13 @@ dashboard that shows a bad release before most installs take it.
   family count, and a tunnel set to block never leaves a route out in the
   clear because of them.
 
-- **Beside Tailscale.** A Tailscale running on the machine is recognized
-  (its interface, what it routes, whether its exit node is on), shown on the
-  dashboard, in `status` and `doctor`, and left alone: include profiles —
-  their app rules too — no longer take the tailnet into the main VPN,
-  exclude profiles and tunnel routes leave its networks and MagicDNS to it,
-  and on Linux, with its exit node on, RiftRoute's routes still take effect
-  (they're looked up before Tailscale's). A tunnel route inside what
-  Tailscale routes is left to it, and the tunnel's card says so. RiftRoute
-  never runs or changes Tailscale (docs/tailscale.md).
-
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to
   come: it's been here since 0.2.6.
+- Built with Go 1.25.14, which `go.mod` now pins, so local and
+  `go install` builds get its security fixes too (releases already had
+  them). The `wails dev` web framework and the frontend's test tools are
+  updated past their security advisories; none of them is in what ships.
 - On Debian and Ubuntu, IKEv2's install help adds
   `libcharon-extauth-plugins` (username-and-password logins need it).
 
