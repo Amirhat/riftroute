@@ -104,3 +104,40 @@ func TestDisabledAutoApplyNoop(t *testing.T) {
 		t.Fatal("disabled auto-apply must not change routes")
 	}
 }
+
+// Auto-apply's reconcile is nobody's change (#35): once its guard window is
+// over, it doesn't keep a staged update waiting out the quiet window.
+func TestAutoApplyDoesNotRestartTheQuietWindow(t *testing.T) {
+	prov := fake.New()
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.UpsertProfile(domain.Profile{
+		ID: "p1", Name: "direct", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "9.9.9.0/24"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clk := safety.NewFakeClock(time.Unix(0, 0))
+	proto := safety.NewProtocol(prov, st, clk, func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+	rec := reconcile.New(core.New(prov, st, "test"), proto, slog.New(slog.NewTextHandler(io.Discard, nil)), 0, func() bool { return true })
+
+	res, err := rec.Reconcile(context.Background())
+	if err != nil || res.Status != domain.TxPending {
+		t.Fatalf("reconcile: %+v %v", res, err)
+	}
+	if _, ok, _ := proto.TryQuiesce(10 * time.Minute); ok {
+		t.Fatal("quiet while auto-apply's change is on probation")
+	}
+	clk.Advance(30 * time.Second)
+	if result, _ := proto.Wait(res.TxID); result != domain.TxCommitted {
+		t.Fatalf("auto-apply's change settled as %s", result)
+	}
+	release, ok, why := proto.TryQuiesce(10 * time.Minute)
+	if !ok {
+		t.Fatalf("auto-apply's settled change kept the daemon from being quiet: %s", why)
+	}
+	release()
+}
