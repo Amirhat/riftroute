@@ -145,11 +145,18 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 				why = c.reason(t.Name)
 			}
 			parts := []netip.Prefix{pfx}
-			if keep := keepOut(pfx, t, ts, held, in); why == "" && len(keep) > 0 {
+			if keep := keepOut(pfx, t, ts, held, in, false); why == "" && len(keep) > 0 {
 				// What it holds that mustn't go into the tunnel is kept out
 				// (with the network someone routes it in); the rest goes in.
+				others := othersInside(pfx, t.Name, ts, in.Occupied)
 				var except []domain.TunnelExcept
-				parts, except = carve(pfx, keep, othersInside(pfx, t.Name, ts, in.Occupied), taken)
+				parts, except = carve(pfx, keep, others, taken)
+				if t.Block && (len(parts) == 0 || len(parts) > maxCarved) {
+					// Set to block: never in the clear. Only what keeps the
+					// connection (the router's network, the servers) stays
+					// out; resolvers and anchors inside go in, or are refused.
+					parts, except = carve(pfx, keepOut(pfx, t, ts, held, in, true), others, taken)
+				}
 				switch {
 				case len(parts) == 0:
 					why = "nothing would be left once these are kept out: " + exceptText(except)
@@ -470,7 +477,7 @@ type keptOut struct {
 //     host route): its own would loop back into itself, another's would ride
 //     this one — two via-default tunnels each carrying the other's server
 //     both stall.
-func keepOut(pfx netip.Prefix, t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, in DesiredInput) []keptOut {
+func keepOut(pfx netip.Prefix, t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, in DesiredInput, essential bool) []keptOut {
 	var out []keptOut
 	gw, lan, on := in.GatewayV4, in.PhysNetV4, in.PhysIfaceV4
 	if pfx.Addr().Is6() {
@@ -488,13 +495,18 @@ func keepOut(pfx netip.Prefix, t TunnelInput, ts []TunnelInput, held map[netip.A
 		}
 		out = append(out, k)
 	}
+	resolvers := map[bool]int{} // by family
 	for _, a := range in.DNSServers {
+		if essential || resolvers[a.Is4()] >= maxKeptResolvers {
+			continue
+		}
+		resolvers[a.Is4()]++
 		if pfx.Contains(a) {
 			out = append(out, keptOut{addr: a, why: "your DNS server " + a.String()})
 		}
 	}
 	for _, a := range in.Anchors {
-		if pfx.Contains(a) {
+		if !essential && pfx.Contains(a) {
 			out = append(out, keptOut{addr: a, why: a.String() + ", which RiftRoute probes to check a change kept you online"})
 		}
 	}
@@ -522,6 +534,11 @@ func keepOut(pfx netip.Prefix, t TunnelInput, ts []TunnelInput, held map[netip.A
 
 // maxCarved bounds the routes one listed destination may become.
 const maxCarved = 1024
+
+// maxKeptResolvers is how many of a family's resolvers (the first, as the
+// system lists them) are kept out of tunnel routes: a network that names
+// dozens, scattered over a destination, can't carve it past maxCarved.
+const maxKeptResolvers = 8
 
 // routeInside is a route someone else has inside a tunnel destination:
 // another owner's (via its interface) or another tunnel's.

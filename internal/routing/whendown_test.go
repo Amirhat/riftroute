@@ -240,3 +240,45 @@ func TestRejectRouteIdentity(t *testing.T) {
 		t.Error("both rejected isn't drift")
 	}
 }
+
+// A network naming dozens of resolvers over a block-mode tunnel's
+// destination can't pull it out of the tunnel: only the first few count,
+// and if the carve still leaves nothing (or too much), only what keeps the
+// connection stays out — the rest goes in, or is refused while it's down;
+// never in the clear (the security review's LOW).
+func TestHostileResolversCantPullABlockTunnelsNetworkOut(t *testing.T) {
+	in := testInput()
+	for i := range 60 {
+		in.DNSServers = append(in.DNSServers, netip.AddrFrom4([4]byte{10, byte(i * 4), 7, 7}))
+	}
+	in.Tunnels = []TunnelInput{{Name: "con3", Iface: "utun6", Block: true, Routes: []string{"10.0.0.0/8"}}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	covered := 0
+	for _, d := range desired {
+		if d.Iface == "utun6" {
+			covered += 1 << (32 - netip.MustParsePrefix(d.DstCIDR).Bits())
+		}
+	}
+	if covered != 1<<24-maxKeptResolvers {
+		t.Fatalf("%d of 10/8 into the tunnel, want all but the first %d resolvers", covered, maxKeptResolvers)
+	}
+
+	// A destination that's all resolver: kept out without Block; set to
+	// block, it goes in (it's what the user listed) — or is refused down.
+	in.DNSServers = []netip.Addr{netip.MustParseAddr("10.255.255.1")}
+	in.Tunnels = []TunnelInput{{Name: "con3", Iface: "utun6", Routes: []string{"10.255.255.1"}}}
+	if bs := PlanTunnels(in).Blocked["con3"]; len(bs) != 1 {
+		t.Fatalf("without Block: %+v", bs)
+	}
+	in.Tunnels[0].Block = true
+	if tp := PlanTunnels(in); len(tp.Blocked["con3"]) != 0 || len(tp.Routes) != 1 || tp.Routes[0].Iface != "utun6" {
+		t.Fatalf("with Block, up: %+v %+v", tp.Routes, tp.Blocked)
+	}
+	in.Tunnels[0].Iface = ""
+	if tp := PlanTunnels(in); len(tp.Routes) != 1 || !tp.Routes[0].Reject {
+		t.Fatalf("with Block, down: %+v", tp.Routes)
+	}
+}

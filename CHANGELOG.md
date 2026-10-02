@@ -59,7 +59,9 @@ dashboard that shows a bad release before most installs take it.
   goes in; routes other VPNs or the system have inside it keep theirs. The
   tunnel's card, `riftroute tunnel list`, `doctor` and saving the tunnel say
   what was kept out and why, on this network. The same holds for a tunnel
-  set to block while it's down.
+  set to block while it's down. Only the first 8 DNS servers of each
+  family count, and a tunnel set to block never leaves a route out in the
+  clear because of them.
 
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to

@@ -127,7 +127,12 @@ tunnel while that tunnel is wanted.
   server that nothing holds off it is kept out of the reject routes (and
   reported as narrowed), and one for a destination someone else routes
   exactly is left out. A reject route there would cut the connection, or
-  the tunnel's own way back. It claims the destination like a live tunnel's
+  the tunnel's own way back. Only the first 8 resolvers of each family
+  count, and when a block-mode tunnel's destination can't be carved
+  (nothing left, or past 1,024 routes), only the router's network and the
+  servers stay out of it: resolvers and anchors inside go into the tunnel,
+  or are refused while it's down — a network naming dozens of resolvers
+  can't pull it out in the clear (the security review's LOW). It claims the destination like a live tunnel's
   route, and joins the plan's `nets`, so exclude routes still yield inside
   it, and include rules (Linux policy rules, macOS route-to) are still cut
   around it. Otherwise a rule that's matched before the table would carry
