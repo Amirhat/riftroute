@@ -7,6 +7,7 @@ package linux
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -40,6 +41,9 @@ type ipRule struct {
 	Protocol string `json:"protocol"`
 	IifName  string `json:"iif"`
 	OifName  string `json:"oif"`
+	// SuppressPrefixLen: "lookup … suppress_prefixlength N" (the rule
+	// keeping a Tailscale beside us first, ignoring its default).
+	SuppressPrefixLen *int `json:"suppress_prefixlen"`
 }
 
 // withLen reconstructs "addr/len" from a possibly length-less address plus a
@@ -179,6 +183,9 @@ func ruleSelector(r ipRule) string {
 	}
 	if r.OifName != "" {
 		parts = append(parts, "oif "+r.OifName)
+	}
+	if r.SuppressPrefixLen != nil {
+		parts = append(parts, fmt.Sprintf("suppress_prefixlength %d", *r.SuppressPrefixLen))
 	}
 	return strings.Join(parts, " ")
 }

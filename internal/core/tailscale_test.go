@@ -66,12 +66,13 @@ func TestTailscaleBeside(t *testing.T) {
 			copies++
 		}
 	}
-	bypass := false
+	bypass, first := false, false
 	for _, r := range rules {
 		bypass = bypass || r.Table == routing.BypassTable
+		first = first || r.Table == "52" && r.Priority == routing.TailscaleRulePrio
 	}
-	if copies == 0 || !bypass {
-		t.Fatalf("exit node: %d copies, bypass rule %v", copies, bypass)
+	if copies == 0 || !bypass || !first {
+		t.Fatalf("exit node: %d copies, bypass rule %v, Tailscale's table first %v", copies, bypass, first)
 	}
 	if st, _ := svc.State(ctx); !st.Tailscale.ExitNode {
 		t.Fatal("the exit node isn't seen")

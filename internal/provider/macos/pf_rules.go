@@ -124,6 +124,9 @@ func parseAnchorRules(out string) []domain.PolicyRule {
 func parsePFRuleText(line string) (domain.PolicyRule, bool) {
 	m := reRouteTo.FindStringSubmatch(line)
 	if m == nil {
+		if strings.Contains(line, "route-to") {
+			return domain.PolicyRule{}, false // a route-to we can't read: not a pass
+		}
 		return parsePFPassText(line)
 	}
 	rawTarget := m[1] // parenthesized form (iface [gw])
@@ -179,6 +182,9 @@ func parsePFRuleText(line string) (domain.PolicyRule, bool) {
 // parsePFPassText recovers a pass without route-to: "to <net> user <uid>"
 // (routing.TailscaleRulePrio).
 func parsePFPassText(line string) (domain.PolicyRule, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(line), "pass ") {
+		return domain.PolicyRule{}, false
+	}
 	pr := domain.PolicyRule{Priority: routing.TailscaleRulePrio, Proto: "riftroute", Family: domain.FamilyV4}
 	if strings.Contains(line, " inet6 ") {
 		pr.Family = domain.FamilyV6

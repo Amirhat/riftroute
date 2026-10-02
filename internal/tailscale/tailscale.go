@@ -23,24 +23,66 @@ var (
 // looked up — by its rule at 5270 — before the main table.
 const LinuxTable = "52"
 
-// Detect finds Tailscale among ifaces — tailscale0 (Linux), or an interface
-// holding an address in its ranges (a utun on macOS) — and, from routes (the
-// main table's, and on Linux table 52's), what it routes and whether its
-// exit node is on (a default route into it). ok is false without one.
-func Detect(ifaces []domain.Iface, routes []domain.Route) (st domain.TailscaleStatus, ok bool) {
+// maxNetworks bounds the networks counted beyond its two ranges (the
+// widest first): a tailnet's thousand App Connector /32s cost nothing.
+const maxNetworks = 256
+
+// Find picks Tailscale's interface among ifaces, given the resolvers in use:
+//   - tailscale0 (Linux: its name);
+//   - a utun (macOS) holding an address in its IPv6 range — Tailscale and
+//     Headscale give every node one;
+//   - a utun holding an address in its IPv4 range, with MagicDNS among the
+//     resolvers. A CGNAT address alone isn't Tailscale's: Cloudflare WARP
+//     and NetBird use that space too.
+//
+// sure: by name or by its IPv6 address. Only then are the routes into it its
+// networks; otherwise only its own two ranges are.
+func Find(ifaces []domain.Iface, resolvers []netip.Addr) (name string, sure, ok bool) {
+	magic := slices.Contains(resolvers, MagicDNS)
 	for _, i := range ifaces {
-		if i.Up && isTailscale(i) {
-			st.Iface, ok = i.Name, true
-			break
+		if !i.Up {
+			continue
+		}
+		if strings.HasPrefix(i.Name, "tailscale") {
+			return i.Name, true, true
+		}
+		if !strings.HasPrefix(i.Name, "utun") {
+			continue
+		}
+		v4 := false
+		for _, a := range i.Addrs {
+			p, err := netip.ParsePrefix(a)
+			switch {
+			case err != nil:
+			case ULA.Contains(p.Addr()):
+				return i.Name, true, true
+			case CGNAT.Contains(p.Addr()):
+				v4 = true
+			}
+		}
+		if v4 && magic {
+			name, ok = i.Name, true
 		}
 	}
+	return name, false, ok
+}
+
+// Detect finds Tailscale (Find) and, from routes (the main table's, and on
+// Linux table 52's), what it routes and whether its exit node is on (a
+// default route into it). ok is false without one.
+func Detect(ifaces []domain.Iface, routes []domain.Route, resolvers []netip.Addr) (st domain.TailscaleStatus, ok bool) {
+	name, sure, ok := Find(ifaces, resolvers)
 	if !ok {
 		return st, false
 	}
+	st.Iface = name
 	nets := []netip.Prefix{CGNAT, ULA}
+	var extra []netip.Prefix
 	halves := 0
 	for _, r := range routes {
-		if r.Reject || (r.Table != "" && r.Table != LinuxTable) {
+		// Not a scoped route (macOS keeps a default scoped to its utun even
+		// without an exit node), nor multicast or broadcast.
+		if r.Reject || r.Scoped || (r.Table != "" && r.Table != LinuxTable) {
 			continue
 		}
 		if r.Table == "" && r.Iface != st.Iface {
@@ -50,6 +92,9 @@ func Detect(ifaces []domain.Iface, routes []domain.Route) (st domain.TailscaleSt
 		if err != nil || r.Iface == "" {
 			continue // a throw or unreachable entry
 		}
+		if p.Addr().IsMulticast() || p.Addr() == netip.AddrFrom4([4]byte{255, 255, 255, 255}) {
+			continue
+		}
 		switch p.Masked().String() {
 		case "0.0.0.0/0", "::/0":
 			st.ExitNode = true
@@ -58,11 +103,13 @@ func Detect(ifaces []domain.Iface, routes []domain.Route) (st domain.TailscaleSt
 			halves++
 			continue
 		}
-		if !containedIn(p.Masked(), nets) {
-			nets = append(nets, p.Masked())
+		if sure && !containedIn(p.Masked(), nets) && !containedIn(p.Masked(), extra) {
+			extra = append(extra, p.Masked())
 		}
 	}
 	st.ExitNode = st.ExitNode || halves == 2
+	slices.SortStableFunc(extra, func(a, b netip.Prefix) int { return a.Bits() - b.Bits() })
+	nets = append(nets, extra[:min(len(extra), maxNetworks)]...)
 	for _, n := range nets {
 		st.Networks = append(st.Networks, n.String())
 	}
@@ -78,18 +125,6 @@ func Networks(st domain.TailscaleStatus) []netip.Prefix {
 		}
 	}
 	return out
-}
-
-func isTailscale(i domain.Iface) bool {
-	if strings.HasPrefix(i.Name, "tailscale") {
-		return true
-	}
-	for _, a := range i.Addrs {
-		if p, err := netip.ParsePrefix(a); err == nil && (CGNAT.Contains(p.Addr()) || ULA.Contains(p.Addr())) && strings.HasPrefix(i.Name, "utun") {
-			return true
-		}
-	}
-	return false
 }
 
 func containedIn(p netip.Prefix, nets []netip.Prefix) bool {

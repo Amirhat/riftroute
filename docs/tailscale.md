@@ -94,9 +94,9 @@ for IKEv2.
 ## As built (Part A)
 
 - **Detection** (`internal/tailscale`, from the kernel's state only):
-  - its interface: `tailscale0`, or a `utun` holding an address in its ranges;
-  - what it routes: the main table's routes into it (macOS) and table 52's (Linux, read only when its interface is there);
-  - whether its exit node is on: a default route, or two /1 halves, into it.
+  - its interface: `tailscale0`, or a `utun` holding an address in its IPv6 range. A `utun` with only a `100.64.0.0/10` address counts only with MagicDNS among the resolvers, since other VPNs use that range too. Then only Tailscale's two ranges are taken as its, not the interface's other routes;
+  - what it routes: the main table's routes into it (macOS) and table 52's (Linux, read only when its interface is there). Up to 256 networks, widest first. macOS's per-interface ("scoped") routes, multicast and broadcast routes don't count;
+  - whether its exit node is on: a default route, or two /1 halves, into it. Never a scoped one: macOS keeps one per interface.
 - **Shown:**
   - `State.Tailscale`;
   - the dashboard's VPN card;
@@ -104,15 +104,14 @@ for IKEv2.
   - `doctor`.
   On macOS its `utun` counts as the VPN only while its exit node is on.
 - **Its networks stay its own** (`DesiredInput.Tailscale`):
-  - include rules (Linux policy rules at 5252, macOS PF) are cut around them;
-  - exclude destinations inside them yield;
-  - tunnel routes keep them out, since they're `Occupied` (Linux: from table 52), and MagicDNS counts as a resolver.
-- **Marked apps** (include mode's app rules match any destination):
-  - Linux: rules at `TailscaleRulePrio` (5251) send its networks to table 52 first;
-  - macOS: a PF `pass` without `route-to` for the user's traffic to them, ahead of the user's `route-to`.
+  - **Linux:** its table is looked up before RiftRoute's rules, all but its default, with one rule per family: `from all lookup 52 suppress_prefixlength 0` at `TailscaleRulePrio` (5251) (`routing.BesideTailscale`). Include rules (5252), marked apps (any destination) and the exit node's copies (5260) all come after it. Whatever Tailscale routes now (peers, accepted subnets, MagicDNS) stays its own, kept current by the kernel. Its `throw` routes fall through as before;
+  - **macOS:** include rules (PF) are cut around its networks, and for marked apps' traffic to them a PF `pass` without `route-to` comes ahead of the user's `route-to`;
+  - exclude destinations inside its networks yield;
+  - a tunnel route inside one of its networks is left out, with the reason on the tunnel's card. On macOS the narrower route would otherwise win over Tailscale's. A wider one goes in, and Tailscale's narrower routes keep winning inside it. MagicDNS counts as a resolver, so it's kept out.
 - **Its exit node, on Linux:**
-  - while it's on, RiftRoute's main-table routes are copied into `BypassTable` (5253), cut around its networks, and looked up at 5260. That's after its rules for its own packets (5210–5250) and before its capture (5270);
-  - the copies go when the exit node does;
+  - while it's on, RiftRoute's main-table routes are copied as they are into `BypassTable` (5253), looked up at 5260. That's after its rules for its own packets (5210–5250) and its table's lookup at 5251, and before its capture (5270);
+  - every desired set, a full apply's or a tunnel event's, gets the 5251 rule along with the copies, so a copy never goes in without it;
+  - the copies go when the exit node does, and the rule goes when Tailscale does;
   - the network watcher sees the exit node turn on and off (its table's default route), and RiftRoute applies again.
 - **The kill switch needs no change:**
   - it blocks only the physical interfaces, never a tunnel's, so the tailnet (and its exit node) pass;

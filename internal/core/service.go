@@ -214,7 +214,15 @@ type tableLister interface {
 // routes (the main table, and Linux's table 52 — read only when its
 // interface is there).
 func (s *Service) tailscale(ctx context.Context, ifaces []domain.Iface) (domain.TailscaleStatus, bool) {
-	if _, ok := tailscale.Detect(ifaces, nil); !ok {
+	var resolvers []netip.Addr
+	if cfg, err := s.prov.DNSConfig(ctx); err == nil {
+		for _, v := range cfg.Servers {
+			if a, err := netip.ParseAddr(v); err == nil {
+				resolvers = append(resolvers, a.Unmap())
+			}
+		}
+	}
+	if _, _, ok := tailscale.Find(ifaces, resolvers); !ok {
 		return domain.TailscaleStatus{}, false
 	}
 	var routes []domain.Route
@@ -226,7 +234,7 @@ func (s *Service) tailscale(ctx context.Context, ifaces []domain.Iface) (domain.
 			routes = append(routes, t...)
 		}
 	}
-	return tailscale.Detect(ifaces, routes)
+	return tailscale.Detect(ifaces, routes, resolvers)
 }
 
 // ifaceNet is the network of interface name's that holds gw (the LAN the
@@ -513,8 +521,9 @@ func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) 
 	routes := tp.Beside(others)
 	beside := tp.RulesBeside(rules)
 	y := yieldedTo(tp, others, rules, routes).attributed(dest)
-	// A Tailscale exit node's copies follow the tunnels' routes too.
-	routes, beside = routing.MirrorPastTailscale(routes, beside, in)
+	// Tailscale's lookup rule, and its exit node's copies of the tunnels'
+	// routes, with the tunnels' routes.
+	routes, beside = routing.BesideTailscale(routes, beside, in)
 	return routes, beside, in.GatewayV4, y
 }
 
@@ -887,7 +896,7 @@ func (s *Service) resolveVPN(ctx context.Context, fam domain.Family) (netip.Addr
 	}
 	routes, _ := s.prov.ListRoutes(ctx, fam)
 	for _, r := range routes {
-		if r.Table == "" && r.DstCIDR == def && vpn[r.Iface] {
+		if r.Table == "" && !r.Scoped && r.DstCIDR == def && vpn[r.Iface] {
 			gw, _ := netip.ParseAddr(r.Gateway) // zero if on-link
 			return gw, r.Iface
 		}
@@ -1284,7 +1293,7 @@ func (s *Service) degraded(err error) domain.State {
 
 func defaultFor(routes []domain.Route, fam domain.Family, defCIDR string, vpnByIface map[string]bool) domain.DefaultRoute {
 	for _, r := range routes {
-		if r.Table == "" && r.DstCIDR == defCIDR {
+		if r.Table == "" && !r.Scoped && r.DstCIDR == defCIDR {
 			return domain.DefaultRoute{
 				Family: fam, Present: true, Gateway: r.Gateway, Iface: r.Iface,
 				Owner: r.Owner, ViaVPN: vpnByIface[r.Iface],

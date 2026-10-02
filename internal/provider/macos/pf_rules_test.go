@@ -173,4 +173,14 @@ func TestPFPassForTailscaleRoundTrips(t *testing.T) {
 	if len(got) != 1 || pfRuleKey(got[0]) != pfRuleKey(pass) {
 		t.Fatalf("parsed %+v, want %+v", got, pass)
 	}
+	// Only that shape is a pass: a route-to to the same network is a
+	// route-to, and anything else isn't read as one.
+	for _, line := range []string{
+		`pass out quick route-to (utun4 10.0.0.1) inet from any to 100.64.0.0/10 user = 501 flags S/SA keep state label "riftroute"`,
+		`block drop out quick inet from any to 100.64.0.0/10 user = 501 label "riftroute"`,
+	} {
+		if got := parseAnchorRules(line); len(got) == 1 && got[0].RouteToIface == "" {
+			t.Errorf("read as a pass: %s", line)
+		}
+	}
 }

@@ -118,6 +118,19 @@ func TestParseRulesJSON_ReconstructsPrefixLen(t *testing.T) {
 	}
 }
 
+// The rule keeping a Tailscale beside us first reads back as written, so
+// it's matched (and deleted) as ours.
+func TestParseRulesJSON_SuppressPrefixLength(t *testing.T) {
+	const j = `[{"priority":5251,"src":"all","table":"52","suppress_prefixlen":0,"protocol":"152"},{"priority":5270,"src":"all","table":"52"}]`
+	rules, err := parseRulesJSON([]byte(j), domain.FamilyV4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules[0].Selector != "from all suppress_prefixlength 0" || rules[1].Selector != "from all" {
+		t.Errorf("selectors %q, %q", rules[0].Selector, rules[1].Selector)
+	}
+}
+
 func TestParseRouteGetJSON(t *testing.T) {
 	const j = `[{"dst":"8.8.8.8","gateway":"10.6.0.1","dev":"wg0","prefsrc":"10.6.0.2","flags":[],"uid":1000,"cache":[]}]`
 	dec, err := parseRouteGetJSON([]byte(j), "8.8.8.8", domain.FamilyV4)

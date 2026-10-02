@@ -334,7 +334,7 @@ func (s *Service) Leaks(ctx context.Context) []domain.Leak {
 
 func findDefault(routes []domain.Route, def string) string {
 	for _, r := range routes {
-		if r.Table == "" && r.DstCIDR == def {
+		if r.Table == "" && !r.Scoped && r.DstCIDR == def {
 			gw := r.Gateway
 			if gw == "" {
 				gw = "on-link"

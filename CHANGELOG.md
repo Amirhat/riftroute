@@ -69,8 +69,9 @@ dashboard that shows a bad release before most installs take it.
   their app rules too — no longer take the tailnet into the main VPN,
   exclude profiles and tunnel routes leave its networks and MagicDNS to it,
   and on Linux, with its exit node on, RiftRoute's routes still take effect
-  (they're looked up before Tailscale's). RiftRoute never runs or changes
-  Tailscale (docs/tailscale.md).
+  (they're looked up before Tailscale's). A tunnel route inside what
+  Tailscale routes is left to it, and the tunnel's card says so. RiftRoute
+  never runs or changes Tailscale (docs/tailscale.md).
 
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to
