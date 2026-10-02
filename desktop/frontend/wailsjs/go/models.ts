@@ -1140,6 +1140,52 @@ export namespace domain {
 	        this.routes = source["routes"];
 	    }
 	}
+	export class TunnelExcept {
+	    net: string;
+	    reason: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelExcept(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.net = source["net"];
+	        this.reason = source["reason"];
+	    }
+	}
+	export class TunnelNarrowed {
+	    route: string;
+	    except: TunnelExcept[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelNarrowed(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.route = source["route"];
+	        this.except = this.convertValues(source["except"], TunnelExcept);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class TunnelBlocked {
 	    route: string;
 	    reason: string;
@@ -1168,6 +1214,7 @@ export namespace domain {
 	    servers: string[];
 	    ignored?: string[];
 	    blocked?: TunnelBlocked[];
+	    narrowed?: TunnelNarrowed[];
 	    captured?: TunnelBlocked[];
 	    // Go type: time
 	    cert_expires?: any;
@@ -1203,6 +1250,7 @@ export namespace domain {
 	        this.servers = source["servers"];
 	        this.ignored = source["ignored"];
 	        this.blocked = this.convertValues(source["blocked"], TunnelBlocked);
+	        this.narrowed = this.convertValues(source["narrowed"], TunnelNarrowed);
 	        this.captured = this.convertValues(source["captured"], TunnelBlocked);
 	        this.cert_expires = this.convertValues(source["cert_expires"], null);
 	        this.profiles = this.convertValues(source["profiles"], TunnelProfileRef);
@@ -1440,6 +1488,8 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
+	
 	
 	
 	export class TunnelSpec {
