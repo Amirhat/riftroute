@@ -27,6 +27,6 @@ RUN cd /src && curl -fsSL --proto '=https' -o strongswan.tar.bz2 \
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 iputils-ping openssl ca-certificates \
-      libstrongswan-standard-plugins strongswan-swanctl strongswan-charon \
+      libstrongswan-standard-plugins libcharon-extra-plugins libcharon-extauth-plugins strongswan-swanctl strongswan-charon \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /charon-cmd /usr/sbin/charon-cmd

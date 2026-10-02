@@ -75,6 +75,7 @@ var failureCodes = []struct{ phrase, code string }{
 	{"isn't marked for TLS-server use", "eku"},
 	{"rejected this profile's certificate", "auth"},
 	{"rejected the username or password", "auth"},
+	{"rejected the shared secret", "auth"},
 	{"hung up right after the login", "auth"},
 	{"asks for a username and password, but none", "auth"},
 	{"none of the profile's encryption settings", "proposal"},

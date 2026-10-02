@@ -244,7 +244,7 @@ identities, the encryption settings and the certificate that logs in. They
 run on strongSwan's `charon-cmd`, one per tunnel — on macOS the one RiftRoute
 ships (installed beside the daemon like openvpn), on Linux your
 distribution's (Debian/Ubuntu: `sudo apt install --no-install-recommends
-charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins
+charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins
 strongswan-swanctl`; the Tunnels page says what to install elsewhere). The
 profile's full tunnel, DNS and on-demand rules are left out: only the
 networks you list go through it, as with the others. Profiles that log in

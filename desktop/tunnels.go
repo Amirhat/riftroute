@@ -14,8 +14,8 @@ import (
 	"github.com/Amirhat/riftroute/internal/tunnel"
 )
 
-// TunnelProfileFile is an OpenVPN profile or a WireGuard configuration
-// picked in the native dialog. A profile's referenced files are inlined here,
+// TunnelProfileFile is an OpenVPN profile, a WireGuard configuration or an
+// IKEv2 profile picked in the native dialog. A profile's referenced files are inlined here,
 // as the desktop user (never by the root daemon); either is parsed so the
 // editor can preview what will run.
 type TunnelProfileFile struct {
@@ -33,7 +33,8 @@ type TunnelProfileFile struct {
 	// (only ever from the profile's own folder), so the editor can show
 	// everything the import pulled in.
 	Files []string `json:"files"`
-	// Username/Password come from an auth-user-pass file or inline block.
+	// Username/Password come from an auth-user-pass file or inline block,
+	// or an IKEv2 profile's EAP login.
 	Username string `json:"username"`
 	Password string `json:"password"`
 	// Error is why the profile can't be used (shown inline; empty = usable).
@@ -78,6 +79,10 @@ func loadTunnelProfile(path string) (TunnelProfileFile, error) {
 		if c.Ignored != nil {
 			out.Ignored = c.Ignored
 		}
+		// A username and password (EAP): the profile's, which may leave the
+		// password for the device to ask.
+		out.NeedsAuth = c.Auth == tunnel.IKEv2EAP
+		out.Username, out.Password = c.Username, c.Password
 		if exp := c.CertExpires(); !exp.IsZero() {
 			out.CertExpires = exp.UTC().Format(time.RFC3339)
 		}

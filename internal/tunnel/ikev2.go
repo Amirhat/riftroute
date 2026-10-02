@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"regexp"
 	"runtime"
@@ -26,7 +27,12 @@ func (ikev2Driver) parse(config string) (*parsed, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &parsed{remotes: []Remote{c.Remote}, servers: c.Servers(), ignored: c.Ignored, ike: c}, nil
+	return &parsed{
+		remotes: []Remote{c.Remote}, servers: c.Servers(), ignored: c.Ignored, ike: c,
+		// An EAP login's username and password: the profile's, or the
+		// user's (a profile may leave the password for the device to ask).
+		needsAuth: c.Auth == IKEv2EAP, inlineUser: c.Username, inlinePass: c.Password,
+	}, nil
 }
 
 func (i ikev2Driver) engine() domain.TunnelEngine {
@@ -36,13 +42,24 @@ func (i ikev2Driver) engine() domain.TunnelEngine {
 	return i.o.IKE.Engine()
 }
 
-// check refuses a profile whose login charon-cmd can't do unattended: it
-// asks for an EAP password or a shared secret on a terminal.
-func (ikev2Driver) check(p *parsed) error {
-	if p.ike.Auth != IKEv2Certificate {
-		return errors.New(ikeLoginUnsupported(p.ike.Auth))
+// check refuses a login this system's charon-cmd can't do: a shared secret
+// needs strongSwan 6.1 (RiftRoute's own on macOS has it; a Linux
+// distribution's may be older).
+func (i ikev2Driver) check(p *parsed) error {
+	switch p.ike.Auth {
+	case IKEv2Certificate, IKEv2EAP:
+		return nil
+	case IKEv2PSK:
+		if i.o.IKE == nil {
+			return nil // the engine check says why
+		}
+		if v := i.o.IKE.Engine().Version; !ikePSKSupported(v) {
+			return fmt.Errorf("this profile logs in with a shared secret, which needs strongSwan %s or later; "+
+				"this system's charon-cmd is %s", ikePSKSince, v)
+		}
+		return nil
 	}
-	return nil
+	return errors.New(ikeLoginUnsupported(p.ike.Auth))
 }
 
 func (i ikev2Driver) run(ctx context.Context, m *Manager, name string, d *def, p *parsed, s *session) {
@@ -171,7 +188,8 @@ func (k *ikeSession) resolve(ctx context.Context) error {
 // connection it made drops, or the session is stopped. wasUp: it connected.
 func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err error) {
 	m := k.m
-	setup, err := renderIKE(k.c, ikeRoots(k.c), host, m.runDir, k.name, RoutesNeedIPv6(k.d.Routes), ikeKeyAsP12(k.l.Engine().Version))
+	login := ikeLogin{User: orString(k.d.Username, k.c.Username), Password: orString(k.d.Password, k.c.Password)}
+	setup, err := renderIKE(k.c, login, ikeRoots(k.c), host, m.runDir, k.name, RoutesNeedIPv6(k.d.Routes), ikeKeyAsP12(k.l.Engine().Version))
 	if err != nil {
 		return false, errFatal{err.Error()}
 	}
@@ -214,6 +232,7 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 	start := time.Now()
 	var seen bool           // charon answered on its socket
 	var downSince time.Time // when an up connection was last seen down
+	var vips []netip.Addr   // the addresses the connection is routed with
 	tick := time.NewTicker(ikePoll)
 	defer tick.Stop()
 	for {
@@ -225,7 +244,12 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 			if wasUp {
 				return true, errors.New("strongSwan exited: " + lastLine(proc.Tail(), "no output"))
 			}
-			return false, errors.New(diagnoseIKE(k.name, k.d.Via, proc.Tail()))
+			why := diagnoseIKE(k.name, k.d.Via, k.c.Auth, proc.Tail())
+			if k.c.Auth == IKEv2EAP && ikeRejected(proc.Tail()) {
+				// Trying the same password again could lock the account.
+				return false, errFatal{why}
+			}
+			return false, errors.New(why)
 		case <-tick.C:
 		}
 		qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -255,9 +279,22 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 				stop()
 				return false, errFatal{why}
 			}
-			wasUp, downSince = true, time.Time{}
+			wasUp, downSince, vips = true, time.Time{}, st.VIPs
 		case st.Up:
 			downSince = time.Time{}
+			if len(st.VIPs) > 0 && !sameAddrs(st.VIPs, vips) {
+				// charon made the connection again (the network changed;
+				// dead-peer detection) and the server handed out another
+				// address: follow it, once an interface holds it.
+				done, why := k.readdress(ctx, st)
+				if why != "" {
+					stop()
+					return true, errFatal{why}
+				}
+				if done {
+					vips = st.VIPs
+				}
+			}
 		case wasUp && downSince.IsZero():
 			downSince = now
 		case wasUp && now.Sub(downSince) >= ikeDownAfter:
@@ -269,7 +306,7 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 			return true, errors.New("the connection to the server dropped")
 		case !wasUp && now.Sub(start) > ikeConnectWait:
 			stop()
-			return false, errors.New(diagnoseIKE(k.name, k.d.Via, proc.Tail()))
+			return false, errors.New(diagnoseIKE(k.name, k.d.Via, k.c.Auth, proc.Tail()))
 		case !wasUp:
 			detail := "connecting"
 			if st.State != "" {
@@ -281,6 +318,46 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 	}
 }
 
+// ikeAddressing is where a connection's addresses are.
+type ikeAddressing struct {
+	iface, local string // the interface holding them; the IPv4 one
+	v6           bool
+	ips          []string
+}
+
+// address finds the interface holding the connection's addresses (none:
+// a.iface is empty) and vets them; why says why they're refused.
+func (k *ikeSession) address(ctx context.Context, st IKEStatus) (a ikeAddressing, why string) {
+	for _, ip := range st.VIPs {
+		a.ips = append(a.ips, ip.String())
+		if ip.Is4() && a.local == "" {
+			a.local = ip.String()
+		}
+		a.v6 = a.v6 || ip.Is6()
+	}
+	iface, nets := k.m.findIface(ctx, a.ips...)
+	if iface == "" {
+		return a, ""
+	}
+	a.iface = iface
+	return a, k.m.vetAddressing(ctx, k.name, iface, nets)
+}
+
+// readdress follows a connection made again with other addresses: done
+// once an interface holds them (until then, the next poll looks again);
+// why says why they're refused.
+func (k *ikeSession) readdress(ctx context.Context, st IKEStatus) (done bool, why string) {
+	a, why := k.address(ctx, st)
+	if a.iface == "" || why != "" {
+		return false, why
+	}
+	k.m.o.Log.Info("tunnel's address changed", "tunnel", k.name, "iface", a.iface, "addrs", strings.Join(a.ips, " "))
+	k.m.update(k.name, func(r *live) { r.iface, r.localIP, r.v6 = a.iface, a.local, a.v6 })
+	k.m.requestApply() // its routes, into the interface that holds it now
+	k.m.changed()
+	return true, ""
+}
+
 // connected records the connection and has its routes applied, or says
 // why it's refused: without an address from the server, the tunnel's
 // traffic can't be told apart; an address that clashes with this machine's
@@ -290,27 +367,17 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 		return "connected, but the server assigned no address (virtual IP) to this client; RiftRoute routes " +
 			"only into a tunnel that has one — the server must hand out addresses (e.g. strongSwan's rightsourceip)"
 	}
-	var ips []string
-	var local string
-	v6 := false
-	for _, a := range st.VIPs {
-		ips = append(ips, a.String())
-		if a.Is4() && local == "" {
-			local = a.String()
-		}
-		v6 = v6 || a.Is6()
+	a, why := k.address(ctx, st)
+	if a.iface == "" {
+		return "connected, but no interface holds the tunnel's address " + strings.Join(a.ips, " ") + "; refusing"
 	}
-	iface, nets := k.m.findIface(ctx, ips...)
-	if iface == "" {
-		return "connected, but no interface holds the tunnel's address " + strings.Join(ips, " ") + "; refusing"
-	}
-	if why := k.m.vetAddressing(ctx, k.name, iface, nets); why != "" {
+	if why != "" {
 		return why
 	}
 	now := time.Now()
 	k.m.update(k.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
-		r.iface, r.localIP, r.v6 = iface, local, v6
+		r.iface, r.localIP, r.v6 = a.iface, a.local, a.v6
 		if st.Server.IsValid() {
 			r.server = st.Server.String()
 			// The address charon actually reached is one of its servers.
@@ -325,9 +392,22 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 	return ""
 }
 
+// ikeRejected reports whether the server turned the login down: it said
+// so, or MSCHAPv2 failed with the password (not for want of the plugin).
+func ikeRejected(tail []string) bool {
+	for _, l := range tail {
+		for _, sub := range []string{"AUTHENTICATION_FAILED", "EAP_FAILURE", "EAP-MS-CHAPv2 failed with error"} {
+			if strings.Contains(l, sub) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // diagnoseIKE turns charon-cmd's output from a failed attempt into the likely
 // cause and its fix.
-func diagnoseIKE(name string, via domain.TunnelVia, tail []string) string {
+func diagnoseIKE(name string, via domain.TunnelVia, auth IKEv2Auth, tail []string) string {
 	has := func(sub string) (string, bool) {
 		for i := len(tail) - 1; i >= 0; i-- {
 			if strings.Contains(tail[i], sub) {
@@ -339,8 +419,12 @@ func diagnoseIKE(name string, via domain.TunnelVia, tail []string) string {
 	for _, l := range tail {
 		// "plugin 'x': failed to load - …" or "plugin 'x' failed to load:
 		// …" — not a feature "in plugin 'x'" that failed.
-		if m := rePluginMissing.FindStringSubmatch(l); m != nil && slices.Contains(ikeEssential, m[1]) {
+		if m := rePluginMissing.FindStringSubmatch(l); m != nil &&
+			(slices.Contains(ikeEssential, m[1]) || auth == IKEv2EAP && slices.Contains(ikeEAPPlugins, m[1])) {
 			return missingPlugin(m[1])
+		}
+		if auth == IKEv2EAP && strings.Contains(l, "loading EAP_MSCHAPV2 method failed") {
+			return missingPlugin("eap-mschapv2")
 		}
 	}
 	if l, ok := has("critical plugin"); ok {
@@ -349,6 +433,15 @@ func diagnoseIKE(name string, via domain.TunnelVia, tail []string) string {
 			msg += " — " + ikeLinuxNote
 		}
 		return msg
+	}
+	if ikeRejected(tail) {
+		switch auth {
+		case IKEv2EAP:
+			return "the server rejected the username or password — change them with `riftroute tunnel edit " + name +
+				" --username <name> --ask-password` (or on the Tunnels page), then connect again"
+		case IKEv2PSK:
+			return "the server rejected the shared secret, or this client's identity (the profile's LocalIdentifier)"
+		}
 	}
 	for _, c := range []struct{ sub, msg string }{
 		{"AUTHENTICATION_FAILED", "the server rejected this profile's certificate (AUTHENTICATION_FAILED) — it may have been revoked, or the server expects another login"},

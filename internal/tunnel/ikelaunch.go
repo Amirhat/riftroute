@@ -179,8 +179,8 @@ var ikeLinuxInstall = []struct {
 	// standard ones, vici in swanctl's package; no recommends, which would
 	// add a system charon (not needed: each tunnel runs its own).
 	{ids: []string{"debian", "ubuntu"},
-		install:   "sudo apt install --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl",
-		reinstall: "sudo apt install --reinstall --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl"},
+		install:   "sudo apt install --no-install-recommends charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins strongswan-swanctl",
+		reinstall: "sudo apt install --reinstall --no-install-recommends charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins strongswan-swanctl"},
 	// kernel-libipsec is a package of its own there.
 	{ids: []string{"fedora"}, install: "sudo dnf install strongswan strongswan-libipsec",
 		reinstall: "sudo dnf reinstall strongswan strongswan-libipsec"},

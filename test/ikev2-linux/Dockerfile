@@ -5,6 +5,6 @@
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       iproute2 iputils-ping openssl ca-certificates \
-      charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl \
+      charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins strongswan-swanctl \
       strongswan-charon \
     && rm -rf /var/lib/apt/lists/*

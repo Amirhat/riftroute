@@ -729,6 +729,35 @@ describe('Tunnels view — WireGuard', () => {
     expect(spec.password).toBeUndefined()
   })
 
+  it('adds an IKEv2 profile that logs in with a username and password, asking for the password it leaves out', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      path: '/Users/me/Staff.mobileconfig',
+      name: 'Staff.mobileconfig',
+      type: 'ikev2',
+      config: '<plist/>',
+      servers: ['vpn.example.com (IKEv2)'],
+      needs_auth: true,
+      ignored: [],
+      username: 'alice',
+      password: '',
+      error: '',
+    })
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...wgTunnel, name: 'staff', type: 'ikev2' } })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose a file…'))
+    await screen.findByText('Staff.mobileconfig')
+
+    expect(screen.getByText(/logs in with the username and password below/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Username')).toHaveValue('alice')
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'typed pw' } })
+    fireEvent.change(screen.getByLabelText('Networks through this tunnel'), { target: { value: '10.30.0.0/16' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
+    expect(mockApi.saveTunnel.mock.calls[0][0]).toMatchObject({ type: 'ikev2', username: 'alice', password: 'typed pw' })
+  })
+
   it('connects an IKEv2 tunnel once strongSwan is there, whatever openvpn says', async () => {
     mockApi.tunnelEngine.mockResolvedValue({
       available: false,

@@ -24,7 +24,7 @@ import (
 func tunnelCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tunnel",
-		Short: "Run an OpenVPN or WireGuard connection next to your main VPN, for chosen networks only",
+		Short: "Run an OpenVPN, WireGuard or IKEv2 connection next to your main VPN, for chosen networks only",
 		Long: "RiftRoute can run an OpenVPN profile (.ovpn) or a WireGuard configuration (.conf)\n" +
 			"itself as a split tunnel: only the routes you list go into it. The server's\n" +
 			"redirect-gateway, pushed routes and pushed DNS — WireGuard's AllowedIPs, DNS and\n" +
@@ -203,15 +203,23 @@ func tunnelAddCmd() *cobra.Command {
 				return fmt.Errorf("a tunnel named %q already exists — change it with `riftroute tunnel edit %s`, or pass --replace", args[0], args[0])
 			}
 			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && tunnel.IsMobileconfig(raw) {
-				if f.username != "" || f.passwordStdin {
-					return errors.New("an IKEv2 tunnel logs in with what its profile carries; it takes no --username or password")
-				}
-				if _, err := tunnel.ParseMobileconfig(raw); err != nil {
+				c, err := tunnel.ParseMobileconfig(raw)
+				if err != nil {
 					return fmt.Errorf("%s: %w", args[1], err)
 				}
 				spec := domain.TunnelSpec{
 					Name: args[0], Type: domain.TunnelIKEv2, Config: raw, Routes: f.routes,
 					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
+					Username: f.username,
+				}
+				switch {
+				case c.Auth != tunnel.IKEv2EAP && (f.username != "" || f.passwordStdin):
+					return fmt.Errorf("this profile logs in with %s; it takes no --username or password", ikeLoginName(c.Auth))
+				case c.Auth == tunnel.IKEv2EAP && (c.Password == "" || f.passwordStdin):
+					// The profile leaves the password for the device to ask.
+					if err := askCreds(cmd, &spec, f.passwordStdin, c.Username != ""); err != nil {
+						return err
+					}
 				}
 				if len(f.routes) == 0 {
 					fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes (the profile's full tunnel never becomes routes)")
@@ -348,6 +356,11 @@ func tunnelEditCmd() *cobra.Command {
 						needsAuth = p.NeedsAuth
 					}
 				}
+				if spec.Config != "" && cur.Type == domain.TunnelIKEv2 {
+					if c, err := tunnel.ParseMobileconfig(spec.Config); err == nil {
+						needsAuth = c.Auth == tunnel.IKEv2EAP
+					}
+				}
 				switch {
 				case !needsAuth && f.passwordStdin:
 					warnNoLogin(cmd, "--password-stdin")
@@ -363,7 +376,7 @@ func tunnelEditCmd() *cobra.Command {
 		},
 	}
 	f.bind(cmd)
-	cmd.Flags().StringVar(&profile, "profile", "", "replace the OpenVPN profile (.ovpn) or WireGuard configuration (.conf)")
+	cmd.Flags().StringVar(&profile, "profile", "", "replace the profile: OpenVPN (.ovpn), WireGuard (.conf) or IKEv2 (.mobileconfig)")
 	cmd.Flags().BoolVar(&askPass, "ask-password", false, "prompt for a new password")
 	cmd.Flags().BoolVar(&noRoutes, "no-routes", false, "remove every route")
 	return cmd
@@ -685,4 +698,15 @@ func profileKind(t domain.TunnelType) string {
 		return "a configuration profile (.mobileconfig)"
 	}
 	return "an OpenVPN profile (.ovpn)"
+}
+
+// ikeLoginName names an IKEv2 profile's login.
+func ikeLoginName(a tunnel.IKEv2Auth) string {
+	switch a {
+	case tunnel.IKEv2EAP:
+		return "a username and password"
+	case tunnel.IKEv2PSK:
+		return "a shared secret"
+	}
+	return "a certificate"
 }

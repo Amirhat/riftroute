@@ -320,6 +320,11 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
+		if p.needsAuth {
+			// A login the profile carries (an IKEv2 one saved before its
+			// username and password were kept with the tunnel).
+			s.Username, s.HasPassword = orString(s.Username, p.inlineUser), s.HasPassword || p.inlinePass != ""
+		}
 		if p.ike != nil && !p.ike.CertExpires().IsZero() {
 			exp := p.ike.CertExpires()
 			s.CertExpires = &exp
@@ -485,9 +490,6 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if spec.Type == domain.TunnelWireGuard && (spec.Username != "" || spec.Password != "") {
 		bad("username", "a WireGuard tunnel has no username or password; its keys are in the configuration")
 	}
-	if spec.Type == domain.TunnelIKEv2 && (spec.Username != "" || spec.Password != "") {
-		bad("username", "an IKEv2 tunnel logs in with what its profile carries (a certificate, or a username and password in it)")
-	}
 
 	m.mu.Lock()
 	prev := m.defs[spec.Name]
@@ -548,6 +550,9 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		}
 		if d.Password == "" {
 			d.Password = p.inlinePass
+		}
+		if d.Type == domain.TunnelIKEv2 && !p.needsAuth && (spec.Username != "" || spec.Password != "") {
+			bad("username", "this profile logs in with "+ikeLoginName(p.ike.Auth)+"; it takes no username or password")
 		}
 		if p.needsAuth && d.Username == "" {
 			bad("username", "this profile logs in with a username and password; the username is required")
@@ -714,7 +719,7 @@ func (m *Manager) Connect(name string) error {
 	if perr != nil {
 		return fmt.Errorf("tunnel %s: profile is no longer valid: %w", name, perr)
 	}
-	if p.needsAuth && (d.Username == "" || d.Password == "") {
+	if p.needsAuth && (orString(d.Username, p.inlineUser) == "" || orString(d.Password, p.inlinePass) == "") {
 		return fmt.Errorf("tunnel %s needs a username and password", name)
 	}
 	drv := m.drivers[d.Type]

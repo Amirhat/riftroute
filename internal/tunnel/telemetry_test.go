@@ -80,20 +80,22 @@ func TestTunnelSessionsAreCounted(t *testing.T) {
 // Every diagnosis maps to a code (the message itself never goes anywhere).
 func TestFailureCodesFromDiagnoses(t *testing.T) {
 	cases := map[string]string{
-		diagnose("x", "connection-reset", []string{"VERIFY OK"}):                                                  "auth",
-		diagnose("x", "tls-error", nil):                                                                           "tls",
-		diagnose("x", "", []string{"VERIFY EKU ERROR"}):                                                           "eku",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"AUTHENTICATION_FAILED"}):                               "auth",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"NO_PROPOSAL_CHOSEN"}):                                  "proposal",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"IDr 'a' does not match to 'b'"}):                       "identity",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"constraint check failed"}):                             "identity",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"no trusted ECDSA public key found"}):                   "cert",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"certificate has expired"}):                             "cert",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"giving up after 5 retransmits"}):                       "unreachable",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"00[LIB] plugin 'vici': failed to load - x not found"}): "plugin",
-		diagnoseIKE("x", domain.TunnelViaDirect, []string{"something odd"}):                                       "other",
-		"the server gave the tunnel the network 10.0.0.0/8, which holds your router; refusing":                    "addressing",
-		"gave up after 6 attempts: something":                                                                     "other",
+		diagnose("x", "connection-reset", []string{"VERIFY OK"}):                                                                    "auth",
+		diagnose("x", "tls-error", nil):                                                                                             "tls",
+		diagnose("x", "", []string{"VERIFY EKU ERROR"}):                                                                             "eku",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2EAP, []string{"received EAP_FAILURE"}):                                        "auth",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2PSK, []string{"received AUTHENTICATION_FAILED notify error"}):                 "auth",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"AUTHENTICATION_FAILED"}):                               "auth",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"NO_PROPOSAL_CHOSEN"}):                                  "proposal",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"IDr 'a' does not match to 'b'"}):                       "identity",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"constraint check failed"}):                             "identity",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"no trusted ECDSA public key found"}):                   "cert",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"certificate has expired"}):                             "cert",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"giving up after 5 retransmits"}):                       "unreachable",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"00[LIB] plugin 'vici': failed to load - x not found"}): "plugin",
+		diagnoseIKE("x", domain.TunnelViaDirect, IKEv2Certificate, []string{"something odd"}):                                       "other",
+		"the server gave the tunnel the network 10.0.0.0/8, which holds your router; refusing":                                      "addressing",
+		"gave up after 6 attempts: something":                                                                                       "other",
 	}
 	for msg, want := range cases {
 		if got := failureCode(msg); got != want {
