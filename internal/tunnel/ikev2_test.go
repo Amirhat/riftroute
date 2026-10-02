@@ -381,12 +381,40 @@ func TestIKEv2RejectionOfALoginThatWorkedIsRetried(t *testing.T) {
 		t.Fatalf("gave up with %q", st.LastError)
 	}
 
+	// Connected anew — by hand, or by a restarted daemon (a new Manager on
+	// the same definitions) — the login is still one that worked.
+	fi.Fail = nil
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+	if err := h.m.Disconnect(t.Context(), "eap"); err != nil {
+		t.Fatal(err)
+	}
+	h.m.loginMu.Lock()
+	h.m.logins = nil // as a restarted daemon has it: only the file
+	h.m.loginMu.Unlock()
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "a rejected attempt after reconnecting", func() bool {
+		st, _ := h.m.Status("eap")
+		return st.State == domain.TunnelReconnecting && strings.Contains(st.LastError, "rejected")
+	})
+	fi.Fail = nil
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+	if err := h.m.Disconnect(t.Context(), "eap"); err != nil {
+		t.Fatal(err)
+	}
+
 	// A login that never connected is never tried twice (see
 	// TestIKEv2RejectedPasswordIsNotRetried); nor is a changed one.
 	spec.Password, spec.Config = "changed", ""
 	if _, err := h.m.Save(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
 	n := len(fi.Started())
 	if err := h.m.Connect("eap"); err != nil {
 		t.Fatal(err)

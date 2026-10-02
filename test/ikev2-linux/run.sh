@@ -352,7 +352,7 @@ sleep 3
 [ -z "$(charon_pids)" ] && pass "nothing to reap after the restart" || fail "charon-cmd running after restart: $(charon_pids)"
 left=$(cx ip route show proto riftroute)
 [ -z "$left" ] && pass "and withdrew the dead session's routes" || fail "stale routes after restart: $left"
-files=$(cx ls /var/lib/riftroute/tunnels | grep -v '\.json$' | tr '\n' ' ' || true)
+files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
 [ -z "$files" ] && pass "and removed its key and config files" || fail "files left: $files"
 
 echo "== up/down"
@@ -361,7 +361,7 @@ cx riftroute tunnel down office >/dev/null
 sleep 1
 [ -z "$(cx ip route show proto riftroute)" ] && pass "down removes every tunnel route" || fail "routes left: $(cx ip route show proto riftroute)"
 [ -z "$(charon_pids)" ] && pass "down stops charon-cmd" || fail "charon-cmd still running"
-files=$(cx ls /var/lib/riftroute/tunnels | grep -v '\.json$' | tr '\n' ' ' || true)
+files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
 [ -z "$files" ] && pass "and leaves no key or config behind" || fail "files left: $files"
 sx swanctl --list-sas 2>/dev/null | grep -q "rw:" && fail "the server still holds an SA after down" || pass "the connection was deleted with the server"
 
@@ -460,7 +460,7 @@ else
   out=$(cx riftroute tunnel up psk 2>&1 || true)
   grep -q "needs strongSwan 6.1 or later" <<<"$out" && pass "Debian's strongSwan 5.9: a shared secret is refused, saying why" || fail "PSK on 5.9: $out"
 fi
-files=$(cx ls /var/lib/riftroute/tunnels | grep -v '\.json$' | tr '\n' ' ' || true)
+files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
 [ -z "$files" ] && pass "no secrets left on disk" || fail "files left: $files"
 
 echo

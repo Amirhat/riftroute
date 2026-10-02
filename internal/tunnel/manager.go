@@ -88,9 +88,13 @@ type Manager struct {
 	// while they're down, so a block-mode one keeps blocking.
 	resume, restarting map[string]bool
 	// seen is what observe saw of each tunnel last (telemetry).
-	seen   map[string]seen
-	closed chan struct{}
-	shut   sync.Once
+	seen map[string]seen
+	// logins are the fingerprints of the logins that last connected, by
+	// tunnel (kept in the definitions' directory too; see loginPath).
+	loginMu sync.Mutex
+	logins  map[string]string
+	closed  chan struct{}
+	shut    sync.Once
 }
 
 type live struct {
@@ -123,10 +127,6 @@ type live struct {
 	// set and the tunnel isn't connected, a block-mode tunnel refuses its
 	// destinations.
 	want bool
-	// loggedIn fingerprints the login that last connected (IKEv2 EAP): a
-	// rejection of the same one is taken for the server's trouble, not a
-	// wrong password (ikeLoginWorked).
-	loggedIn string
 }
 
 type session struct {
@@ -615,6 +615,7 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 		if err := m.store.remove(name); err != nil {
 			return err
 		}
+		m.forgetLogin(name)
 		m.changed()
 		return nil
 	}
@@ -638,6 +639,7 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 		undo()
 		return err
 	}
+	m.forgetLogin(name)
 	m.mu.Lock()
 	delete(m.defs, name)
 	delete(m.parsed, name)
@@ -1594,6 +1596,44 @@ func (m *Manager) update(name string, fn func(*live)) {
 	if r := m.rt[name]; r != nil {
 		fn(r)
 	}
+}
+
+// rememberLogin records that tunnel name's login print connected.
+func (m *Manager) rememberLogin(name, print string) {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	if m.logins == nil {
+		m.logins = map[string]string{}
+	}
+	if m.logins[name] == print {
+		return
+	}
+	m.logins[name] = print
+	if err := m.store.putLogin(name, print); err != nil {
+		m.o.Log.Debug("tunnel login not recorded", "tunnel", name, "err", err)
+	}
+}
+
+// loggedIn is the print of tunnel name's login that last connected (since
+// it was saved, across restarts), or "".
+func (m *Manager) loggedIn(name string) string {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	if p, ok := m.logins[name]; ok {
+		return p
+	}
+	if m.logins == nil {
+		m.logins = map[string]string{}
+	}
+	m.logins[name] = m.store.getLogin(name)
+	return m.logins[name]
+}
+
+// forgetLogin drops tunnel name's record (it's deleted).
+func (m *Manager) forgetLogin(name string) {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	delete(m.logins, name)
 }
 
 func (m *Manager) setErr(name, msg string) {

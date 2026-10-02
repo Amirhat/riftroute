@@ -127,9 +127,33 @@ func (s *defStore) put(d *def) error {
 }
 
 func (s *defStore) remove(name string) error {
+	_ = os.Remove(s.loginPath(name))
 	err := os.Remove(s.path(name))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	return err
+}
+
+// loginPath holds the fingerprint of the tunnel's login that last connected
+// (a hash of its profile, username and password — never the password), so
+// a rejection of the same login after a reconnect or a restart is taken for
+// the server's trouble (ikeSession.loginWorked). A file of its own: the
+// definition is the user's to change, and this must never race a Save.
+func (s *defStore) loginPath(name string) string { return filepath.Join(s.dir, name+".login") }
+
+func (s *defStore) getLogin(name string) string {
+	b, err := os.ReadFile(s.loginPath(name))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func (s *defStore) putLogin(name, print string) error {
+	tmp := s.loginPath(name) + ".tmp"
+	if err := os.WriteFile(tmp, []byte(print+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.loginPath(name))
 }

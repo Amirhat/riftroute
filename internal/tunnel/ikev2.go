@@ -409,9 +409,10 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 		return why
 	}
 	now := time.Now()
-	login := k.loginPrint()
+	if k.c.Auth == IKEv2EAP {
+		k.m.rememberLogin(k.name, k.loginPrint())
+	}
 	k.m.update(k.name, func(r *live) {
-		r.loggedIn = login
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = a.iface, a.local, a.v6
 		if st.Server.IsValid() {
@@ -435,12 +436,10 @@ func (k *ikeSession) loginPrint() string {
 	return hex.EncodeToString(h[:])
 }
 
-// loginWorked reports whether this very login has connected (since the
-// daemon started).
+// loginWorked reports whether this very login has connected before (since
+// it was saved: across reconnects and restarts).
 func (k *ikeSession) loginWorked() bool {
-	login, worked := k.loginPrint(), false
-	k.m.update(k.name, func(r *live) { worked = r.loggedIn == login })
-	return worked
+	return k.m.loggedIn(k.name) == k.loginPrint()
 }
 
 // ikeRejected reports whether the server turned the login down: it said
