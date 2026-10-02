@@ -235,7 +235,9 @@ protocols.
      unless that same login connected since the daemon started: then it's
      the server's backend (RADIUS, a directory) failing for a moment, likely,
      and it's tried again after 5, 15 and 30 minutes; a fourth rejection in
-     a row ends the session (the review's MEDIUM). The
+     a row ends the session (the review's MEDIUM), and the login no longer
+     counts as one that worked: the next connect stops at its first
+     rejection (the security review's LOW). The
      Docker test logs in with EAP on 5.9 and 6.1, refuses a wrong password
      once, and logs in with a shared secret on 6.1. On Debian/Ubuntu
      EAP-MSCHAPv2 is `libcharon-extauth-plugins` (in the install help);

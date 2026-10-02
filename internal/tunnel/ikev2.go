@@ -141,6 +141,9 @@ func (k *ikeSession) run(ctx context.Context) {
 		case errors.As(err, &rejected):
 			rejects++
 			if rejects > len(ikeRejectWaits) {
+				// No longer a login that works: the next rejection, after a
+				// reconnect or a restart, stops it at once (no lockout).
+				k.m.forgetLogin(k.name)
 				k.m.setErr(k.name, fmt.Sprintf("gave up after %d rejections in a row: %s", rejects, rejected.msg))
 				return
 			}

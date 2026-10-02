@@ -1629,11 +1629,16 @@ func (m *Manager) loggedIn(name string) string {
 	return m.logins[name]
 }
 
-// forgetLogin drops tunnel name's record (it's deleted).
+// forgetLogin drops tunnel name's record — it's deleted, or its login was
+// rejected over and over (the next rejection then stops it at once).
 func (m *Manager) forgetLogin(name string) {
 	m.loginMu.Lock()
 	defer m.loginMu.Unlock()
-	delete(m.logins, name)
+	if m.logins == nil {
+		m.logins = map[string]string{}
+	}
+	m.logins[name] = ""
+	m.store.removeLogin(name)
 }
 
 func (m *Manager) setErr(name, msg string) {

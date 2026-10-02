@@ -150,6 +150,8 @@ func (s *defStore) getLogin(name string) string {
 	return strings.TrimSpace(string(b))
 }
 
+func (s *defStore) removeLogin(name string) { _ = os.Remove(s.loginPath(name)) }
+
 func (s *defStore) putLogin(name, print string) error {
 	tmp := s.loginPath(name) + ".tmp"
 	if err := os.WriteFile(tmp, []byte(print+"\n"), 0o600); err != nil {

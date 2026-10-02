@@ -380,6 +380,16 @@ func TestIKEv2RejectionOfALoginThatWorkedIsRetried(t *testing.T) {
 	if !strings.Contains(st.LastError, "gave up after 4 rejections in a row") {
 		t.Fatalf("gave up with %q", st.LastError)
 	}
+	// Given up on, the login no longer counts as one that works: connected
+	// again (by hand, or after a restart) and rejected, it stops at once.
+	n0 := len(fi.Started())
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	st = waitState(t, h.m, "eap", domain.TunnelFailed)
+	if len(fi.Started()) != n0+1 || strings.Contains(st.LastError, "gave up") {
+		t.Fatalf("after giving up: %d more attempts, %q", len(fi.Started())-n0, st.LastError)
+	}
 
 	// Connected anew — by hand, or by a restarted daemon (a new Manager on
 	// the same definitions) — the login is still one that worked.
