@@ -243,6 +243,9 @@ func (r *Report) Validate() error {
 		}
 	}
 	counts("daemon", r.Daemon.Starts, r.Daemon.Unclean, r.Daemon.Panics)
+	if r.Daemon.Unclean > r.Daemon.Starts {
+		bad("daemon.unclean above daemon.starts")
+	}
 	u := r.Updates
 	counts("updates", u.Installed, u.RolledBackHealth, u.RolledBackUser, u.SkippedBroken, u.HelpersRepaired, u.CheckFailed)
 

@@ -48,7 +48,7 @@
       <tbody>
       {{range $s.Versions}}<tr>
         <th scope="row">{{.Version}}</th><td>{{.Installs}}</td><td>{{.Daemon.Starts}}</td>
-        <td>{{.Daemon.Unclean}} <span class="muted">{{pct .UncleanRate}}</span></td><td>{{.Daemon.Panics}}</td>
+        <td>{{.Daemon.Unclean}} <span class="muted">{{.InstallsUnclean}} inst. · {{pct .UncleanRate}}</span></td><td>{{.Daemon.Panics}} <span class="muted">{{.InstallsPanicked}} inst.</span></td>
         <td>{{.Updates.Installed}}</td><td>{{.Updates.RolledBackHealth}} / {{.Updates.RolledBackUser}}</td><td>{{.Updates.SkippedBroken}}</td>
         <td>{{.Applies.Applied}}</td><td>{{.Applies.Failed}} <span class="muted">{{pct .ApplyFailRate}}</span></td>
         <td>{{.Applies.Slow}} <span class="muted">{{pct .SlowRate}}</span></td><td><span class="muted">{{pct .TunnelFailRate}}</span></td>
@@ -56,7 +56,7 @@
       </tbody>
     </table>
     </div>
-    <p class="muted small">Rates show once there's enough to say ({{.MinStarts}} starts, {{.MinApplies}} changes, {{.MinAttempts}} tunnel attempts). A rollback is reported by the version the install went back to.</p>
+    <p class="muted small">Every install weighs the same: a rate is the share of installs (unclean starts), or the installs' own rates averaged (changes, tunnels), shown from {{.MinInstalls}} installs; a panic or rollback is flagged from {{.MinFlagInstalls}}. Each report counts for at most one machine's day. A rollback is reported by the version the install went back to. Reports are anonymous: a flag is a hint.</p>
   </section>
 
   <section class="card">

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -201,7 +202,9 @@ func TestSummaryFlagsAWorseVersion(t *testing.T) {
 		bad.Updates.RolledBackHealth = 0
 		reps = append(reps, bad)
 	}
-	reps[0].Updates.RolledBackHealth = 1 // an install went back to 0.6.1
+	for i := 0; i < 6; i += 2 { // three installs went back to 0.6.1
+		reps[i].Updates.RolledBackHealth = 1
+	}
 	d, _ := time.Parse(time.DateOnly, day)
 	s, err := summarize(newestFirst(reps), d.AddDate(0, 0, -6), d)
 	if err != nil {
@@ -309,5 +312,51 @@ func TestTelemetrySummaryIsCached(t *testing.T) {
 	e.now = e.now.Add(summaryTTL)
 	if s, _ := e.srv.summary(7); s.Installs != 2 {
 		t.Fatalf("stale after the TTL: %d", s.Installs)
+	}
+}
+
+// One forged report — any counts the schema takes — weighs one install: it
+// can neither hide a worse release's flag nor raise flags against a good
+// one (the review's MEDIUM).
+func TestOneReportCantSwingTheFlags(t *testing.T) {
+	day := "2026-09-23"
+	d, _ := time.Parse(time.DateOnly, day)
+	var reps []telemetry.Report
+	for i := range 10 {
+		good := report(i+1, day, "0.6.1")
+		good.Daemon = telemetry.Daemon{Starts: 3}
+		bad := report(i+100, day, "0.7.0")
+		bad.Daemon = telemetry.Daemon{Starts: 3, Unclean: 1}
+		reps = append(reps, good, bad)
+	}
+	hide := report(999, day, "0.7.0")
+	hide.Daemon = telemetry.Daemon{Starts: 1_000_000}
+	s, err := summarize(newestFirst(append(slices.Clone(reps), hide)), d.AddDate(0, 0, -6), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(s.Flags, func(f Flag) bool { return f.Version == "0.7.0" && strings.Contains(f.What, "unclean") }) {
+		t.Errorf("a forged report hid 0.7.0's flag: %+v", s.Flags)
+	}
+
+	var clean []telemetry.Report
+	for i := range 20 {
+		r := report(i+1, day, []string{"0.6.1", "0.7.0"}[i%2])
+		r.Daemon = telemetry.Daemon{Starts: 3}
+		clean = append(clean, r)
+	}
+	forged := report(998, day, "0.7.0")
+	forged.Daemon = telemetry.Daemon{Starts: 1, Unclean: 1, Panics: 1_000_000}
+	forged.Updates.RolledBackHealth = 1_000_000
+	forged.Applies = &telemetry.Applies{Failed: 1_000_000, Refused: map[string]int{}, RolledBack: map[string]int{}, MS: map[string]int{}}
+	s, err = summarize(newestFirst(append(clean, forged)), d.AddDate(0, 0, -6), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Flags) != 0 {
+		t.Errorf("one forged report raised flags against a good release: %+v", s.Flags)
+	}
+	if v := s.Versions[0]; v.Daemon.Panics > capPanics || v.Updates.RolledBackHealth > capUpdates || v.InstallsPanicked != 1 {
+		t.Errorf("the forged report counts for more than a day: %+v", v)
 	}
 }

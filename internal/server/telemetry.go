@@ -163,13 +163,23 @@ type VersionSummary struct {
 	Updates  telemetry.Updates `json:"updates"`
 	// Applies are from full reports only.
 	Applies telemetry.Applies `json:"applies"`
-	// Rates; nil when there's too little to say.
+	// Installs with at least one unclean start, recovered panic, or update
+	// rolled back for its health.
+	InstallsUnclean    int `json:"installs_unclean"`
+	InstallsPanicked   int `json:"installs_panicked"`
+	InstallsRolledBack int `json:"installs_rolled_back"`
+	// Installs with at least one failed change, or failed tunnel attempt.
+	InstallsApplyFailed  int `json:"installs_apply_failed"`
+	InstallsTunnelFailed int `json:"installs_tunnel_failed"`
+	// Rates, each install weighing the same (one with many reports, or a
+	// forged one with huge counts, counts once): the share of installs with
+	// an unclean start, and the installs' own rates of failed and slow
+	// changes and failed tunnel attempts, averaged. Nil when fewer than
+	// minInstalls installs say.
 	UncleanRate    *float64 `json:"unclean_rate"`
 	ApplyFailRate  *float64 `json:"apply_fail_rate"`
 	SlowRate       *float64 `json:"slow_rate"`
 	TunnelFailRate *float64 `json:"tunnel_fail_rate"`
-
-	tunnelOK, tunnelFailed int
 }
 
 // Platforms count installs (each install's latest report in the window).
@@ -184,12 +194,14 @@ type Platforms struct {
 
 // TunnelSummary is one protocol's sessions.
 type TunnelSummary struct {
-	Connected   int            `json:"connected"`
-	Drops       int            `json:"drops"`
-	GaveUp      int            `json:"gave_up"`
-	Failed      int            `json:"failed"`
-	FailedBy    map[string]int `json:"failed_by"`
-	ConnectRate *float64       `json:"connect_rate"` // connected / (connected + failed)
+	Connected int            `json:"connected"`
+	Drops     int            `json:"drops"`
+	GaveUp    int            `json:"gave_up"`
+	Failed    int            `json:"failed"`
+	FailedBy  map[string]int `json:"failed_by"`
+	// ConnectRate is the installs' own connected / (connected + failed),
+	// averaged (each install weighing the same).
+	ConnectRate *float64 `json:"connect_rate"`
 }
 
 // UsageSummary counts installs at full (their latest full report) using
@@ -215,11 +227,13 @@ type Flag struct {
 	What    string `json:"what"`
 }
 
-// Minimum samples before a rate is shown or compared.
+// minInstalls is how many installs a rate needs before it's shown or
+// compared; minFlagInstalls, how many must show a panic or a rollback for a
+// flag. Install ids are anonymous and self-chosen, so a flag is a hint: what
+// these bound is how much one report can move one.
 const (
-	minStarts   = 20
-	minApplies  = 50
-	minAttempts = 20
+	minInstalls     = 10
+	minFlagInstalls = 3
 )
 
 func rate(n, of, min int) *float64 {
@@ -228,6 +242,72 @@ func rate(n, of, min int) *float64 {
 	}
 	r := float64(n) / float64(of)
 	return &r
+}
+
+// The most one report counts for, whatever it says: what one machine
+// plausibly does in a day, or a few missed ones. A report claiming more
+// weighs no more (Validate takes anything up to 1,000,000).
+const (
+	capStarts  = 100
+	capPanics  = 100
+	capUpdates = 10
+	capApplies = 5000
+	capTunnel  = 500
+)
+
+// clamp is r counted as at most one machine's day (capStarts…).
+func clamp(r telemetry.Report) telemetry.Report {
+	c := func(n, max int) int { return min(n, max) }
+	r.Daemon.Starts = c(r.Daemon.Starts, capStarts)
+	r.Daemon.Unclean = c(r.Daemon.Unclean, r.Daemon.Starts)
+	r.Daemon.Panics = c(r.Daemon.Panics, capPanics)
+	u := &r.Updates
+	u.Installed, u.RolledBackHealth, u.RolledBackUser = c(u.Installed, capUpdates), c(u.RolledBackHealth, capUpdates), c(u.RolledBackUser, capUpdates)
+	u.SkippedBroken, u.HelpersRepaired, u.CheckFailed = c(u.SkippedBroken, capUpdates), c(u.HelpersRepaired, capUpdates), c(u.CheckFailed, capApplies)
+	capMap := func(m map[string]int, max int) map[string]int {
+		out := make(map[string]int, len(m))
+		for k, n := range m {
+			out[k] = c(n, max)
+		}
+		return out
+	}
+	if a := r.Applies; a != nil {
+		ca := *a
+		ca.Applied, ca.Auto, ca.Failed = c(a.Applied, capApplies), c(a.Auto, capApplies), c(a.Failed, capApplies)
+		ca.Slow = c(a.Slow, ca.Applied)
+		ca.Refused, ca.RolledBack, ca.MS = capMap(a.Refused, capApplies), capMap(a.RolledBack, capApplies), capMap(a.MS, capApplies)
+		r.Applies = &ca
+	}
+	if r.Tunnels != nil {
+		ts := make(map[string]telemetry.TunnelSessions, len(r.Tunnels))
+		for typ, t := range r.Tunnels {
+			t.Connected, t.Drops, t.GaveUp = c(t.Connected, capTunnel), c(t.Drops, capTunnel), c(t.GaveUp, capTunnel)
+			t.Failed = capMap(t.Failed, capTunnel)
+			ts[typ] = t
+		}
+		r.Tunnels = ts
+	}
+	return r
+}
+
+// perInstall is what one install's reports in a window add up to.
+type perInstall struct {
+	starts, unclean, panics, rolledBack int
+	applied, failed, slow               int
+	tunnelOK, tunnelFailed              int
+}
+
+// mean averages per-install rates, nil below minInstalls.
+func mean(rates []float64) *float64 {
+	if len(rates) < minInstalls {
+		return nil
+	}
+	t := 0.0
+	for _, r := range rates {
+		t += r
+	}
+	m := t / float64(len(rates))
+	return &m
 }
 
 // summarize sums the reports each yields, newest first, for the window
@@ -253,11 +333,13 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 		daily[sum.Daily[i].Day] = &sum.Daily[i]
 	}
 	versions := map[string]*VersionSummary{}
-	versionInstalls := map[string]map[string]bool{}
-	seen := map[string]bool{}     // installs whose newest report was counted
-	seenFull := map[string]bool{} // …and newest full one
-	healthRollbacks := 0
+	versionInstalls := map[string]map[string]*perInstall{}
+	tunnelInstalls := map[string]map[string]*perInstall{} // by protocol
+	seen := map[string]bool{}                             // installs whose newest report was counted
+	seenFull := map[string]bool{}                         // …and newest full one
+	rolledBack := map[string]bool{}                       // installs that rolled an update back for its health
 	err := each(func(r telemetry.Report) {
+		r = clamp(r)
 		sum.Reports++
 		if d := daily[r.Day]; d != nil {
 			d.Installs++
@@ -306,9 +388,20 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 		if v == nil {
 			v = &VersionSummary{Version: r.App.Version, Applies: telemetry.Applies{Refused: map[string]int{}, RolledBack: map[string]int{}, MS: map[string]int{}}}
 			versions[r.App.Version] = v
-			versionInstalls[r.App.Version] = map[string]bool{}
+			versionInstalls[r.App.Version] = map[string]*perInstall{}
 		}
-		versionInstalls[r.App.Version][r.Install] = true
+		pi := versionInstalls[r.App.Version][r.Install]
+		if pi == nil {
+			pi = &perInstall{}
+			versionInstalls[r.App.Version][r.Install] = pi
+		}
+		pi.starts += r.Daemon.Starts
+		pi.unclean += r.Daemon.Unclean
+		pi.panics += r.Daemon.Panics
+		pi.rolledBack += r.Updates.RolledBackHealth
+		if r.Updates.RolledBackHealth > 0 {
+			rolledBack[r.Install] = true
+		}
 		v.Reports++
 		v.Daemon.Starts += r.Daemon.Starts
 		v.Daemon.Unclean += r.Daemon.Unclean
@@ -320,8 +413,10 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 		v.Updates.SkippedBroken += u.SkippedBroken
 		v.Updates.HelpersRepaired += u.HelpersRepaired
 		v.Updates.CheckFailed += u.CheckFailed
-		healthRollbacks += u.RolledBackHealth
 		if a := r.Applies; a != nil {
+			pi.applied += a.Applied
+			pi.failed += a.Failed
+			pi.slow += a.Slow
 			v.Applies.Applied += a.Applied
 			v.Applies.Auto += a.Auto
 			v.Applies.Failed += a.Failed
@@ -341,12 +436,22 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 			ts.Connected += t.Connected
 			ts.Drops += t.Drops
 			ts.GaveUp += t.GaveUp
+			if tunnelInstalls[typ] == nil {
+				tunnelInstalls[typ] = map[string]*perInstall{}
+			}
+			tp := tunnelInstalls[typ][r.Install]
+			if tp == nil {
+				tp = &perInstall{}
+				tunnelInstalls[typ][r.Install] = tp
+			}
 			for code, n := range t.Failed {
 				ts.Failed += n
 				ts.FailedBy[code] += n
-				v.tunnelFailed += n
+				pi.tunnelFailed += n
+				tp.tunnelFailed += n
 			}
-			v.tunnelOK += t.Connected
+			pi.tunnelOK += t.Connected
+			tp.tunnelOK += t.Connected
 			sum.Tunnels[typ] = ts
 		}
 	})
@@ -355,19 +460,45 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 	}
 	sum.Installs = len(seen)
 	for typ, ts := range sum.Tunnels {
-		ts.ConnectRate = rate(ts.Connected, ts.Connected+ts.Failed, minAttempts)
+		var rates []float64
+		for _, p := range tunnelInstalls[typ] {
+			if n := p.tunnelOK + p.tunnelFailed; n > 0 {
+				rates = append(rates, float64(p.tunnelOK)/float64(n))
+			}
+		}
+		ts.ConnectRate = mean(rates)
 		sum.Tunnels[typ] = ts
 	}
 	for name, v := range versions {
-		v.Installs = len(versionInstalls[name])
-		v.UncleanRate = rate(v.Daemon.Unclean, v.Daemon.Starts, minStarts)
-		v.ApplyFailRate = rate(v.Applies.Failed, v.Applies.Applied+v.Applies.Failed, minApplies)
-		v.SlowRate = rate(v.Applies.Slow, v.Applies.Applied, minApplies)
-		v.TunnelFailRate = rate(v.tunnelFailed, v.tunnelOK+v.tunnelFailed, minAttempts)
+		ins := versionInstalls[name]
+		v.Installs = len(ins)
+		started := 0
+		var applyFail, slow, tunnelFail []float64
+		for _, p := range ins {
+			if p.starts > 0 {
+				started++
+			}
+			v.InstallsUnclean += b2i(p.unclean > 0)
+			v.InstallsPanicked += b2i(p.panics > 0)
+			v.InstallsRolledBack += b2i(p.rolledBack > 0)
+			v.InstallsApplyFailed += b2i(p.failed > 0)
+			v.InstallsTunnelFailed += b2i(p.tunnelFailed > 0)
+			if n := p.applied + p.failed; n > 0 {
+				applyFail = append(applyFail, float64(p.failed)/float64(n))
+			}
+			if p.applied > 0 {
+				slow = append(slow, float64(p.slow)/float64(p.applied))
+			}
+			if n := p.tunnelOK + p.tunnelFailed; n > 0 {
+				tunnelFail = append(tunnelFail, float64(p.tunnelFailed)/float64(n))
+			}
+		}
+		v.UncleanRate = rate(v.InstallsUnclean, started, minInstalls)
+		v.ApplyFailRate, v.SlowRate, v.TunnelFailRate = mean(applyFail), mean(slow), mean(tunnelFail)
 		sum.Versions = append(sum.Versions, *v)
 	}
 	sortVersions(sum.Versions)
-	sum.Flags = flags(sum.Versions, healthRollbacks)
+	sum.Flags = flags(sum.Versions, len(rolledBack))
 	for _, d := range sum.Daily {
 		if d.Installs >= telemetryDailyCap {
 			sum.Flags = append(sum.Flags, Flag{What: fmt.Sprintf("%s reached the daily cap of %d reports: more were refused — a flood, or time to raise the cap", d.Day, telemetryDailyCap)})
@@ -376,14 +507,17 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 	return sum, nil
 }
 
-// flags compares each version with the one before it.
-func flags(vs []VersionSummary, healthRollbacks int) []Flag {
+// flags compares each version with the one before it. Rates are install-
+// weighted, and a panic or rollback flag needs minFlagInstalls installs.
+func flags(vs []VersionSummary, rolledBack int) []Flag {
 	out := []Flag{}
-	if healthRollbacks > 0 {
-		out = append(out, Flag{What: fmt.Sprintf("%d update(s) rolled back for failing the health check — counted by the version installs went back to, so look at the newest release", healthRollbacks)})
+	if rolledBack >= minFlagInstalls {
+		out = append(out, Flag{What: fmt.Sprintf("%d installs rolled back an update that failed the health check — counted by the version they went back to, so look at the newest release", rolledBack)})
 	}
-	worse := func(cur, prev *float64, by float64) bool {
-		return cur != nil && prev != nil && *cur > *prev*2 && *cur-*prev >= by
+	// Worse: more than twice the rate before, clearly higher, and seen on
+	// several installs (one install, real or forged, is one vote).
+	worse := func(cur, prev *float64, by float64, installs int) bool {
+		return cur != nil && prev != nil && *cur > *prev*2 && *cur-*prev >= by && installs >= minFlagInstalls
 	}
 	for i := 0; i+1 < len(vs); i++ {
 		v, p := vs[i], vs[i+1]
@@ -393,17 +527,17 @@ func flags(vs []VersionSummary, healthRollbacks int) []Flag {
 		add := func(what string, cur, prev *float64) {
 			out = append(out, Flag{Version: v.Version, What: fmt.Sprintf("%s: %s, against %s on %s", what, pct(cur), pct(prev), p.Version)})
 		}
-		if worse(v.UncleanRate, p.UncleanRate, 0.05) {
+		if worse(v.UncleanRate, p.UncleanRate, 0.05, v.InstallsUnclean) {
 			add("more unclean starts", v.UncleanRate, p.UncleanRate)
 		}
-		if worse(v.ApplyFailRate, p.ApplyFailRate, 0.02) {
+		if worse(v.ApplyFailRate, p.ApplyFailRate, 0.02, v.InstallsApplyFailed) {
 			add("more changes fail", v.ApplyFailRate, p.ApplyFailRate)
 		}
-		if worse(v.TunnelFailRate, p.TunnelFailRate, 0.10) {
+		if worse(v.TunnelFailRate, p.TunnelFailRate, 0.10, v.InstallsTunnelFailed) {
 			add("more tunnel attempts fail", v.TunnelFailRate, p.TunnelFailRate)
 		}
-		if v.Daemon.Panics > 0 && p.Daemon.Panics == 0 && v.Daemon.Starts >= minStarts {
-			out = append(out, Flag{Version: v.Version, What: fmt.Sprintf("%d recovered panic(s); none on %s", v.Daemon.Panics, p.Version)})
+		if v.InstallsPanicked >= minFlagInstalls && p.InstallsPanicked == 0 {
+			out = append(out, Flag{Version: v.Version, What: fmt.Sprintf("%d installs recovered from panics; none on %s", v.InstallsPanicked, p.Version)})
 		}
 	}
 	return out
@@ -604,7 +738,7 @@ func (s *Server) handleTelemetryDashboard(w http.ResponseWriter, r *http.Request
 	}
 	s.render(w, http.StatusOK, "telemetry.html", map[string]any{
 		"CSRF": csrf, "S": sum, "Peak": peak, "Windows": []int{7, 30, 90},
-		"MinStarts": minStarts, "MinApplies": minApplies, "MinAttempts": minAttempts,
+		"MinInstalls": minInstalls, "MinFlagInstalls": minFlagInstalls,
 		"Durations": durations,
 		"Service": []Share{
 			{Name: "service", N: sum.Platforms.Service, Pct: share(sum.Platforms.Service, sum.Installs)},

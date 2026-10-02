@@ -184,13 +184,25 @@ nothing.
   drops); changes refused by rule, rolled back by reason, and how long they
   took; platforms; usage shares among installs at `full`. It's plain HTML
   (no scripts, as the rest of the site).
-- **Flags**: a version is flagged when its unclean-start, change-failure or
-  tunnel-failure rate is more than twice the previous version's and
-  clearly higher (by 5, 2 and 10 points), or it has panics the previous
-  one didn't — given enough to compare (20 starts, 50 changes, 20 tunnel
-  attempts). Any health-check rollback in the window is flagged too: it is
-  reported by the version the install went back to, so the newest release
-  is the one to look at. The place to decide to halt its rollout.
+- **Flags**, weighed by installs, not by counts: reports are anonymous
+  and their install ids self-chosen, so one forged report must not
+  outweigh real installs.
+  - Each report counts for at most one machine's day: 100 starts (unclean
+    ones no more than its starts), 100 panics, 10 of each update outcome,
+    5,000 changes, 500 of each tunnel count. `Validate` refuses unclean
+    starts above starts.
+  - A version's rates are the share of its installs with an unclean start,
+    and its installs' own rates of failed and slow changes and failed
+    tunnel attempts, averaged — shown from 10 installs.
+  - A version is flagged when such a rate is more than twice the previous
+    version's, clearly higher (by 5, 2 and 10 points), **and** at least 3
+    installs show it; or when 3 installs recovered from panics and none on
+    the previous version did. Health-check rollbacks on 3 installs in the
+    window are flagged too: they're reported by the version the install
+    went back to, so the newest release is the one to look at.
+  - A flag is a hint, the place to decide to halt a rollout — someone who
+    makes up many installs can still move it, within the throttle and the
+    daily cap.
 - **Summary API** (`GET /api/v1/telemetry/summary?days=7`, up to 90): the
   same numbers as JSON, behind a read-only bearer token the owner creates
   on the server (`riftroute-server telemetry-token`: printed once, only

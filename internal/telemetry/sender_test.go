@@ -292,9 +292,10 @@ func TestSenderDropsWhatCantGoAgain(t *testing.T) {
 	day := f.state.Pending.Day
 	f.status = http.StatusNoContent
 	f.at(f.now.Add(72 * time.Hour))
-	env.Counters.Add(KeyUnclean, 1) // counted after it was built
+	env.Counters.Add(KeyStarts, 1) // an unclean start, counted after it was built
+	env.Counters.Add(KeyUnclean, 1)
 	s.step(ctx)
-	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Day == day || r.Daemon.Starts != 0 || r.Daemon.Unclean != 1 {
+	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Day == day || r.Daemon.Starts != 1 || r.Daemon.Unclean != 1 {
 		t.Fatalf("after a report for a past day: %+v", r)
 	}
 	if c := env.Counters.Snapshot(); len(c) != 0 || f.state.Taken != "" {

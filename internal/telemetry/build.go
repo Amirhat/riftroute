@@ -40,7 +40,9 @@ func Build(in Inputs) *Report {
 		Schema: Schema, Install: in.Install, Level: string(in.Level), Day: in.Now.UTC().Format(time.DateOnly),
 		App: in.App,
 		Daemon: Daemon{
-			Starts: c[KeyStarts], Unclean: c[KeyUnclean], Panics: c[KeyPanics],
+			// Every unclean start is a start (the counters can't say
+			// otherwise; a damaged file might).
+			Starts: c[KeyStarts], Unclean: min(c[KeyUnclean], c[KeyStarts]), Panics: c[KeyPanics],
 		},
 		Updates: Updates{
 			Installed: c[KeyInstalled], RolledBackHealth: c[KeyRolledBackHlth], RolledBackUser: c[KeyRolledBackUser],
