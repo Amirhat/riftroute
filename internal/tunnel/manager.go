@@ -88,9 +88,9 @@ type Manager struct {
 	// while they're down, so a block-mode one keeps blocking.
 	resume, restarting map[string]bool
 	// seen is what observe saw of each tunnel last (telemetry).
-	seen map[string]seen
-	closed             chan struct{}
-	shut               sync.Once
+	seen   map[string]seen
+	closed chan struct{}
+	shut   sync.Once
 }
 
 type live struct {
