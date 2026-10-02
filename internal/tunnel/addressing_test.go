@@ -87,8 +87,8 @@ func TestVetAddressing(t *testing.T) {
 // routes it there: Apple's IKEv2 client (another VPN's ipsec0) holds its
 // address with a /8 netmask and a host route, and a tunnel addressed
 // elsewhere in 10/8 beside it is fine. A network the kernel does route into
-// a tunnel interface, a LAN's, and any netmask when the routes can't be
-// read, still count.
+// a tunnel interface (all of the netmask's, or a part of it), a LAN's, and
+// any netmask when the routes can't be read, still count.
 func TestVetAddressingBesideATunnelNetmask(t *testing.T) {
 	env := addressingEnv{
 		iface: "ipsec1",
@@ -114,6 +114,8 @@ func TestVetAddressingBesideATunnelNetmask(t *testing.T) {
 		{"beside a netmask nothing routes", "10.0.50.10/32", kernel, ""},
 		{"the other tunnel's own address", "10.190.0.7/32", kernel, "10.190.0.7/32 on ipsec0"},
 		{"a network routed into a tunnel", "10.8.0.9/32", kernel, "10.8.0.0/24 on utun5"},
+		{"a part of the netmask routed into it", "10.255.255.9/32", kernel, "10.255.255.0/24 on ipsec0"},
+		{"wide enough to take a routed part", "10.255.0.0/16", kernel, "10.255.255.0/24 on ipsec0"},
 		{"a LAN's netmask, no route listed", "192.168.0.9/32", kernel, "192.168.0.0/24 on en0"},
 		{"routes unreadable", "10.0.50.10/32", nil, "10.0.0.0/8 on ipsec0"},
 	} {

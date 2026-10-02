@@ -126,34 +126,39 @@ func vetNetwork(n netip.Prefix, env addressingEnv) string {
 			if err != nil || o.Addr().IsLoopback() || o.Addr().IsLinkLocalUnicast() {
 				continue
 			}
-			if o = reach(o, ifc, env.routes); o.Overlaps(n) {
-				return fmt.Sprintf("overlaps %s on %s", o, ifc.Name)
+			for _, r := range reach(o, ifc, env.routes) {
+				if r.Overlaps(n) {
+					return fmt.Sprintf("overlaps %s on %s", r, ifc.Name)
+				}
 			}
 		}
 	}
 	return ""
 }
 
-// reach is the network an interface's address puts on it: its netmask's —
-// except on a tunnel interface the kernel routes no such network into, where
-// it's the address alone. A tunnel's netmask needn't be a network: macOS
-// routes a point-to-point interface only what it's told to, and Apple's
-// IKEv2 client (another VPN's ipsec0) holds its address with a /8 netmask
-// and a host route. Without the kernel's routes to tell, the netmask stands.
-func reach(o netip.Prefix, ifc domain.Iface, routes []domain.Route) netip.Prefix {
+// reach is what an interface's address puts on it: its netmask's network —
+// except on a tunnel interface, where it's the address and what the kernel
+// routes into the interface inside that network (all of it, when it routes
+// the network itself). A tunnel's netmask needn't be a network: macOS routes
+// a point-to-point interface only what it's told to, and Apple's IKEv2
+// client (another VPN's ipsec0) holds its address with a /8 netmask and a
+// host route, plus whatever its server pushes. Without the kernel's routes
+// to tell, the netmask stands.
+func reach(o netip.Prefix, ifc domain.Iface, routes []domain.Route) []netip.Prefix {
 	network := o.Masked()
 	if !ifc.IsVPN || len(routes) == 0 {
-		return network
+		return []netip.Prefix{network}
 	}
+	out := []netip.Prefix{netip.PrefixFrom(o.Addr(), o.Addr().BitLen())}
 	for _, r := range routes {
 		if r.Iface != ifc.Name {
 			continue
 		}
-		if dst, err := netip.ParsePrefix(r.DstCIDR); err == nil && dst.Masked() == network {
-			return network
+		if dst, err := netip.ParsePrefix(r.DstCIDR); err == nil && insideAny(dst.Masked(), []netip.Prefix{network}) {
+			out = append(out, dst.Masked())
 		}
 	}
-	return netip.PrefixFrom(o.Addr(), o.Addr().BitLen())
+	return out
 }
 
 // holdsProtected says which protected address or own server n holds, or "".

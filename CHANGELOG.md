@@ -12,10 +12,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   main VPN run by Apple's IKEv2 client (Windscribe's, for one): that VPN's
   `ipsec0` holds its address with a /8 netmask, so the tunnel's address
   "overlaps 10.0.0.0/8 on ipsec0". macOS routes only that one address to such
-  an interface, and nothing clashed. Another VPN interface's netmask now
-  counts as a network only when the kernel routes that network into the
-  interface; otherwise its address alone does. A LAN's netmask always counts,
-  and so does any netmask when the routes can't be read.
+  an interface, and nothing clashed. On another VPN's interface, what counts
+  now is its address and what the kernel routes into it inside the netmask
+  (all of the netmask's network, when that's routed there). A LAN's netmask
+  always counts, and so does any netmask when the routes can't be read.
 - **An update installs while a wildcard rule keeps learning addresses.** A
   downloaded update waits for 10 minutes without a change before it restarts
   the daemon, and auto-apply's own reconciles counted as changes — a wildcard
