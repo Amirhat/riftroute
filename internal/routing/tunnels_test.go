@@ -2,6 +2,7 @@ package routing
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -183,55 +184,79 @@ func TestInstalledRecognizesOurRoutes(t *testing.T) {
 }
 
 // A route that contains the tunnel's own server with nothing holding the
-// server off the tunnel (via: default pins nothing; a pin can be lost) sends
-// openvpn's packets into its own tunnel: it can never reconnect, and the
-// listed networks blackhole. The route is left out, the rest still installs.
-func TestTunnelRouteContainingItsOwnServerNeedsAPin(t *testing.T) {
+// server off the tunnel (via: default pins nothing; a pin can be lost) would
+// send openvpn's packets into its own tunnel: it could never reconnect. The
+// server is kept out of the route, the rest goes in.
+func TestTunnelRouteContainingItsOwnServerKeepsItOut(t *testing.T) {
 	server := netip.MustParseAddr("198.51.100.7")
-	tunnelRoutes := func(in DesiredInput) string {
+	check := func(name string, in DesiredInput, wantKept bool) {
 		t.Helper()
 		desired, _, err := BuildDesired(in)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var out []string
+		n := 0
 		for _, d := range desired {
-			if d.Gateway == "" {
-				out = append(out, d.DstCIDR)
+			p := netip.MustParsePrefix(d.DstCIDR)
+			if d.Gateway != "" {
+				continue // the pin
+			}
+			if p.Contains(server) {
+				t.Errorf("%s: %s carries the server", name, p)
+			}
+			if netip.MustParsePrefix("198.51.100.0/24").Contains(p.Addr()) {
+				n += 1 << (32 - p.Bits())
 			}
 		}
-		return strings.Join(out, ",")
+		if n != 255 {
+			t.Errorf("%s: %d of the /24's other addresses go in", name, n)
+		}
+		nw := PlanTunnels(in).Narrowed["infra"]
+		if kept := len(nw) == 1 && strings.Contains(nw[0].Except[0].Reason, "own server 198.51.100.7"); kept != wantKept {
+			t.Errorf("%s: narrowed %+v", name, nw)
+		}
 	}
 
 	// via: direct, but the pin can't be made (no physical gateway for it).
 	in := testInput()
 	in.GatewayV4 = netip.Addr{}
 	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"198.51.100.0/24", "192.168.70.0/24"}, Bypass: []netip.Addr{server}}}
-	if got := tunnelRoutes(in); got != "192.168.70.0/24" {
-		t.Errorf("unpinned: tunnel routes = %s, want only 192.168.70.0/24", got)
-	}
-	if bs := PlanTunnels(in).Blocked["infra"]; len(bs) != 1 || !strings.Contains(bs[0].Reason, "own server 198.51.100.7") {
-		t.Errorf("unpinned: blocked = %+v", bs)
-	}
+	check("unpinned", in, true)
 
 	// via: default — the manager reports the servers without pinning them.
 	in = testInput()
 	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"198.51.100.0/24", "192.168.70.0/24"}, Servers: []netip.Addr{server}}}
-	if got := tunnelRoutes(in); got != "192.168.70.0/24" {
-		t.Errorf("via default: tunnel routes = %s, want only 192.168.70.0/24", got)
-	}
+	check("via default", in, true)
 
 	// Pinned (via: direct), or someone else's host route holds the server:
-	// the more specific route keeps the connection out of the tunnel.
+	// the more specific route keeps the connection out of the tunnel, and
+	// the /24 goes in whole.
 	in.Tunnels[0].Bypass = []netip.Addr{server}
-	if got := tunnelRoutes(in); got != "192.168.70.0/24,198.51.100.0/24" {
+	if got := strings.Join(tunnelDsts(t, in), ","); got != "192.168.70.0/24,198.51.100.0/24" {
 		t.Errorf("pinned: tunnel routes = %s", got)
 	}
 	in.Tunnels[0].Bypass = nil
 	in.Occupied = map[string]string{"198.51.100.7/32": "en0"}
-	if got := tunnelRoutes(in); got != "192.168.70.0/24,198.51.100.0/24" {
+	if got := strings.Join(tunnelDsts(t, in), ","); got != "192.168.70.0/24,198.51.100.0/24" {
 		t.Errorf("held by another route: tunnel routes = %s", got)
 	}
+}
+
+// tunnelDsts are the routes into tunnels (no pins), sorted.
+func tunnelDsts(t *testing.T, in DesiredInput) []string {
+	t.Helper()
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, d := range desired {
+		if d.Gateway == "" {
+			out = append(out, d.DstCIDR)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // A route matches its own table entry whichever way its gateway is spelled:
@@ -255,7 +280,8 @@ func TestKernelKeyMatchesAGatewaysSpellings(t *testing.T) {
 }
 
 // Two via-default tunnels each listing the network behind the other's server
-// would carry each other's connections and both stall: neither route goes in.
+// would carry each other's connections and both stall: each keeps the
+// other's server out.
 func TestTunnelsNeverCarryEachOthersServer(t *testing.T) {
 	in := testInput()
 	in.Tunnels = []TunnelInput{
@@ -264,14 +290,20 @@ func TestTunnelsNeverCarryEachOthersServer(t *testing.T) {
 	}
 	tp := PlanTunnels(in)
 	for name, other := range map[string]string{"a": "b", "b": "a"} {
-		bs := tp.Blocked[name]
-		if len(bs) != 1 || !strings.Contains(bs[0].Reason, "tunnel "+other+"'s server") {
-			t.Errorf("%s: blocked = %+v", name, bs)
+		n := tp.Narrowed[name]
+		if len(tp.Blocked[name]) != 0 || len(n) != 1 || !strings.Contains(n[0].Except[0].Reason, "tunnel "+other+"'s server") {
+			t.Errorf("%s: narrowed %+v, blocked %+v", name, n, tp.Blocked[name])
+		}
+	}
+	for _, r := range tp.Routes {
+		p := netip.MustParsePrefix(r.DstCIDR)
+		if p.Contains(netip.MustParseAddr("172.16.1.1")) || p.Contains(netip.MustParseAddr("10.0.5.5")) {
+			t.Errorf("%s (%s) carries a tunnel's server", p, r.ProfileID)
 		}
 	}
 	// A pinned server (via direct) is held off every tunnel: no conflict.
 	in.Tunnels[1].Bypass = in.Tunnels[1].Servers
-	if bs := PlanTunnels(in).Blocked["a"]; len(bs) != 0 {
-		t.Errorf("a pinned server still blocks: %+v", bs)
+	if bs := PlanTunnels(in).Narrowed["a"]; len(bs) != 0 {
+		t.Errorf("a pinned server still kept out: %+v", bs)
 	}
 }

@@ -38,9 +38,41 @@ dashboard that shows a bad release before most installs take it.
   than the one before it. The same numbers are a JSON summary behind a
   read-only token (`riftroute-server telemetry-token`).
 
+- **IKEv2 profiles that log in with a username and password (EAP) or a
+  shared secret connect.** The username and password are the profile's, or
+  yours when it leaves the password for the device to ask: `riftroute
+  tunnel add` asks for it (or reads it with `--password-stdin`), and so
+  does the app. A shared secret needs strongSwan 6.1 or later: RiftRoute's
+  own on macOS; on Linux an older one is refused, saying why. Secrets go to
+  strongSwan on its input, never in its command line. A username and
+  password the server rejects stop the tunnel instead of retrying, so they
+  can't lock the account — unless they had connected: then the server's
+  login backend is likely failing for a moment, and they're tried again
+  after 5, 15 and 30 minutes before the tunnel gives up.
+
+- **A tunnel route that holds your router, a DNS server or another
+  protected address goes in, minus that part.** Before, `10.0.0.0/8` was
+  refused whole on a network whose DNS server is `10.255.255.1`, and
+  `192.168.0.0/16` on a `192.168.1.x` Wi-Fi. Now what mustn't go into the
+  tunnel — the router's network, a DNS server in use, an address RiftRoute
+  probes to check changes, a tunnel's server — is kept out, and the rest
+  goes in; routes other VPNs or the system have inside it keep theirs. The
+  tunnel's card, `riftroute tunnel list`, `doctor` and saving the tunnel say
+  what was kept out and why, on this network. The same holds for a tunnel
+  set to block while it's down. Only the first 8 DNS servers of each
+  family count, and a tunnel set to block never leaves a route out in the
+  clear because of them.
+
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to
   come: it's been here since 0.2.6.
+- On Debian and Ubuntu, IKEv2's install help adds
+  `libcharon-extauth-plugins` (username-and-password logins need it).
+
+### Fixed
+- **An IKEv2 tunnel follows a new address.** When strongSwan connects
+  again after a network change and the server hands out another address,
+  the tunnel's address and routes move with it; it stayed on the old one.
 
 ## [0.6.1] — 2026-10-01
 

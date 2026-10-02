@@ -108,10 +108,64 @@ connections {
       }
     }
   }
+  # A username and password (EAP-MSCHAPv2), the server proving itself
+  # with its certificate; and a shared secret. Each client says who it is
+  # (LocalIdentifier), which picks its connection.
+  rw-eap {
+    local_addrs = 10.78.2.20
+    pools = rw4
+    proposals = aes256gcm16-prfsha256-ecp384
+    local {
+      auth = pubkey
+      certs = server.crt
+      id = vpn.test
+    }
+    remote {
+      auth = eap-mschapv2
+      eap_id = %any
+      id = eap-client
+    }
+    children {
+      rw-eap {
+        local_ts = 0.0.0.0/0
+        esp_proposals = aes256gcm16-ecp384
+      }
+    }
+  }
+  rw-psk {
+    local_addrs = 10.78.2.20
+    pools = rw4
+    proposals = aes256gcm16-prfsha256-ecp384
+    local {
+      auth = psk
+      id = vpn.test
+    }
+    remote {
+      auth = psk
+      id = psk-client
+    }
+    children {
+      rw-psk {
+        local_ts = 0.0.0.0/0
+        esp_proposals = aes256gcm16-ecp384
+      }
+    }
+  }
 }
 pools {
   rw4 {
     addrs = 10.9.0.0/24
+  }
+}
+secrets {
+  eap-alice {
+    id = alice
+    secret = "s3cret pw"
+  }
+  ike-psk {
+    id-1 = psk-client
+    id-2 = vpn.test
+    secret = "the shared secret"
   }
 }
 EOF
@@ -298,7 +352,7 @@ sleep 3
 [ -z "$(charon_pids)" ] && pass "nothing to reap after the restart" || fail "charon-cmd running after restart: $(charon_pids)"
 left=$(cx ip route show proto riftroute)
 [ -z "$left" ] && pass "and withdrew the dead session's routes" || fail "stale routes after restart: $left"
-files=$(cx ls /var/lib/riftroute/tunnels | grep -v '\.json$' | tr '\n' ' ' || true)
+files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
 [ -z "$files" ] && pass "and removed its key and config files" || fail "files left: $files"
 
 echo "== up/down"
@@ -307,9 +361,107 @@ cx riftroute tunnel down office >/dev/null
 sleep 1
 [ -z "$(cx ip route show proto riftroute)" ] && pass "down removes every tunnel route" || fail "routes left: $(cx ip route show proto riftroute)"
 [ -z "$(charon_pids)" ] && pass "down stops charon-cmd" || fail "charon-cmd still running"
-files=$(cx ls /var/lib/riftroute/tunnels | grep -v '\.json$' | tr '\n' ' ' || true)
+files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
 [ -z "$files" ] && pass "and leaves no key or config behind" || fail "files left: $files"
 sx swanctl --list-sas 2>/dev/null | grep -q "rw:" && fail "the server still holds an SA after down" || pass "the connection was deleted with the server"
+
+echo "== a username and password (EAP), and a shared secret"
+cx riftroute tunnel rm office >/dev/null
+login_profile() { # file, IKEv2 keys
+  cat > "$WORK/$1" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadIdentifier</key><string>test.riftroute.$1</string>
+  <key>PayloadUUID</key><string>7C3E2E58-0002-4000-8000-000000000001</string>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key><string>com.apple.security.root</string>
+      <key>PayloadUUID</key><string>7C3E2E58-0002-4000-8000-000000000003</string>
+      <key>PayloadContent</key><data>$(b64 "$WORK/ca.der")</data>
+    </dict>
+    <dict>
+      <key>PayloadType</key><string>com.apple.vpn.managed</string>
+      <key>PayloadUUID</key><string>7C3E2E58-0002-4000-8000-000000000004</string>
+      <key>UserDefinedName</key><string>$1</string>
+      <key>VPNType</key><string>IKEv2</string>
+      <key>IKEv2</key>
+      <dict>
+        <key>RemoteAddress</key><string>10.78.2.20</string>
+        <key>RemoteIdentifier</key><string>vpn.test</string>
+        $2
+        <key>IKESecurityAssociationParameters</key>$(params 480)
+        <key>ChildSecurityAssociationParameters</key>$(params 60)
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
+EOF
+  docker cp "$WORK/$1" "rr-ike-client:/tmp/$1"
+}
+# The device would ask for the password: the profile has none.
+login_profile eap.mobileconfig '<key>LocalIdentifier</key><string>eap-client</string>
+        <key>AuthenticationMethod</key><string>None</string>
+        <key>ExtendedAuthEnabled</key><integer>1</integer>
+        <key>AuthName</key><string>alice</string>'
+login_profile psk.mobileconfig '<key>LocalIdentifier</key><string>psk-client</string>
+        <key>AuthenticationMethod</key><string>SharedSecret</string>
+        <key>SharedSecret</key><string>the shared secret</string>'
+
+cxi() { docker exec -i -e RIFTROUTE_SOCKET=/run/rr.sock rr-ike-client "$@"; }
+printf 'not it\n' | cxi riftroute tunnel add eapbad /tmp/eap.mobileconfig --route 10.99.9.0/24 --password-stdin >/dev/null &&
+  pass "added an EAP tunnel, the password from stdin" || fail "add eapbad"
+cx riftroute tunnel up eapbad >"$WORK/eapbad.out" 2>&1 || true
+sleep 2
+st=$(cx riftroute tunnel list 2>&1)
+if grep -q "rejected the username or password" <<<"$st$(cat "$WORK/eapbad.out")"; then
+  pass "a wrong password: \"rejected the username or password\""
+else
+  fail "wrong password: $(cat "$WORK/eapbad.out") / $st"; cx riftroute tunnel log eapbad | tail -15
+fi
+st=$(cx riftroute tunnel list 2>&1 | awk '$1=="eapbad"{print $3}')
+[ "$st" = failed ] && ! grep -q "gave up" <<<"$(cx riftroute tunnel list 2>&1)" &&
+  pass "and not tried again (no account lockout)" || fail "eapbad is $st"
+cx riftroute tunnel rm eapbad >/dev/null
+
+printf 's3cret pw\n' | cxi riftroute tunnel add eap /tmp/eap.mobileconfig --route 10.99.9.0/24 --password-stdin >/dev/null || fail "add eap"
+if cx riftroute tunnel up eap >"$WORK/eap.out" 2>&1; then
+  pass "EAP: $(tail -1 "$WORK/eap.out")"
+  cx ping -c2 -W2 10.99.9.1 >/dev/null && pass "10.99.9.1 answers through the EAP tunnel" || fail "ping through EAP"
+  args=$(cx sh -c 'for p in /proc/[0-9]*; do c=$(tr "\0" " " < $p/cmdline 2>/dev/null); case "$c" in /usr/sbin/charon-cmd*) echo "$c";; esac; done')
+  if grep -q -- "--eap-identity alice" <<<"$args" && ! grep -q "s3cret" <<<"$args"; then
+    pass "the password isn't in charon-cmd's arguments"
+  else
+    fail "charon-cmd args: $args"
+  fi
+  sx swanctl --list-sas 2>/dev/null | grep -q "rw-eap" && pass "the server took it as its EAP connection" || fail "no rw-eap SA on the server"
+else
+  fail "EAP connect: $(tail -3 "$WORK/eap.out")"; cx riftroute tunnel log eap | tail -30
+fi
+cx riftroute tunnel down eap >/dev/null
+cx riftroute tunnel rm eap >/dev/null
+
+cx riftroute tunnel add psk /tmp/psk.mobileconfig --route 10.99.9.0/24 >/dev/null || fail "add psk"
+if [ "${SWAN:-}" = 6 ]; then
+  if cx riftroute tunnel up psk >"$WORK/psk.out" 2>&1; then
+    pass "shared secret: $(tail -1 "$WORK/psk.out")"
+    cx ping -c2 -W2 10.99.9.1 >/dev/null && pass "10.99.9.1 answers through the PSK tunnel" || fail "ping through PSK"
+    sx swanctl --list-sas 2>/dev/null | grep -q "rw-psk" && pass "the server took it as its PSK connection" || fail "no rw-psk SA"
+  else
+    fail "PSK connect: $(tail -3 "$WORK/psk.out")"; cx riftroute tunnel log psk | tail -30
+  fi
+  cx riftroute tunnel down psk >/dev/null
+else
+  out=$(cx riftroute tunnel up psk 2>&1 || true)
+  grep -q "needs strongSwan 6.1 or later" <<<"$out" && pass "Debian's strongSwan 5.9: a shared secret is refused, saying why" || fail "PSK on 5.9: $out"
+fi
+files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
+[ -z "$files" ] && pass "no secrets left on disk" || fail "files left: $files"
 
 echo
 [ "$FAILED" = 0 ] && echo "ALL PASSED" || { echo "FAILURES"; exit 1; }

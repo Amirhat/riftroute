@@ -30,7 +30,8 @@ type ikeSetup struct {
 	Files []ikeFile
 	// Args are charon-cmd's arguments; Conf is the config file to name in
 	// STRONGSWAN_CONF, and Socket the VICI socket it listens on. Stdin
-	// answers the secrets it asks for (the PKCS#12's password).
+	// answers the secrets it asks for (a PKCS#12's password, the EAP
+	// password, the shared secret).
 	Args                []string
 	Conf, Socket, Stdin string
 }
@@ -66,6 +67,10 @@ func ikePlugins(goos string, p12 bool) string {
 // attempt whose log says one is missing is explained by it.
 var ikeEssential = []string{"openssl", "nonce", "x509", "pem", "pkcs8", "pkcs7", "pkcs12", "kernel-libipsec", "kernel-netlink", "kernel-pfroute", "socket-default", "vici"}
 
+// ikeEAPPlugins are the ones a username and password log in with (MD4,
+// which MSCHAPv2 needs, is OpenSSL's where strongSwan's md4 isn't there).
+var ikeEAPPlugins = []string{"eap-identity", "eap-mschapv2"}
+
 // ikeKeyAsP12 reports whether a charon-cmd of this version takes the login
 // key only as a PKCS#12 (--p12): --priv, for any kind of key, came in
 // strongSwan 6.0 (--rsa, before it, takes RSA alone). An unknown version is
@@ -82,81 +87,130 @@ func ikeKeyAsP12(version string) bool {
 
 var reMajor = regexp.MustCompile(`^(\d+)\.`)
 
+// ikeLogin is the username and password an EAP login uses: the tunnel's,
+// which are the profile's unless the user gave others (the profile may
+// leave the password out, for the device to ask).
+type ikeLogin struct{ User, Password string }
+
+// ikeSecretMax is the longest password or shared secret charon-cmd reads
+// whole: it asks with getpass, which on macOS takes 128 characters.
+const ikeSecretMax = 128
+
 // renderIKE lays out one session of the IKEv2 connection c to host (the
-// server's address, pinned, or its name) for tunnel name, in dir. roots are
-// the CAs to trust the server with when the profile carries none (the
-// system's). v6 asks the server for IPv6 too (the tunnel routes some). p12
-// hands charon-cmd the login certificate and key as a PKCS#12 (an older
-// charon-cmd: ikeKeyAsP12) rather than as PEM files.
-func renderIKE(c *IKEv2Config, roots []*x509.Certificate, host, dir, name string, v6, p12 bool) (ikeSetup, error) {
-	if c.Auth != IKEv2Certificate {
-		// charon-cmd asks for an EAP password or a shared secret on a
-		// terminal; the daemon has none to answer from.
-		return ikeSetup{}, errors.New(ikeLoginUnsupported(c.Auth))
-	}
-	if c.Cert == nil || c.Key == nil {
-		return ikeSetup{}, errors.New("the profile's certificate or its key is missing")
-	}
+// server's address, pinned, or its name) for tunnel name, in dir. login is
+// an EAP login's username and password. roots are the CAs to trust the
+// server with when the profile carries none (the system's). v6 asks the
+// server for IPv6 too (the tunnel routes some). p12 hands charon-cmd the
+// login certificate and key as a PKCS#12 (an older charon-cmd:
+// ikeKeyAsP12) rather than as PEM files.
+//
+// Secrets go on charon-cmd's stdin, never in its arguments: it asks for
+// them (getpass, which reads stdin when there's no terminal, as the daemon
+// runs it), one line each, in the order it needs them.
+func renderIKE(c *IKEv2Config, login ikeLogin, roots []*x509.Certificate, host, dir, name string, v6, p12 bool) (ikeSetup, error) {
 	path := func(f string) string { return filepath.Join(dir, name+"."+f) }
 	st := ikeSetup{Conf: path("conf"), Socket: path("vici")}
-
 	pemOf := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
-	var login []string
-	if p12 {
-		// charon-cmd asks for the password (getpass: from stdin, as it runs
-		// with no terminal). A fresh random one; the file is as private as
-		// the PEM key would be. 3DES and SHA-1: what every strongSwan reads.
-		var pw [16]byte
-		if _, err := rand.Read(pw[:]); err != nil {
+	secret := func(what, v string) error {
+		switch {
+		case v == "":
+			return fmt.Errorf("the %s is missing", what)
+		case len(v) > ikeSecretMax:
+			return fmt.Errorf("the %s is longer than %d characters, which strongSwan can't read", what, ikeSecretMax)
+		case strings.ContainsAny(v, "\r\n\x00"):
+			return fmt.Errorf("the %s can't contain line breaks", what)
+		}
+		st.Stdin += v + "\n"
+		return nil
+	}
+
+	var local, profile string
+	var auth []string // the login's arguments
+	usesP12 := false
+	switch c.Auth {
+	case IKEv2Certificate:
+		if c.Cert == nil || c.Key == nil {
+			return ikeSetup{}, errors.New("the profile's certificate or its key is missing")
+		}
+		local, profile = orString(c.LocalID, c.Cert.Subject.CommonName), "ikev2-pub"
+		if p12 {
+			// charon-cmd asks for the password. A fresh random one; the file
+			// is as private as the PEM key would be. 3DES and SHA-1: what
+			// every strongSwan reads.
+			var pw [16]byte
+			if _, err := rand.Read(pw[:]); err != nil {
+				return ikeSetup{}, err
+			}
+			b, err := pkcs12.LegacyDES.Encode(c.Key, c.Cert, nil, hex.EncodeToString(pw[:]))
+			if err != nil {
+				return ikeSetup{}, fmt.Errorf("the profile's key: %w", err)
+			}
+			_ = secret("PKCS#12 password", hex.EncodeToString(pw[:]))
+			st.Files = append(st.Files, ikeFile{Name: path("p12"), Data: b})
+			auth, usesP12 = []string{"--p12", path("p12")}, true
+		} else {
+			keyDER, err := x509.MarshalPKCS8PrivateKey(c.Key)
+			if err != nil {
+				return ikeSetup{}, fmt.Errorf("the profile's key: %w", err)
+			}
+			st.Files = append(st.Files,
+				ikeFile{Name: path("key.pem"), Data: pemOf("PRIVATE KEY", keyDER)},
+				ikeFile{Name: path("cert.pem"), Data: pemOf("CERTIFICATE", c.Cert.Raw)},
+			)
+			auth = []string{"--cert", path("cert.pem"), "--priv", path("key.pem")}
+		}
+	case IKEv2EAP:
+		// EAP-MSCHAPv2 with the username and password; the server proves
+		// itself with its certificate.
+		if login.User == "" {
+			return ikeSetup{}, errors.New("the username is missing")
+		}
+		if err := secret("password", login.Password); err != nil {
 			return ikeSetup{}, err
 		}
-		st.Stdin = hex.EncodeToString(pw[:]) + "\n"
-		b, err := pkcs12.LegacyDES.Encode(c.Key, c.Cert, nil, strings.TrimSpace(st.Stdin))
-		if err != nil {
-			return ikeSetup{}, fmt.Errorf("the profile's key: %w", err)
+		local, profile = orString(c.LocalID, login.User), "ikev2-eap"
+		auth = []string{"--eap-identity", login.User}
+	case IKEv2PSK:
+		// The shared secret on both sides (strongSwan 6.1 and later).
+		if c.LocalID == "" {
+			return ikeSetup{}, errors.New("the profile has no LocalIdentifier, which a shared-secret login needs")
 		}
-		st.Files = append(st.Files, ikeFile{Name: path("p12"), Data: b})
-		login = []string{"--p12", path("p12")}
-	} else {
-		keyDER, err := x509.MarshalPKCS8PrivateKey(c.Key)
-		if err != nil {
-			return ikeSetup{}, fmt.Errorf("the profile's key: %w", err)
+		if err := secret("shared secret", c.PSK); err != nil {
+			return ikeSetup{}, err
 		}
-		st.Files = append(st.Files,
-			ikeFile{Name: path("key.pem"), Data: pemOf("PRIVATE KEY", keyDER)},
-			ikeFile{Name: path("cert.pem"), Data: pemOf("CERTIFICATE", c.Cert.Raw)},
-		)
-		login = []string{"--cert", path("cert.pem"), "--priv", path("key.pem")}
+		local, profile = c.LocalID, "ikev2-psk"
+	default:
+		return ikeSetup{}, errors.New(ikeLoginUnsupported(c.Auth))
 	}
+
 	// charon-cmd trusts every certificate it's given: the profile's CAs
 	// and the login certificate's intermediates, or else the system's CAs.
+	// A shared secret proves the server too: no certificates.
 	var trust []*x509.Certificate
-	trust = append(trust, c.Chain...)
-	trust = append(trust, c.CAs...)
-	if len(trust) == 0 {
-		if len(roots) == 0 {
-			return ikeSetup{}, errors.New("the profile carries no certificate authority to check the server with, " +
-				"and this system's trusted ones couldn't be read")
+	if c.Auth != IKEv2PSK {
+		trust = append(trust, c.Chain...)
+		trust = append(trust, c.CAs...)
+		if len(trust) == 0 {
+			if len(roots) == 0 {
+				return ikeSetup{}, errors.New("the profile carries no certificate authority to check the server with, " +
+					"and this system's trusted ones couldn't be read")
+			}
+			trust = roots
 		}
-		trust = roots
 	}
 	for i, ca := range trust {
 		st.Files = append(st.Files, ikeFile{Name: path(fmt.Sprintf("ca%d.pem", i)), Data: pemOf("CERTIFICATE", ca.Raw)})
 	}
-	st.Files = append(st.Files, ikeFile{Name: st.Conf, Data: []byte(ikeConf(runtime.GOOS, st.Socket, p12))})
+	st.Files = append(st.Files, ikeFile{Name: st.Conf, Data: []byte(ikeConf(runtime.GOOS, st.Socket, usesP12))})
 
-	local := c.LocalID
-	if local == "" {
-		local = c.Cert.Subject.CommonName
-	}
 	st.Args = []string{
 		"--debug", "1",
 		"--host", host,
 		"--identity", local,
 		"--remote-identity", c.RemoteID,
-		"--profile", "ikev2-pub",
+		"--profile", profile,
 	}
-	st.Args = append(st.Args, login...)
+	st.Args = append(st.Args, auth...)
 	for i := range trust {
 		st.Args = append(st.Args, "--cert", path(fmt.Sprintf("ca%d.pem", i)))
 	}
@@ -173,6 +227,13 @@ func renderIKE(c *IKEv2Config, roots []*x509.Certificate, host, dir, name string
 		st.Args = append(st.Args, "--remote-ts", "::/0")
 	}
 	return st, nil
+}
+
+func orString(s, or string) string {
+	if s != "" {
+		return s
+	}
+	return or
 }
 
 // ikeConf is a session's strongswan.conf: charon-cmd alone reads it
@@ -236,13 +297,38 @@ const ikeRuleMark = "0x7f52ea21/0xffffffff"
 // and default's 32767) charon-cmd's unwanted routes go to.
 const ikeRoutingTable = 52520
 
-// ikeLoginUnsupported says why a profile's login can't run yet.
-func ikeLoginUnsupported(a IKEv2Auth) string {
-	switch a {
-	case IKEv2EAP:
-		return "this profile logs in with a username and password (EAP); RiftRoute runs IKEv2 profiles that log in with a certificate for now"
-	case IKEv2PSK:
-		return "this profile logs in with a shared secret; RiftRoute runs IKEv2 profiles that log in with a certificate for now"
+// ikePSKSince is the strongSwan release whose charon-cmd first logs in
+// with a shared secret (its ikev2-psk profile).
+const ikePSKSince = "6.1"
+
+// ikePSKSupported reports whether a charon-cmd of this version logs in with
+// a shared secret. An unknown version is taken to be new.
+func ikePSKSupported(version string) bool {
+	m := reMinor.FindStringSubmatch(version)
+	if m == nil {
+		return true
 	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	return major > 6 || major == 6 && minor >= 1
+}
+
+var reMinor = regexp.MustCompile(`^(\d+)\.(\d+)`)
+
+// ikeLoginName names a login for the user.
+func ikeLoginName(a IKEv2Auth) string {
+	switch a {
+	case IKEv2Certificate:
+		return "a certificate"
+	case IKEv2EAP:
+		return "a username and password"
+	case IKEv2PSK:
+		return "a shared secret"
+	}
+	return string(a)
+}
+
+// ikeLoginUnsupported says why a profile's login can't run.
+func ikeLoginUnsupported(a IKEv2Auth) string {
 	return fmt.Sprintf("this profile's login (%s) isn't one RiftRoute runs", a)
 }

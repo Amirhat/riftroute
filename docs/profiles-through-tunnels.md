@@ -54,8 +54,10 @@ do then applies to them unchanged:
 
 - they're installed on-link into the tunnel's interface only while it is up,
   and tagged `tunnel:<name>`, so the lookup says "via tunnel …";
-- they're left out, and reported as blocked, when they hold the router or
-  another VPN's destinations, or would carry any tunnel's own server;
+- what they hold that mustn't go into a tunnel (the router's network, a
+  resolver, an anchor, a tunnel's server nothing holds off it) is kept out
+  of them, and reported as narrowed; one for a destination another VPN
+  routes exactly is left out, and reported as blocked;
 - a tunnel's networks win over exclude profiles, and include rules are cut
   around them, which puts back what yielded when the tunnel goes;
 - they go through the Apply Protocol, as tunnel routes do.

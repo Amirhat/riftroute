@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/config"
@@ -103,30 +103,44 @@ func (s *Server) handleTunnelSave(w http.ResponseWriter, r *http.Request) {
 	}
 	s.auditTunnel(r, "tunnel-save", spec.Name, "ok", "")
 	s.BroadcastState(r.Context())
-	writeJSON(w, http.StatusOK, TunnelResp{Tunnel: &st, Issues: s.tunnelRouteWarnings(r.Context(), st.Routes)})
+	writeJSON(w, http.StatusOK, TunnelResp{Tunnel: &st, Issues: s.tunnelRouteWarnings(r.Context(), st.Name)})
 }
 
-// tunnelRouteWarnings flags routes that contain the router of the current
-// network: the engine leaves those out here, so say it up front.
-func (s *Server) tunnelRouteWarnings(ctx context.Context, routes []string) []config.Issue {
+// tunnelRouteWarnings says, up front, what of a saved tunnel's routes the
+// engine leaves out on the current network, and what it keeps out of them.
+func (s *Server) tunnelRouteWarnings(ctx context.Context, name string) []config.Issue {
 	var out []config.Issue
-	gw, _, err := s.svc.Provider().DefaultGateway(ctx, domain.FamilyV4)
-	if err != nil || !gw.IsValid() {
-		return nil
-	}
-	for _, v := range routes {
-		pfx, err := netip.ParsePrefix(v)
-		if err != nil {
-			continue // a host route can't contain the gateway unless it IS it
+	for _, t := range s.svc.TunnelStatuses(ctx) {
+		if t.Name != name {
+			continue
 		}
-		if pfx.Contains(gw) {
+		for _, b := range t.Blocked {
 			out = append(out, config.Issue{
 				Severity: config.SevWarning, Field: "routes",
-				Msg: fmt.Sprintf("%s contains your router (%s), so it isn't installed while you're on this network — the tunnel's other routes are", v, gw),
+				Msg: fmt.Sprintf("%s isn't installed on this network: %s — the tunnel's other routes are", b.Route, b.Reason),
+			})
+		}
+		for _, n := range t.Narrowed {
+			path := "that keeps its"
+			if len(n.Except) > 1 {
+				path = "those keep their"
+			}
+			out = append(out, config.Issue{
+				Severity: config.SevWarning, Field: "routes",
+				Msg: fmt.Sprintf("%s goes in except %s — on this network %s usual path", n.Route, tunnelExceptText(n.Except), path),
 			})
 		}
 	}
 	return out
+}
+
+// tunnelExceptText lists what was kept out of a route, and why.
+func tunnelExceptText(except []domain.TunnelExcept) string {
+	var out []string
+	for _, e := range except {
+		out = append(out, e.Net+" ("+e.Reason+")")
+	}
+	return strings.Join(out, ", ")
 }
 
 func (s *Server) handleTunnelDelete(w http.ResponseWriter, r *http.Request) {

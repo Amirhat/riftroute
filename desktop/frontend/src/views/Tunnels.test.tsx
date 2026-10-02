@@ -327,6 +327,28 @@ describe('Tunnels view — routes left out', () => {
     expect(screen.getByText('192.168.70.0/24')).toBeInTheDocument()
   })
 
+  it('shows what is kept out of a route on this network, the rest going in', async () => {
+    mockApi.state.mockResolvedValue({
+      tunnels: [
+        {
+          ...connected,
+          routes: ['10.0.0.0/8'],
+          narrowed: [
+            {
+              route: '10.0.0.0/8',
+              except: [{ net: '10.255.255.1', reason: 'your DNS server 10.255.255.1' }],
+            },
+          ],
+        },
+      ],
+    } as unknown as State)
+    renderView()
+    const note = await screen.findByText(/goes in except/)
+    expect(note).toHaveTextContent('10.0.0.0/8 goes in except 10.255.255.1 (your DNS server 10.255.255.1)')
+    expect(note).toHaveTextContent('that keeps its usual path')
+    expect(screen.queryByText(/isn't installed on this network/)).not.toBeInTheDocument()
+  })
+
   it('explains up front how to install openvpn on this system, and holds Connect until it is', async () => {
     const failed: TunnelStatus = { ...connected, state: 'disconnected', iface: undefined, since: undefined }
     withTunnels([failed])
@@ -727,6 +749,35 @@ describe('Tunnels view — WireGuard', () => {
     expect(spec).toMatchObject({ name: 'office', type: 'ikev2', routes: ['10.30.0.0/16'] })
     expect(spec.username).toBeUndefined()
     expect(spec.password).toBeUndefined()
+  })
+
+  it('adds an IKEv2 profile that logs in with a username and password, asking for the password it leaves out', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      path: '/Users/me/Staff.mobileconfig',
+      name: 'Staff.mobileconfig',
+      type: 'ikev2',
+      config: '<plist/>',
+      servers: ['vpn.example.com (IKEv2)'],
+      needs_auth: true,
+      ignored: [],
+      username: 'alice',
+      password: '',
+      error: '',
+    })
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...wgTunnel, name: 'staff', type: 'ikev2' } })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose a file…'))
+    await screen.findByText('Staff.mobileconfig')
+
+    expect(screen.getByText(/logs in with the username and password below/)).toBeInTheDocument()
+    expect(screen.getByLabelText('Username')).toHaveValue('alice')
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'typed pw' } })
+    fireEvent.change(screen.getByLabelText('Networks through this tunnel'), { target: { value: '10.30.0.0/16' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
+    expect(mockApi.saveTunnel.mock.calls[0][0]).toMatchObject({ type: 'ikev2', username: 'alice', password: 'typed pw' })
   })
 
   it('connects an IKEv2 tunnel once strongSwan is there, whatever openvpn says', async () => {

@@ -88,9 +88,13 @@ type Manager struct {
 	// while they're down, so a block-mode one keeps blocking.
 	resume, restarting map[string]bool
 	// seen is what observe saw of each tunnel last (telemetry).
-	seen   map[string]seen
-	closed chan struct{}
-	shut   sync.Once
+	seen map[string]seen
+	// logins are the fingerprints of the logins that last connected, by
+	// tunnel (kept in the definitions' directory too; see loginPath).
+	loginMu sync.Mutex
+	logins  map[string]string
+	closed  chan struct{}
+	shut    sync.Once
 }
 
 type live struct {
@@ -320,6 +324,11 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
+		if p.needsAuth {
+			// A login the profile carries (an IKEv2 one saved before its
+			// username and password were kept with the tunnel).
+			s.Username, s.HasPassword = orString(s.Username, p.inlineUser), s.HasPassword || p.inlinePass != ""
+		}
 		if p.ike != nil && !p.ike.CertExpires().IsZero() {
 			exp := p.ike.CertExpires()
 			s.CertExpires = &exp
@@ -485,9 +494,6 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	if spec.Type == domain.TunnelWireGuard && (spec.Username != "" || spec.Password != "") {
 		bad("username", "a WireGuard tunnel has no username or password; its keys are in the configuration")
 	}
-	if spec.Type == domain.TunnelIKEv2 && (spec.Username != "" || spec.Password != "") {
-		bad("username", "an IKEv2 tunnel logs in with what its profile carries (a certificate, or a username and password in it)")
-	}
 
 	m.mu.Lock()
 	prev := m.defs[spec.Name]
@@ -549,6 +555,9 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		if d.Password == "" {
 			d.Password = p.inlinePass
 		}
+		if d.Type == domain.TunnelIKEv2 && !p.needsAuth && (spec.Username != "" || spec.Password != "") {
+			bad("username", "this profile logs in with "+ikeLoginName(p.ike.Auth)+"; it takes no username or password")
+		}
 		if p.needsAuth && d.Username == "" {
 			bad("username", "this profile logs in with a username and password; the username is required")
 		}
@@ -606,6 +615,7 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 		if err := m.store.remove(name); err != nil {
 			return err
 		}
+		m.forgetLogin(name)
 		m.changed()
 		return nil
 	}
@@ -629,6 +639,7 @@ func (m *Manager) Delete(ctx context.Context, name string) error {
 		undo()
 		return err
 	}
+	m.forgetLogin(name)
 	m.mu.Lock()
 	delete(m.defs, name)
 	delete(m.parsed, name)
@@ -714,7 +725,7 @@ func (m *Manager) Connect(name string) error {
 	if perr != nil {
 		return fmt.Errorf("tunnel %s: profile is no longer valid: %w", name, perr)
 	}
-	if p.needsAuth && (d.Username == "" || d.Password == "") {
+	if p.needsAuth && (orString(d.Username, p.inlineUser) == "" || orString(d.Password, p.inlinePass) == "") {
 		return fmt.Errorf("tunnel %s needs a username and password", name)
 	}
 	drv := m.drivers[d.Type]
@@ -1585,6 +1596,49 @@ func (m *Manager) update(name string, fn func(*live)) {
 	if r := m.rt[name]; r != nil {
 		fn(r)
 	}
+}
+
+// rememberLogin records that tunnel name's login print connected.
+func (m *Manager) rememberLogin(name, print string) {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	if m.logins == nil {
+		m.logins = map[string]string{}
+	}
+	if m.logins[name] == print {
+		return
+	}
+	m.logins[name] = print
+	if err := m.store.putLogin(name, print); err != nil {
+		m.o.Log.Debug("tunnel login not recorded", "tunnel", name, "err", err)
+	}
+}
+
+// loggedIn is the print of tunnel name's login that last connected (since
+// it was saved, across restarts), or "".
+func (m *Manager) loggedIn(name string) string {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	if p, ok := m.logins[name]; ok {
+		return p
+	}
+	if m.logins == nil {
+		m.logins = map[string]string{}
+	}
+	m.logins[name] = m.store.getLogin(name)
+	return m.logins[name]
+}
+
+// forgetLogin drops tunnel name's record — it's deleted, or its login was
+// rejected over and over (the next rejection then stops it at once).
+func (m *Manager) forgetLogin(name string) {
+	m.loginMu.Lock()
+	defer m.loginMu.Unlock()
+	if m.logins == nil {
+		m.logins = map[string]string{}
+	}
+	m.logins[name] = ""
+	m.store.removeLogin(name)
 }
 
 func (m *Manager) setErr(name, msg string) {

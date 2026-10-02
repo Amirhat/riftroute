@@ -99,6 +99,7 @@ func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 	captured := routing.AppRuleCaptures(plan, s.actualManagedRules(ctx))
 	for i := range ts {
 		ts[i].Blocked = append(ts[i].Blocked, plan.Blocked[ts[i].Name]...)
+		ts[i].Narrowed = append(ts[i].Narrowed, plan.Narrowed[ts[i].Name]...)
 		ts[i].Captured = append(ts[i].Captured, captured[ts[i].Name]...)
 		ts[i].Profiles = refs[ts[i].Name]
 	}
@@ -159,6 +160,10 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 		if owned == nil {
 			owned = s.actualManagedRoutes(ctx)
 		}
+		if ifaces, err := s.prov.Interfaces(ctx); err == nil {
+			in.PhysNetV4 = ifaceNet(ifaces, in.PhysIfaceV4, in.GatewayV4)
+			in.PhysNetV6 = ifaceNet(ifaces, in.PhysIfaceV6, in.GatewayV6.WithZone(""))
+		}
 		in.Occupied = s.occupied(ctx, owned)
 		in.DNSServers = s.systemResolvers(ctx)
 		for _, a := range safety.DefaultAnchors(in.GatewayV4) {
@@ -168,6 +173,25 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 		}
 	}
 	return in
+}
+
+// ifaceNet is the network of interface name's that holds gw (the LAN the
+// router is on), if any.
+func ifaceNet(ifaces []domain.Iface, name string, gw netip.Addr) netip.Prefix {
+	if name == "" || !gw.IsValid() {
+		return netip.Prefix{}
+	}
+	for _, i := range ifaces {
+		if i.Name != name {
+			continue
+		}
+		for _, a := range i.Addrs {
+			if p, err := netip.ParsePrefix(a); err == nil && p.Masked().Contains(gw) && p.Bits() < p.Addr().BitLen() {
+				return p.Masked()
+			}
+		}
+	}
+	return netip.Prefix{}
 }
 
 // TunnelProtected are the addresses a tunnel's own addressing may never

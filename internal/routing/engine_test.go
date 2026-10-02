@@ -2,6 +2,7 @@ package routing
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -563,24 +564,122 @@ func TestTunnelDownRoutesNothingButKeepsPinWhileConnecting(t *testing.T) {
 	}
 }
 
-// A tunnel route containing the router would cut the path to it; the
-// guardrails refuse the WHOLE apply over one, so the engine leaves just that
-// route out and the rest of the tunnel (and every profile) still applies.
-func TestTunnelRouteContainingTheRouterIsLeftOut(t *testing.T) {
-	in := testInput(excludeProfile())
-	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"192.168.0.0/16", "192.168.70.0/24"}}}
+// A tunnel route containing the router would cut the path to it (and the
+// guardrails refuse the WHOLE apply over one): the router's network is kept
+// out of it — the LAN stays on the physical interface — and the rest of the
+// route goes in, reported as narrowed. Without the interface's network, the
+// route someone has for it in the table is kept out; with neither, the
+// router's address alone.
+func TestTunnelRouteContainingTheRouterKeepsItsNetworkOut(t *testing.T) {
+	router, lan := netip.MustParseAddr("192.168.1.1"), netip.MustParsePrefix("192.168.1.0/24")
+	tunnelRoutes := func(in DesiredInput) []netip.Prefix {
+		t.Helper()
+		desired, _, err := BuildDesired(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []netip.Prefix
+		for _, d := range desired {
+			if d.ProfileID == "tunnel:infra" {
+				out = append(out, netip.MustParsePrefix(d.DstCIDR))
+			}
+		}
+		return out
+	}
+	for name, setup := range map[string]func(*DesiredInput){
+		"the interface's network": func(in *DesiredInput) { in.PhysNetV4 = netip.MustParsePrefix("192.168.1.7/24") },
+		"its route in the table":  func(in *DesiredInput) { in.Occupied = map[string]string{"192.168.1.0/24": "en0"} },
+	} {
+		in := testInput(excludeProfile())
+		setup(&in)
+		in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"192.168.0.0/16", "10.70.0.0/24"}}}
+		routes := tunnelRoutes(in)
+		covered := 0
+		for _, p := range routes {
+			if p.Contains(router) || p.Overlaps(lan) {
+				t.Errorf("%s: %s reaches into the router's network", name, p)
+			}
+			if netip.MustParsePrefix("192.168.0.0/16").Contains(p.Addr()) {
+				covered += 1 << (32 - p.Bits())
+			}
+		}
+		if covered != 1<<16-1<<8 || !slices.Contains(routes, netip.MustParsePrefix("10.70.0.0/24")) {
+			t.Errorf("%s: the rest of the /16 isn't all in (%d addresses): %v", name, covered, routes)
+		}
+		tp := PlanTunnels(in)
+		n := tp.Narrowed["infra"]
+		if len(tp.Blocked["infra"]) != 0 || len(n) != 1 || n[0].Route != "192.168.0.0/16" || len(n[0].Except) != 1 ||
+			n[0].Except[0].Net != "192.168.1.0/24" || !strings.Contains(n[0].Except[0].Reason, "the network of your router 192.168.1.1") {
+			t.Errorf("%s: narrowed %+v, blocked %+v", name, n, tp.Blocked["infra"])
+		}
+	}
+
+	in := testInput()
+	in.Tunnels = []TunnelInput{{Name: "infra", Iface: "utun6", Routes: []string{"192.168.0.0/16"}}}
+	for _, p := range tunnelRoutes(in) {
+		if p.Contains(router) {
+			t.Errorf("%s holds the router", p)
+		}
+	}
+	// A route that is the router's network itself: nothing left.
+	in.PhysNetV4 = lan
+	in.Tunnels[0].Routes = []string{"192.168.1.0/24"}
+	if bs := PlanTunnels(in).Blocked["infra"]; len(bs) != 1 || !strings.Contains(bs[0].Reason, "nothing would be left") {
+		t.Errorf("the LAN itself: %+v", bs)
+	}
+}
+
+// Kept out of a tunnel route: a DNS server and an address the watchdog
+// probes, alone (they ride other routes, not one inside the destination);
+// and nothing someone else routes inside it is taken over by the parts.
+func TestTunnelRouteKeepsResolversAndOthersRoutesOut(t *testing.T) {
+	in := testInput()
+	in.DNSServers = []netip.Addr{netip.MustParseAddr("10.255.255.1")}
+	in.Anchors = []netip.Addr{netip.MustParseAddr("10.1.1.1")}
+	in.Occupied = map[string]string{"10.20.0.0/16": "utun3", "10.255.0.0/16": "utun3"} // the main VPN's
+	in.Tunnels = []TunnelInput{
+		{Name: "office", Iface: "utun9", Routes: []string{"10.0.0.0/8"}},
+		{Name: "lab", Iface: "utun8", Routes: []string{"10.40.0.0/16"}},
+	}
 	desired, _, err := BuildDesired(in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tunnel []string
+	oneRoutePerDestination(t, desired)
+	theirs := []netip.Prefix{netip.MustParsePrefix("10.20.0.0/16"), netip.MustParsePrefix("10.255.0.0/16"), netip.MustParsePrefix("10.40.0.0/16")}
 	for _, d := range desired {
-		if d.ProfileID == "tunnel:infra" {
-			tunnel = append(tunnel, d.DstCIDR)
+		p := netip.MustParsePrefix(d.DstCIDR)
+		if d.ProfileID != "tunnel:office" {
+			continue
+		}
+		for _, a := range []string{"10.255.255.1", "10.1.1.1"} {
+			if p.Contains(netip.MustParseAddr(a)) {
+				t.Errorf("%s carries %s", p, a)
+			}
+		}
+		for _, q := range theirs {
+			if q.Bits() < p.Bits() && q.Contains(p.Addr()) {
+				t.Errorf("%s would take %s's traffic", p, q)
+			}
 		}
 	}
-	if strings.Join(tunnel, ",") != "192.168.70.0/24" {
-		t.Fatalf("tunnel routes = %v, want only 192.168.70.0/24 (the /16 holds the router 192.168.1.1)", tunnel)
+	n := PlanTunnels(in).Narrowed["office"]
+	if len(n) != 1 || len(n[0].Except) != 2 {
+		t.Fatalf("narrowed %+v", n)
+	}
+	for _, e := range n[0].Except {
+		switch e.Net {
+		case "10.1.1.1":
+			if !strings.Contains(e.Reason, "probes") {
+				t.Errorf("%+v", e)
+			}
+		case "10.255.0.0/16":
+			if !strings.Contains(e.Reason, "the network of your DNS server 10.255.255.1, via utun3") {
+				t.Errorf("%+v", e)
+			}
+		default:
+			t.Errorf("kept out %+v", e)
+		}
 	}
 }
 

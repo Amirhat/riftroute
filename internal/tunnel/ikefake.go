@@ -24,6 +24,8 @@ type FakeIKE struct {
 	Missing bool
 	// Fail: every attempt exits at once, having printed these lines.
 	Fail []string
+	// Version is the strongSwan it reports (default 6.1.0).
+	Version string
 
 	mu    sync.Mutex
 	specs []IKESpec
@@ -35,7 +37,7 @@ func (f *FakeIKE) Engine() domain.TunnelEngine {
 	if f.Missing {
 		return detectIKEEngine(readHost(), func() (string, fs.FileInfo, error) { return "", nil, errNotFound }, nil)
 	}
-	return domain.TunnelEngine{Available: true, Path: "(fake)", Version: "6.1.0"}
+	return domain.TunnelEngine{Available: true, Path: "(fake)", Version: orString(f.Version, "6.1.0")}
 }
 
 // Start implements IKELauncher.
@@ -95,6 +97,23 @@ func (f *FakeIKE) Drop() {
 	for _, p := range f.live {
 		p.up = false
 		p.log("giving up after 5 retransmits")
+	}
+}
+
+// Readdress has every running connection made again with another address
+// on the same interface, as charon does after a network change.
+func (f *FakeIKE) Readdress(vip string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.live {
+		if p.announced && f.OnDown != nil {
+			f.OnDown(p.iface, p.vip.String())
+		}
+		p.vip = netip.MustParseAddr(vip)
+		if f.OnUp != nil {
+			p.announced = true
+			f.OnUp(p.iface, p.vip.String())
+		}
 	}
 }
 

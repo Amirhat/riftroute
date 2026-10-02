@@ -3,6 +3,7 @@ package routing
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 
@@ -53,6 +54,9 @@ type TunnelPlan struct {
 	Routes []domain.ManagedRoute
 	// Blocked are the listed routes left out, by tunnel name, and why.
 	Blocked map[string][]domain.TunnelBlocked
+	// Narrowed are the listed routes installed with parts kept out, by
+	// tunnel name, and what and why (see carve).
+	Narrowed map[string][]domain.TunnelNarrowed
 	// nets are the destinations live tunnels route or blocking tunnels
 	// refuse (exclude routes yield inside them, include rules are cut
 	// around them).
@@ -83,7 +87,7 @@ type claim struct {
 // physical gateway drops only the pin. None of these is an error, so one
 // tunnel's state can never make the rest of the desired set unappliable.
 func PlanTunnels(in DesiredInput) TunnelPlan {
-	tp := TunnelPlan{Blocked: map[string][]domain.TunnelBlocked{}}
+	tp := TunnelPlan{Blocked: map[string][]domain.TunnelBlocked{}, Narrowed: map[string][]domain.TunnelNarrowed{}}
 	ts := append([]TunnelInput(nil), in.Tunnels...)
 	sort.SliceStable(ts, func(i, j int) bool {
 		if up := ts[i].Iface != ""; up != (ts[j].Iface != "") {
@@ -140,33 +144,39 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			if c, ok := taken[prefixKey(pfx)]; why == "" && ok {
 				why = c.reason(t.Name)
 			}
-			// No tunnel may carry a tunnel's server that nothing holds off it
-			// (a pin, someone else's host route): its own would loop back into
-			// itself, another's would ride this one — two via-default tunnels
-			// each carrying the other's server both stall.
-			for _, o := range ts {
-				for _, a := range servers(o) {
-					if why != "" || !pfx.Contains(a) || held[a] {
-						continue
-					}
-					if o.Name == t.Name {
-						why = fmt.Sprintf("contains the tunnel's own server %s — its connection would loop back into the tunnel", a)
-					} else {
-						why = fmt.Sprintf("contains tunnel %s's server %s — that tunnel's connection would ride this one", o.Name, a)
-					}
+			parts := []netip.Prefix{pfx}
+			if keep := keepOut(pfx, t, ts, held, in, false); why == "" && len(keep) > 0 {
+				// What it holds that mustn't go into the tunnel is kept out
+				// (with the network someone routes it in); the rest goes in.
+				others := othersInside(pfx, t.Name, ts, in.Occupied)
+				var except []domain.TunnelExcept
+				parts, except = carve(pfx, keep, others, taken)
+				if t.Block && (len(parts) == 0 || len(parts) > maxCarved) {
+					// Set to block: never in the clear. Only what keeps the
+					// connection (the router's network, the servers) stays
+					// out; resolvers and anchors inside go in, or are refused.
+					parts, except = carve(pfx, keepOut(pfx, t, ts, held, in, true), others, taken)
+				}
+				switch {
+				case len(parts) == 0:
+					why = "nothing would be left once these are kept out: " + exceptText(except)
+				case len(parts) > maxCarved:
+					why = fmt.Sprintf("it would take %d routes to go around %s; list narrower networks", len(parts), exceptText(except))
+				default:
+					tp.Narrowed[t.Name] = append(tp.Narrowed[t.Name], domain.TunnelNarrowed{Route: v, Except: except})
 				}
 			}
 			if why == "" && noV6 {
 				// Set to block: refused rather than left to leak — a name
 				// with both addresses would otherwise go out over v6.
 				why = "the tunnel has no IPv6 address, so it's refused (block when down)"
-				byFamily[fam] = append(byFamily[fam], pfx)
+				byFamily[fam] = append(byFamily[fam], parts...)
 			}
 			if why != "" {
 				tp.Blocked[t.Name] = append(tp.Blocked[t.Name], domain.TunnelBlocked{Route: v, Reason: why})
 				continue
 			}
-			byFamily[fam] = append(byFamily[fam], pfx)
+			byFamily[fam] = append(byFamily[fam], parts...)
 		}
 		if t.Iface == "" && !t.Block {
 			continue // not up: nothing goes into it
@@ -430,42 +440,217 @@ func AppRuleCaptures(tp TunnelPlan, rules []domain.ManagedRule) map[string][]dom
 }
 
 // TunnelRouteBlock says why a tunnel destination can't be installed on the
-// current network, or "" if it can. Such a route is left out — reported by
-// core.Service.TunnelStatuses — rather than failing the whole apply:
-//   - it contains the physical gateway: it would cut the path to the router
-//     (and the guardrails refuse the WHOLE apply over one);
-//   - another owner routes that exact destination: the kernel keeps a single
-//     route per destination, so the add would silently not happen;
-//   - it contains a DNS resolver in use: every name lookup would go into the
-//     tunnel (e.g. 10.0.0.0/8 while the main VPN's resolver is 10.255.255.1);
-//   - it contains a connectivity anchor: the watchdog guarding every change
-//     would probe through the tunnel.
+// current network, or "" if it can: another owner routes that exact
+// destination (the kernel keeps a single route per destination, so the add
+// would silently not happen). Such a route is left out — reported by
+// core.Service.TunnelStatuses — rather than failing the whole apply.
 //
-// PlanTunnels adds what depends on the tunnels themselves: a destination
-// claimed twice, a v6 route into a v4-only tunnel, a route that would carry
-// the tunnel's own connection into it.
+// What a destination holds that mustn't go into a tunnel isn't a reason to
+// leave it out: it's kept out of it instead (keepOut, carve). PlanTunnels
+// adds what depends on the tunnels themselves: a destination claimed twice,
+// a v6 route into a v4-only tunnel.
 func TunnelRouteBlock(pfx netip.Prefix, in DesiredInput) string {
-	gw := in.GatewayV4
-	if pfx.Addr().Is6() {
-		gw = in.GatewayV6
-	}
-	if gw.IsValid() && pfx.Contains(gw) {
-		return fmt.Sprintf("contains your router %s — it would cut your connection", gw)
-	}
 	if iface, ok := in.Occupied[pfx.Masked().String()]; ok {
 		return fmt.Sprintf("already routed via %s by something else (another VPN or the system)", iface)
 	}
+	return ""
+}
+
+// keptOut is an address a tunnel route mustn't carry, and why; net, when
+// valid, is the network kept out with it (on that interface): the router's
+// LAN.
+type keptOut struct {
+	addr netip.Addr
+	why  string
+	net  netip.Prefix
+	on   string
+}
+
+// keepOut lists what pfx holds that mustn't go into tunnel t on the current
+// network:
+//   - the router: the path to it would be cut;
+//   - a DNS server in use: every name lookup would go into the tunnel (e.g.
+//     10.0.0.0/8 while the main VPN's resolver is 10.255.255.1);
+//   - an address RiftRoute probes: the watchdog guarding every change would
+//     probe through the tunnel;
+//   - a tunnel's server nothing holds off the tunnels (a pin, someone else's
+//     host route): its own would loop back into itself, another's would ride
+//     this one — two via-default tunnels each carrying the other's server
+//     both stall.
+func keepOut(pfx netip.Prefix, t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, in DesiredInput, essential bool) []keptOut {
+	var out []keptOut
+	gw, lan, on := in.GatewayV4, in.PhysNetV4, in.PhysIfaceV4
+	if pfx.Addr().Is6() {
+		gw, lan, on = in.GatewayV6.WithZone(""), in.PhysNetV6, in.PhysIfaceV6
+	}
+	if gw.IsValid() && pfx.Contains(gw) {
+		k := keptOut{addr: gw, why: "your router " + gw.String()}
+		if lan.IsValid() && lan.Contains(gw) {
+			// Its network (a destination inside it: all of it), so the
+			// local network stays local.
+			k.net, k.on = lan.Masked(), on
+			if lan.Bits() <= pfx.Bits() {
+				k.net = pfx
+			}
+		}
+		out = append(out, k)
+	}
+	resolvers := map[bool]int{} // by family
 	for _, a := range in.DNSServers {
+		if essential || resolvers[a.Is4()] >= maxKeptResolvers {
+			continue
+		}
+		resolvers[a.Is4()]++
 		if pfx.Contains(a) {
-			return fmt.Sprintf("contains your DNS server %s — every name lookup would go into the tunnel", a)
+			out = append(out, keptOut{addr: a, why: "your DNS server " + a.String()})
 		}
 	}
 	for _, a := range in.Anchors {
-		if pfx.Contains(a) {
-			return fmt.Sprintf("contains %s, which RiftRoute probes to check a change kept you online", a)
+		if !essential && pfx.Contains(a) {
+			out = append(out, keptOut{addr: a, why: a.String() + ", which RiftRoute probes to check a change kept you online"})
 		}
 	}
-	return ""
+	for _, o := range ts {
+		for _, a := range servers(o) {
+			if !pfx.Contains(a) || held[a] {
+				continue
+			}
+			if o.Name == t.Name {
+				out = append(out, keptOut{addr: a, why: "the tunnel's own server " + a.String()})
+			} else {
+				out = append(out, keptOut{addr: a, why: fmt.Sprintf("tunnel %s's server %s", o.Name, a)})
+			}
+		}
+	}
+	// One address, said once: the first reason (the router before the
+	// anchor that probes it).
+	seen := map[netip.Addr]bool{}
+	return slices.DeleteFunc(out, func(k keptOut) bool {
+		dup := seen[k.addr]
+		seen[k.addr] = true
+		return dup
+	})
+}
+
+// maxCarved bounds the routes one listed destination may become.
+const maxCarved = 1024
+
+// maxKeptResolvers is how many of a family's resolvers (the first, as the
+// system lists them) are kept out of tunnel routes: a network that names
+// dozens, scattered over a destination, can't carve it past maxCarved.
+const maxKeptResolvers = 8
+
+// routeInside is a route someone else has inside a tunnel destination:
+// another owner's (via its interface) or another tunnel's.
+type routeInside struct {
+	net netip.Prefix
+	via string
+}
+
+// othersInside lists the routes inside pfx (more specific) that aren't
+// tunnel name's: the kernel's other owners', and the other tunnels' listed
+// destinations.
+func othersInside(pfx netip.Prefix, name string, ts []TunnelInput, occupied map[string]string) []routeInside {
+	in := func(q netip.Prefix) bool {
+		return q.Addr().Is4() == pfx.Addr().Is4() && q.Bits() > pfx.Bits() && pfx.Contains(q.Addr())
+	}
+	var out []routeInside
+	for k, via := range occupied {
+		if q, err := netip.ParsePrefix(k); err == nil && in(q.Masked()) {
+			out = append(out, routeInside{q.Masked(), via})
+		}
+	}
+	for _, o := range ts {
+		if o.Name == name {
+			continue
+		}
+		for _, v := range o.Routes {
+			if q, _, ok := entryToPrefix(v); ok && in(q.Masked()) {
+				out = append(out, routeInside{q.Masked(), "tunnel " + o.Name})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].net.String() < out[j].net.String() })
+	return out
+}
+
+// carve returns pfx without what keep holds, and what was kept out and why.
+// Each address goes with the narrowest route someone else has inside pfx
+// that holds it — the router with its network — or alone. The rest goes
+// in, but for parts inside a route someone else has inside pfx, or one a
+// tunnel claims: those stay theirs, as they were with pfx whole (a part
+// more specific than their route would take its traffic).
+func carve(pfx netip.Prefix, keep []keptOut, others []routeInside, taken map[string]claim) ([]netip.Prefix, []domain.TunnelExcept) {
+	reasons := map[netip.Prefix][]string{}
+	var holes []netip.Prefix
+	for _, k := range keep {
+		hole, why := netip.PrefixFrom(k.addr, k.addr.BitLen()), k.why
+		holders := others
+		if k.net.IsValid() {
+			// The router: its whole network stays on the physical interface.
+			hole, why, holders = k.net, fmt.Sprintf("the network of %s, on %s", k.why, k.on), nil
+		}
+		found := false
+		for _, o := range holders {
+			if !o.net.Contains(k.addr) || (found && o.net.Bits() <= hole.Bits()) {
+				continue
+			}
+			hole, found = o.net, true
+			if o.net.IsSingleIP() {
+				why = fmt.Sprintf("%s, routed via %s", k.why, o.via)
+			} else {
+				why = fmt.Sprintf("the network of %s, via %s", k.why, o.via)
+			}
+		}
+		if _, ok := reasons[hole]; !ok {
+			holes = append(holes, hole)
+		}
+		reasons[hole] = append(reasons[hole], why)
+	}
+	var parts []netip.Prefix
+	for _, p := range subtractNets(pfx, holes) {
+		theirs := false
+		for _, o := range others {
+			theirs = theirs || o.net.Bits() <= p.Bits() && o.net.Contains(p.Addr())
+		}
+		if _, claimed := taken[prefixKey(p)]; !theirs && !claimed {
+			parts = append(parts, p)
+		}
+	}
+	sort.Slice(holes, func(i, j int) bool { return holes[i].Addr().Less(holes[j].Addr()) })
+	// One kept out inside another is said with the outermost.
+	var outer []netip.Prefix
+	for _, h := range holes {
+		top := h
+		for _, o := range holes {
+			if o.Bits() < top.Bits() && o.Contains(h.Addr()) {
+				top = o
+			}
+		}
+		if top != h {
+			reasons[top] = append(reasons[top], reasons[h]...)
+		} else {
+			outer = append(outer, h)
+		}
+	}
+	except := make([]domain.TunnelExcept, 0, len(outer))
+	for _, h := range outer {
+		net := h.String()
+		if h.IsSingleIP() {
+			net = h.Addr().String()
+		}
+		except = append(except, domain.TunnelExcept{Net: net, Reason: strings.Join(reasons[h], "; ")})
+	}
+	return parts, except
+}
+
+// exceptText lists what was kept out of a route.
+func exceptText(except []domain.TunnelExcept) string {
+	var out []string
+	for _, e := range except {
+		out = append(out, e.Net+" ("+e.Reason+")")
+	}
+	return strings.Join(out, ", ")
 }
 
 // VerifyTunnelRoutes returns owned as the kernel really holds it: a tunnel

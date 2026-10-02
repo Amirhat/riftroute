@@ -352,7 +352,7 @@ func TestIKEv2TunnelSaves(t *testing.T) {
 	}
 
 	spec.Username = "alice"
-	if _, err := h.m.Save(ctx, spec); err == nil || !strings.Contains(err.Error(), "logs in with what its profile carries") {
+	if _, err := h.m.Save(ctx, spec); err == nil || !strings.Contains(err.Error(), "logs in with a certificate; it takes no username or password") {
 		t.Fatalf("a username beside the profile: %v", err)
 	}
 	spec.Username, spec.Config = "", ""

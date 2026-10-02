@@ -74,8 +74,9 @@ export function TunnelEditor({
   // Editing takes a file of the tunnel's own type only.
   const wrongType = editing && profile && kindOf(profile.type) !== kind
   const connectable = wireguard || (ikev2 ? canConnectIKEv2 : canConnect)
-  // Only an OpenVPN profile may ask for a login: the others carry theirs.
-  const needsAuth = kind === 'openvpn' && (profile ? profile.needs_auth : !!existing?.needs_auth)
+  // An OpenVPN profile may ask for a login, and an IKEv2 one may log in with
+  // a username and password (EAP); WireGuard's keys are in its file.
+  const needsAuth = kind !== 'wireguard' && (profile ? profile.needs_auth : !!existing?.needs_auth)
   const expiry = certExpiry(profile ? profile.cert_expires : existing?.cert_expires)
   const servers = profile ? (profile.servers ?? []) : (existing?.servers ?? [])
   const ignored = profile ? (profile.ignored ?? []) : (existing?.ignored ?? [])
@@ -123,8 +124,8 @@ export function TunnelEditor({
         name,
         type: kind,
         config: profile?.config || undefined,
-        username: (kind === 'openvpn' && username) || undefined,
-        password: (kind === 'openvpn' && password) || undefined,
+        username: (needsAuth && username) || undefined,
+        password: (needsAuth && password) || undefined,
         via,
         routes: parsed.routes,
         auto_connect: autoConnect,
@@ -224,8 +225,10 @@ export function TunnelEditor({
           )}
           {ikev2 && (
             <p className="text-xs text-muted">
-              It logs in with what the profile carries. Its full tunnel never becomes routes: list the networks to send
-              through it below.
+              {needsAuth
+                ? 'It logs in with the username and password below (the profile’s, when it has them). '
+                : 'It logs in with what the profile carries. '}
+              Its full tunnel never becomes routes: list the networks to send through it below.
             </p>
           )}
           {expiry && (

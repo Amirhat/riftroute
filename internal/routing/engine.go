@@ -32,6 +32,10 @@ type DesiredInput struct {
 	GatewayV6   netip.Addr
 	PhysIfaceV4 string
 	PhysIfaceV6 string
+	// PhysNetV4/V6 are the physical interface's networks holding the
+	// gateways (the LAN): a tunnel destination holding the router keeps
+	// them out (see keepOut).
+	PhysNetV4, PhysNetV6 netip.Prefix
 	// VPN tunnel next-hop/iface, for include mode (Model B) destinations that go
 	// INTO the tunnel. Zero when no tunnel is active.
 	VPNGatewayV4 netip.Addr
@@ -54,7 +58,7 @@ type DesiredInput struct {
 	// claiming it would mean deleting the other owner's route on teardown.
 	Occupied map[string]string
 	// DNSServers are the resolvers in use, and Anchors the addresses the
-	// connectivity watchdog probes. A tunnel route containing one is left
+	// connectivity watchdog probes. A tunnel route containing one keeps it
 	// out: every name lookup, or the check guarding every change, would
 	// otherwise ride the tunnel.
 	DNSServers []netip.Addr

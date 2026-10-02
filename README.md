@@ -12,13 +12,14 @@ RiftRoute lets you say *"these destinations bypass the VPN, everything else goes
 through it"* (or the inverse), organize those destinations into toggleable
 profiles and lists, and have the system keep the routing table correct
 automatically as the VPN goes up/down and the network changes — **without ever
-leaving the machine in a broken network state.**
+leaving the machine in a broken network state.** It can also run an OpenVPN,
+WireGuard or IKEv2 connection **beside** the VPN you already use, carrying only
+the networks you choose.
 
-> Status: **M0–M7 feature-complete.** Read-only core, the full safety apparatus,
-> auto-apply, advanced routing (CIDR aggregation, conflicts, Linux Model B
-> include mode), domains & subscribable lists, power features (kill switch,
-> doctor, leak detector, flow monitor, per-app routing, split-DNS), and the
-> ship surface (TUI, tray, packaging, update check, CI/release) are all in.
+> Status: in daily use on macOS (Apple Silicon and Intel) and Linux, with
+> signed releases that update themselves — see the
+> [latest release](https://github.com/Amirhat/riftroute/releases/latest) and
+> the [changelog](CHANGELOG.md).
 
 ![RiftRoute dashboard](docs/screenshot-dashboard.png)
 
@@ -33,6 +34,22 @@ leaving the machine in a broken network state.**
   (*"where does traffic to X go, and why?"*), a desired-vs-actual diff, a leak
   detector, a live flow monitor, and an audit timeline. The operator is never
   confused.
+
+## Light on resources
+
+RiftRoute is a small Go daemon with a native window — no bundled browser
+engine. Measured on an Apple Silicon Mac (0.6.1, after hours of running):
+
+| Part | Memory | |
+|---|---|---|
+| `riftrouted` (the daemon) | about **24 MB** | the only part that has to keep running |
+| `RiftRoute.app` | about **38 MB** | its own process; only while the window is open |
+| macOS's WebKit (draws the window) | about 95 MB | shared system processes, only while the window is open |
+
+Closing the window doesn't stop routing: the daemon carries on alone, so
+day to day RiftRoute costs about as much memory as one browser tab, or less.
+On disk, the daemon is 14 MB, and the universal app (with the CLI, the daemon,
+openvpn and strongSwan inside) 87 MB.
 
 ## Architecture
 
@@ -63,16 +80,20 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 | Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark; macOS PF match on uid/user) |
 | Lists | Inline static + subscribable remote lists (HTTPS-only, size-capped, checksummed, never executed) |
 | Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails |
-| Tunnels | Run an OpenVPN profile or a WireGuard configuration as a split tunnel next to your main VPN — only listed networks go through it; the server can't take the default route or DNS |
+| Tunnels | Run an **OpenVPN**, **WireGuard** or **IKEv2** (certificate, username and password, or shared secret) connection as a split tunnel next to your main VPN — only the networks you list go through it; the server can't take the default route or DNS. A route that would carry your router's network, a DNS server or a tunnel's own server keeps those out and routes the rest, and says so. When it's down, its networks can be blocked rather than leak |
+| Profiles through a tunnel | `mode: tunnel` sends a profile's destinations (domains, lists, wildcards) through one of your tunnels, switched on and off without disconnecting it |
 | Kill switch | Default-drop egress fence (nftables on Linux / pf on macOS) with a reconnect allow-list |
 | Diagnostics | `doctor` battery, IPv6 + DNS **leak detector**, desired-vs-actual **drift**, conflict/overlap detection, MTU/blackhole check |
 | Observability | Live **flow monitor** (which connections go via VPN vs direct), route-explain (LPM simulator), audit timeline, `watch` TUI |
 | DNS | Per-domain **split-DNS** (macOS scoped resolvers / Linux resolvectl) |
-| Ship | `update` check, menu-bar tray, `.dmg`/`.deb`/AppImage/Homebrew packaging, tag-driven release CI |
+| Updates | Signed automatic updates of the daemon **and** the app, tested before switching and rolled back on their own if the new version isn't healthy |
+| Privacy | An anonymous daily report (counts and versions only; `riftroute telemetry off` turns it off), and `riftroute bugreport` writes a redacted report for an issue |
+| Ship | Menu-bar tray, `.dmg`/`.deb`/AppImage/Homebrew packaging, tag-driven release CI |
 
 ## Prerequisites
 
-- **Go 1.25+** (a transitive dep requires it; the toolchain auto-downloads).
+- **Go 1.25** — `go.mod` pins the toolchain to 1.25.14 (an older Go downloads
+  it on its own), so builds never use a Go with known security fixes missing.
 - **Node 20+** and **npm** (for the GUI frontend).
 - **Wails v2.12**: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`
 - **macOS**: Xcode Command Line Tools. **Linux**: `libgtk-3-dev`,
@@ -244,12 +265,13 @@ identities, the encryption settings and the certificate that logs in. They
 run on strongSwan's `charon-cmd`, one per tunnel — on macOS the one RiftRoute
 ships (installed beside the daemon like openvpn), on Linux your
 distribution's (Debian/Ubuntu: `sudo apt install --no-install-recommends
-charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins
+charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins
 strongswan-swanctl`; the Tunnels page says what to install elsewhere). The
 profile's full tunnel, DNS and on-demand rules are left out: only the
-networks you list go through it, as with the others. Profiles that log in
-with a certificate work now; ones that log in with a username and password
-(EAP) or a shared secret are saved but don't connect yet. Design and details:
+networks you list go through it, as with the others. They log in with a
+certificate, a username and password (EAP — the profile's, or the one you
+give when it leaves the password out), or a shared secret (macOS, or a Linux
+strongSwan 6.1 or later). Design and details:
 [docs/tunnels-ikev2.md](docs/tunnels-ikev2.md).
 
 ```bash
@@ -287,12 +309,19 @@ Or use the **Tunnels** page in the app. How it works:
 - A tunnel's networks win over exclude profiles: while it's up, an exclude
   rule can't pull a host inside them back out (e.g. `*.example.com` resolving
   `gitlab.example.com` to `192.168.70.42`, which sits behind the tunnel).
-- A route that contains your current router (say `192.168.0.0/16` on a
-  `192.168.1.x` Wi-Fi) is left out on that network — it would cut you off —
-  and so is one for a destination another VPN or the system already routes
-  (the kernel keeps one route per destination, and RiftRoute never takes over
-  routes it didn't create). Both show as blocked, with the reason; the
-  tunnel's other routes still apply.
+- What a route holds that mustn't go into the tunnel is kept out of it, and
+  the rest goes in: your router's network (say `192.168.0.0/16` on a
+  `192.168.1.x` Wi-Fi goes in except `192.168.1.0/24`, which stays local), a
+  DNS server in use (every name lookup would go into the tunnel), an address
+  RiftRoute probes to check a change kept you online, and a tunnel's server
+  nothing holds off the tunnels. Routes other VPNs or the system have inside
+  it keep theirs. The tunnel's card, `riftroute tunnel list`, `doctor`, and
+  saving the tunnel all say what was kept out and why, for this network
+  only — on another it's worked out again. A route for a destination
+  another VPN or the system already routes exactly is left out (the kernel
+  keeps one route per destination, and RiftRoute never takes over routes it
+  didn't create), and shows as blocked, with the reason; the tunnel's other
+  routes still apply.
 - The profile is checked against an allowlist before a root process sees it:
   scripts, plugins, OpenSSL engines, and file paths are refused; files it
   references are inlined by the CLI/app as *you* — only from the profile's
@@ -369,11 +398,13 @@ riftroute watch                  # live TUI
 riftroute profile <enable|disable> <name> [--apply]
 riftroute apply [file] [--dry-run] [--yes]
 riftroute killswitch <on|off|status>
-riftroute tunnel <add|edit|up|down|list|log|rm>   # OpenVPN or WireGuard beside your main VPN
+riftroute tunnel <add|edit|up|down|list|log|rm>   # OpenVPN, WireGuard or IKEv2 beside your main VPN
 riftroute list <list|refresh>
 riftroute snapshot ...           # inspect saved snapshots
 riftroute panic                  # flush all managed routes immediately
 riftroute update                 # update status (see Updating)
+riftroute telemetry [full|basic|off|show]   # see Telemetry
+riftroute bugreport              # a redacted diagnostics report for an issue
 riftroute daemon <install|...>   # manage the privileged service
 riftroute version
 ```

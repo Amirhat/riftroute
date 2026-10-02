@@ -30,8 +30,11 @@ func fastIKE(t *testing.T) {
 	poll, start, conn, down, stop, bmin, bmax := ikePoll, ikeStartWait, ikeConnectWait, ikeDownAfter, ikeStopWait, ikeBackoffMin, ikeBackoffMax
 	ikePoll, ikeStartWait, ikeConnectWait, ikeDownAfter, ikeStopWait = 5*time.Millisecond, time.Second, 2*time.Second, 30*time.Millisecond, time.Second
 	ikeBackoffMin, ikeBackoffMax = time.Millisecond, 5*time.Millisecond
+	waits := ikeRejectWaits
+	ikeRejectWaits = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond, 60 * time.Millisecond}
 	t.Cleanup(func() {
 		ikePoll, ikeStartWait, ikeConnectWait, ikeDownAfter, ikeStopWait, ikeBackoffMin, ikeBackoffMax = poll, start, conn, down, stop, bmin, bmax
+		ikeRejectWaits = waits
 	})
 }
 
@@ -195,24 +198,248 @@ func TestIKEv2GivesUpWithTheReason(t *testing.T) {
 	}
 }
 
-// What can't run is refused with the reason: a login charon-cmd would ask
-// for on a terminal, a server that assigns no address, no strongSwan.
-func TestIKEv2Refusals(t *testing.T) {
+// A username and password (EAP), from the profile or the user, and a
+// shared secret go to charon-cmd on stdin — never in its arguments.
+func TestIKEv2Logins(t *testing.T) {
 	h, fi := newIKEHarness(t)
 	ctx := t.Context()
-	eap := domain.TunnelSpec{Name: "eap", Type: domain.TunnelIKEv2, Routes: []string{"10.30.0.0/16"}, Config: profile("IKEv2", `
+	ca := dataPayload(payloadRoot, "CA-UUID", newTestPKI(t).caDER, "")
+	eapProfile := func(password string) string {
+		pw := ""
+		if password != "" {
+			pw = `<key>AuthPassword</key><string>` + password + `</string>`
+		}
+		return profile("IKEv2", `
+        <key>RemoteAddress</key><string>203.0.113.9</string>
+        <key>RemoteIdentifier</key><string>vpn.example.com</string>
+        <key>AuthenticationMethod</key><string>None</string>
+        <key>ExtendedAuthEnabled</key><true/>
+        <key>AuthName</key><string>alice</string>`+pw, ca)
+	}
+	eap := domain.TunnelSpec{Name: "eap", Type: domain.TunnelIKEv2, Routes: []string{"10.30.0.0/16"}, Config: eapProfile("s3cret pw")}
+	if _, err := h.m.Save(ctx, eap); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+	spec := fi.Started()[0]
+	if argAfter(spec.Args, "--profile") != "ikev2-eap" || argAfter(spec.Args, "--eap-identity") != "alice" ||
+		argAfter(spec.Args, "--identity") != "alice" || spec.Stdin != "s3cret pw\n" || slices.Contains(spec.Args, "s3cret pw") {
+		t.Fatalf("EAP session: %q stdin %q", spec.Args, spec.Stdin)
+	}
+	if err := h.m.Disconnect(ctx, "eap"); err != nil {
+		t.Fatal(err)
+	}
+
+	// No password in the profile: the user's is required, and used.
+	eap.Name, eap.Config = "eap2", eapProfile("")
+	if _, err := h.m.Save(ctx, eap); err == nil || !strings.Contains(err.Error(), "the password is required") {
+		t.Fatalf("no password: %v", err)
+	}
+	eap.Username, eap.Password = "bob", "typed"
+	if _, err := h.m.Save(ctx, eap); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := h.m.Status("eap2"); st.Username != "bob" || !st.HasPassword {
+		t.Fatalf("status %+v", st)
+	}
+	if err := h.m.Connect("eap2"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap2", domain.TunnelConnected)
+	if spec := fi.Started()[1]; argAfter(spec.Args, "--eap-identity") != "bob" || spec.Stdin != "typed\n" {
+		t.Fatalf("the user's login: %q %q", spec.Args, spec.Stdin)
+	}
+	if err := h.m.Disconnect(ctx, "eap2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A shared secret: strongSwan 6.1 or later.
+	psk := domain.TunnelSpec{Name: "psk", Type: domain.TunnelIKEv2, Routes: []string{"10.30.0.0/16"}, Config: profile("IKEv2", `
+        <key>RemoteAddress</key><string>203.0.113.9</string>
+        <key>RemoteIdentifier</key><string>vpn.example.com</string>
+        <key>LocalIdentifier</key><string>client.example.com</string>
+        <key>AuthenticationMethod</key><string>SharedSecret</string>
+        <key>SharedSecret</key><string>the psk</string>`)}
+	if _, err := h.m.Save(ctx, psk); err != nil {
+		t.Fatal(err)
+	}
+	psk.Username = "x"
+	if _, err := h.m.Save(ctx, psk); err == nil || !strings.Contains(err.Error(), "logs in with a shared secret; it takes no username") {
+		t.Fatalf("a username beside a shared secret: %v", err)
+	}
+	fi.Version = "5.9.8"
+	if err := h.m.Connect("psk"); err == nil || !strings.Contains(err.Error(), "needs strongSwan 6.1 or later") {
+		t.Fatalf("PSK on 5.9: %v", err)
+	}
+	fi.Version = ""
+	if err := h.m.Connect("psk"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "psk", domain.TunnelConnected)
+	if spec := fi.Started()[2]; argAfter(spec.Args, "--profile") != "ikev2-psk" || argAfter(spec.Args, "--identity") != "client.example.com" ||
+		spec.Stdin != "the psk\n" || slices.Contains(spec.Args, "--cert") {
+		t.Fatalf("PSK session: %q %q", spec.Args, spec.Stdin)
+	}
+}
+
+// charon makes the connection again after a network change, and the server
+// hands out another address: the tunnel follows it, staying connected.
+func TestIKEv2FollowsANewAddress(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	if _, err := h.m.Save(t.Context(), ikeSpec(t, newTestPKI(t))); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("office"); err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, h.m, "office", domain.TunnelConnected)
+	if st.LocalIP != "10.98.0.2" {
+		t.Fatalf("first address %q", st.LocalIP)
+	}
+	since := st.Since
+	fi.Readdress("10.98.0.12")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		st, _ = h.m.Status("office")
+		if st.LocalIP == "10.98.0.12" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still %q", st.LocalIP)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st.State != domain.TunnelConnected || st.Iface != "utun8" || !st.Since.Equal(*since) || len(fi.Started()) != 1 {
+		t.Fatalf("after the new address: %+v (%d starts)", st, len(fi.Started()))
+	}
+}
+
+// A rejected username or password ends the session: trying it again could
+// lock the account.
+func TestIKEv2RejectedPasswordIsNotRetried(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	// What a strongSwan client logs when the password is wrong.
+	fi.Fail = []string{"07[IKE] EAP-MS-CHAPv2 failed with error ERROR_AUTHENTICATION_FAILURE: '(null)'", "07[IKE] EAP_MSCHAPV2 method failed"}
+	spec := domain.TunnelSpec{Name: "eap", Type: domain.TunnelIKEv2, Routes: []string{"10.30.0.0/16"}, Config: profile("IKEv2", `
         <key>RemoteAddress</key><string>203.0.113.9</string>
         <key>AuthenticationMethod</key><string>None</string>
         <key>ExtendedAuthEnabled</key><true/>
         <key>AuthName</key><string>alice</string>
-        <key>AuthPassword</key><string>pw</string>`)}
-	if _, err := h.m.Save(ctx, eap); err != nil {
+        <key>AuthPassword</key><string>wrong</string>`, dataPayload(payloadRoot, "CA-UUID", newTestPKI(t).caDER, ""))}
+	if _, err := h.m.Save(t.Context(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.m.Connect("eap"); err == nil || !strings.Contains(err.Error(), "log in with a certificate") {
-		t.Fatalf("EAP connect = %v", err)
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, h.m, "eap", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "rejected the username or password") || strings.Contains(st.LastError, "gave up") || len(fi.Started()) != 1 {
+		t.Fatalf("%q after %d attempts", st.LastError, len(fi.Started()))
+	}
+}
+
+// A rejection of a login that has connected (since the daemon started) is
+// most likely the server's backend failing for a moment: it's tried again,
+// slowly, and the tunnel comes back once the server takes it again — a
+// block-mode one blocking meanwhile. Rejected a few times in a row, it
+// gives up.
+func TestIKEv2RejectionOfALoginThatWorkedIsRetried(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	spec := domain.TunnelSpec{Name: "eap", Type: domain.TunnelIKEv2, Routes: []string{"10.30.0.0/16"}, WhenDown: domain.TunnelBlock,
+		Config: profile("IKEv2", `
+        <key>RemoteAddress</key><string>203.0.113.9</string>
+        <key>AuthenticationMethod</key><string>None</string>
+        <key>ExtendedAuthEnabled</key><true/>
+        <key>AuthName</key><string>alice</string>
+        <key>AuthPassword</key><string>right</string>`, dataPayload(payloadRoot, "CA-UUID", newTestPKI(t).caDER, ""))}
+	if _, err := h.m.Save(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+
+	// The backend fails for a moment: rejected, then taken again.
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	fi.Drop()
+	waitFor(t, "two rejected attempts", func() bool { return len(fi.Started()) >= 3 })
+	if st, _ := h.m.Status("eap"); st.State == domain.TunnelFailed || !strings.Contains(st.LastError, "rejected the username or password") {
+		t.Fatalf("after a rejection: %+v", st)
+	}
+	fi.Fail = nil
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+
+	// Rejected again and again: it gives up, saying so.
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	fi.Drop()
+	st := waitState(t, h.m, "eap", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "gave up after 4 rejections in a row") {
+		t.Fatalf("gave up with %q", st.LastError)
+	}
+	// Given up on, the login no longer counts as one that works: connected
+	// again (by hand, or after a restart) and rejected, it stops at once.
+	n0 := len(fi.Started())
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	st = waitState(t, h.m, "eap", domain.TunnelFailed)
+	if len(fi.Started()) != n0+1 || strings.Contains(st.LastError, "gave up") {
+		t.Fatalf("after giving up: %d more attempts, %q", len(fi.Started())-n0, st.LastError)
 	}
 
+	// Connected anew — by hand, or by a restarted daemon (a new Manager on
+	// the same definitions) — the login is still one that worked.
+	fi.Fail = nil
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+	if err := h.m.Disconnect(t.Context(), "eap"); err != nil {
+		t.Fatal(err)
+	}
+	h.m.loginMu.Lock()
+	h.m.logins = nil // as a restarted daemon has it: only the file
+	h.m.loginMu.Unlock()
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "a rejected attempt after reconnecting", func() bool {
+		st, _ := h.m.Status("eap")
+		return st.State == domain.TunnelReconnecting && strings.Contains(st.LastError, "rejected")
+	})
+	fi.Fail = nil
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+	if err := h.m.Disconnect(t.Context(), "eap"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A login that never connected is never tried twice (see
+	// TestIKEv2RejectedPasswordIsNotRetried); nor is a changed one.
+	spec.Password, spec.Config = "changed", ""
+	if _, err := h.m.Save(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	n := len(fi.Started())
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	st = waitState(t, h.m, "eap", domain.TunnelFailed)
+	if len(fi.Started()) != n+1 || strings.Contains(st.LastError, "gave up") {
+		t.Fatalf("a changed password: %d attempts, %q", len(fi.Started())-n, st.LastError)
+	}
+}
+
+// What can't run is refused with the reason: a server that assigns no
+// address, no strongSwan.
+func TestIKEv2Refusals(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	ctx := t.Context()
 	fi.VIP = "none"
 	if _, err := h.m.Save(ctx, ikeSpec(t, newTestPKI(t))); err != nil {
 		t.Fatal(err)
@@ -245,7 +472,7 @@ func TestRenderIKE(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := "/run/rr"
-	st, err := renderIKE(c, nil, "192.0.2.44", dir, "office", true, false)
+	st, err := renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +527,7 @@ func TestRenderIKE(t *testing.T) {
 
 	// An older charon-cmd (strongSwan 5.x, as Debian and Ubuntu ship) takes
 	// the login as a PKCS#12, whose password it reads from stdin.
-	st, err = renderIKE(c, nil, "192.0.2.44", dir, "office", false, true)
+	st, err = renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,21 +557,41 @@ func TestRenderIKE(t *testing.T) {
 	}
 
 	// v4 only: no IPv6 asked for.
-	if st, _ := renderIKE(c, nil, "192.0.2.44", dir, "office", false, false); slices.Contains(st.Args, "::/0") {
+	if st, _ := renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", false, false); slices.Contains(st.Args, "::/0") {
 		t.Errorf("v4-only args: %q", st.Args)
 	}
 	// No CA in the profile: the system's, or a refusal.
 	c.CAs = nil
-	if _, err := renderIKE(c, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "no certificate authority") {
+	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "no certificate authority") {
 		t.Errorf("no CA = %v", err)
 	}
-	st, err = renderIKE(c, []*x509.Certificate{pki.caCert, pki.caCert}, "h", dir, "office", false, false)
+	st, err = renderIKE(c, ikeLogin{}, []*x509.Certificate{pki.caCert, pki.caCert}, "h", dir, "office", false, false)
 	if err != nil || argAfter(st.Args, "--cert") != dir+"/office.cert.pem" || !slices.Contains(st.Args, dir+"/office.ca1.pem") {
 		t.Errorf("system roots: %v %q", err, st.Args)
 	}
+	// A shared secret: on stdin, no certificates; one too long for getpass
+	// is refused rather than cut short.
 	c.Auth = IKEv2PSK
-	if _, err := renderIKE(c, nil, "h", dir, "office", false, false); err == nil {
-		t.Error("a PSK profile rendered")
+	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "shared secret is missing") {
+		t.Errorf("no secret: %v", err)
+	}
+	c.PSK = strings.Repeat("k", ikeSecretMax)
+	if st, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err != nil || st.Stdin != c.PSK+"\n" ||
+		slices.Contains(st.Args, "--cert") || len(st.Files) != 1 {
+		t.Errorf("PSK: %v %q %d files", err, st.Args, len(st.Files))
+	}
+	c.PSK += "k"
+	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "longer than 128") {
+		t.Errorf("long secret: %v", err)
+	}
+	c.Auth = IKEv2EAP
+	if _, err := renderIKE(c, ikeLogin{User: "alice", Password: "a\nb"}, nil, "h", dir, "office", false, false); err == nil {
+		t.Error("a password with a line break rendered")
+	}
+	for v, want := range map[string]bool{"5.9.8": false, "6.0.2": false, "6.1.0": true, "6.2": true, "7.0.0": true, "": true} {
+		if ikePSKSupported(v) != want {
+			t.Errorf("ikePSKSupported(%q) != %v", v, want)
+		}
 	}
 }
 
@@ -520,12 +767,12 @@ func TestDiagnoseIKE(t *testing.T) {
 		{"giving up after 5 retransmits", domain.TunnelViaDefault, "UDP ports 500 and 4500"},
 		{"something else", domain.TunnelViaDirect, "couldn't connect: something else"},
 	} {
-		got := diagnoseIKE("office", tc.via, []string{"Starting charon-cmd IKE client", tc.line})
+		got := diagnoseIKE("office", tc.via, IKEv2Certificate, []string{"Starting charon-cmd IKE client", tc.line})
 		if !strings.Contains(got, tc.want) {
 			t.Errorf("%q → %q, want %q", tc.line, got, tc.want)
 		}
 	}
-	if got := diagnoseIKE("office", domain.TunnelViaDefault, []string{"giving up after 5 retransmits"}); strings.Contains(got, "Windscribe") {
+	if got := diagnoseIKE("office", domain.TunnelViaDefault, IKEv2Certificate, []string{"giving up after 5 retransmits"}); strings.Contains(got, "Windscribe") {
 		t.Errorf("via default: %q", got)
 	}
 }
@@ -545,7 +792,7 @@ func TestDetectIKEEngine(t *testing.T) {
 	}
 	ubuntu := hostInfo{goos: "linux", osRelease: map[string]string{"ID": "pop", "ID_LIKE": "ubuntu debian"}}
 	if e := detectIKEEngine(ubuntu, missing, nil); e.Install == nil ||
-		!slices.Equal(e.Install.Commands, []string{"sudo apt install --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl"}) {
+		!slices.Equal(e.Install.Commands, []string{"sudo apt install --no-install-recommends charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins strongswan-swanctl"}) {
 		t.Errorf("Ubuntu-like, missing: %+v", e.Install)
 	}
 	if e := detectIKEEngine(hostInfo{goos: "linux", osRelease: map[string]string{"ID": "nixos"}}, missing, nil); e.Install == nil ||
@@ -553,7 +800,7 @@ func TestDetectIKEEngine(t *testing.T) {
 		t.Errorf("unknown Linux: %+v", e.Install)
 	}
 	if e := detectIKEEngine(ubuntu, found, ver("5.8.2")); e.Available || !strings.Contains(e.Problem, "too old") ||
-		!slices.Equal(e.Install.Commands, []string{"sudo apt install --reinstall --no-install-recommends charon-cmd libcharon-extra-plugins libstrongswan-standard-plugins strongswan-swanctl"}) {
+		!slices.Equal(e.Install.Commands, []string{"sudo apt install --reinstall --no-install-recommends charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins strongswan-swanctl"}) {
 		t.Errorf("too old: %+v", e)
 	}
 	if e := detectIKEEngine(ubuntu, found, ver("6.1.0")); !e.Available || e.Version != "6.1.0" || e.Path != "/usr/sbin/charon-cmd" {

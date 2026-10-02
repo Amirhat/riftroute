@@ -100,9 +100,15 @@ type TunnelStatus struct {
 	// Ignored lists what was removed from the profile on import (pushed-route
 	// and DNS directives), so the user can see RiftRoute dropped them.
 	Ignored []string `json:"ignored,omitempty"`
-	// Blocked are routes left out on the current network, and why (they
-	// contain its router, or another owner already routes that destination).
+	// Blocked are routes left out on the current network, and why (another
+	// owner already routes that destination, or nothing would be left of it
+	// once what it mustn't carry is kept out).
 	Blocked []TunnelBlocked `json:"blocked,omitempty"`
+	// Narrowed are routes installed with parts kept out on the current
+	// network: what they hold that mustn't go into the tunnel (the router's
+	// network, a DNS server, an address RiftRoute probes, a tunnel's server)
+	// takes its usual path; the rest goes in.
+	Narrowed []TunnelNarrowed `json:"narrowed,omitempty"`
 	// Captured are routes installed, but that some traffic still goes past:
 	// an include-mode app rule selects an app's (or a user's) traffic to any
 	// destination before the routing table is consulted, and sends it into
@@ -136,6 +142,19 @@ type TunnelStatus struct {
 // TunnelBlocked is a tunnel route that isn't installed here, and why.
 type TunnelBlocked struct {
 	Route  string `json:"route"`
+	Reason string `json:"reason"`
+}
+
+// TunnelNarrowed is a tunnel route installed with parts kept out of it.
+type TunnelNarrowed struct {
+	Route  string         `json:"route"`
+	Except []TunnelExcept `json:"except"`
+}
+
+// TunnelExcept is one part kept out of a tunnel route (a network, or one
+// address), and why.
+type TunnelExcept struct {
+	Net    string `json:"net"`
 	Reason string `json:"reason"`
 }
 
