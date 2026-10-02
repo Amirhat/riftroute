@@ -195,11 +195,12 @@ nothing.
     and its installs' own rates of failed and slow changes and failed
     tunnel attempts, averaged — shown from 10 installs.
   - A version is flagged when such a rate is more than twice the previous
-    version's, clearly higher (by 5, 2 and 10 points), **and** at least 3
-    installs show it; or when 3 installs recovered from panics and none on
-    the previous version did. Health-check rollbacks on 3 installs in the
-    window are flagged too: they're reported by the version the install
-    went back to, so the newest release is the one to look at.
+    version's, clearly higher (by 5, 2 and 10 points), **and** enough
+    installs show it — at least 3, and at least 5% of the version's
+    installs; or when that many recovered from panics and none on the
+    previous version did. Health-check rollbacks on that many installs (of
+    the window's) are flagged too: they're reported by the version the
+    install went back to, so the newest release is the one to look at.
   - A flag is a hint, the place to decide to halt a rollout — someone who
     makes up many installs can still move it, within the throttle and the
     daily cap.

@@ -360,3 +360,32 @@ func TestOneReportCantSwingTheFlags(t *testing.T) {
 		t.Errorf("the forged report counts for more than a day: %+v", v)
 	}
 }
+
+// A few made-up installs can't flag a release many real ones run: a flag
+// needs at least 5% of the installs showing it, besides 3.
+func TestAFewForgedInstallsCantFlagABigRelease(t *testing.T) {
+	day := "2026-09-23"
+	d, _ := time.Parse(time.DateOnly, day)
+	var reps []telemetry.Report
+	for i := range 200 {
+		r := report(i+1, day, []string{"0.6.1", "0.7.0"}[i%2])
+		r.Daemon = telemetry.Daemon{Starts: 3}
+		reps = append(reps, r)
+	}
+	for i := range 3 {
+		f := report(900+i, day, "0.7.0")
+		f.Daemon = telemetry.Daemon{Starts: 1, Panics: 1}
+		f.Updates.RolledBackHealth = 1
+		reps = append(reps, f)
+	}
+	s, err := summarize(newestFirst(reps), d.AddDate(0, 0, -6), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Flags) != 0 {
+		t.Fatalf("3 forged installs flagged a release 100 real ones run: %+v", s.Flags)
+	}
+	if flagInstalls(10) != 3 || flagInstalls(500) != 25 {
+		t.Fatalf("flagInstalls(10)=%d, (500)=%d", flagInstalls(10), flagInstalls(500))
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
@@ -228,13 +229,20 @@ type Flag struct {
 }
 
 // minInstalls is how many installs a rate needs before it's shown or
-// compared; minFlagInstalls, how many must show a panic or a rollback for a
-// flag. Install ids are anonymous and self-chosen, so a flag is a hint: what
-// these bound is how much one report can move one.
+// compared; minFlagInstalls, how many must show a problem for a flag — and
+// at least 5% of the installs (flagInstalls), so a few made-up ones
+// can't flag a release many real installs run. Install ids are anonymous
+// and self-chosen: a flag is a hint, and these bound what forging moves.
 const (
 	minInstalls     = 10
 	minFlagInstalls = 3
+	flagShare       = 0.05
 )
+
+// flagInstalls is how many of installs must show a problem for a flag.
+func flagInstalls(installs int) int {
+	return max(minFlagInstalls, int(math.Ceil(flagShare*float64(installs))))
+}
 
 func rate(n, of, min int) *float64 {
 	if of < min || of == 0 {
@@ -498,7 +506,7 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 		sum.Versions = append(sum.Versions, *v)
 	}
 	sortVersions(sum.Versions)
-	sum.Flags = flags(sum.Versions, len(rolledBack))
+	sum.Flags = flags(sum.Versions, len(rolledBack), sum.Installs)
 	for _, d := range sum.Daily {
 		if d.Installs >= telemetryDailyCap {
 			sum.Flags = append(sum.Flags, Flag{What: fmt.Sprintf("%s reached the daily cap of %d reports: more were refused — a flood, or time to raise the cap", d.Day, telemetryDailyCap)})
@@ -509,15 +517,15 @@ func summarize(each func(fn func(telemetry.Report)) error, from, to time.Time) (
 
 // flags compares each version with the one before it. Rates are install-
 // weighted, and a panic or rollback flag needs minFlagInstalls installs.
-func flags(vs []VersionSummary, rolledBack int) []Flag {
+func flags(vs []VersionSummary, rolledBack, installs int) []Flag {
 	out := []Flag{}
-	if rolledBack >= minFlagInstalls {
+	if rolledBack >= flagInstalls(installs) {
 		out = append(out, Flag{What: fmt.Sprintf("%d installs rolled back an update that failed the health check — counted by the version they went back to, so look at the newest release", rolledBack)})
 	}
 	// Worse: more than twice the rate before, clearly higher, and seen on
 	// several installs (one install, real or forged, is one vote).
-	worse := func(cur, prev *float64, by float64, installs int) bool {
-		return cur != nil && prev != nil && *cur > *prev*2 && *cur-*prev >= by && installs >= minFlagInstalls
+	worse := func(cur, prev *float64, by float64, showing, of int) bool {
+		return cur != nil && prev != nil && *cur > *prev*2 && *cur-*prev >= by && showing >= flagInstalls(of)
 	}
 	for i := 0; i+1 < len(vs); i++ {
 		v, p := vs[i], vs[i+1]
@@ -527,16 +535,16 @@ func flags(vs []VersionSummary, rolledBack int) []Flag {
 		add := func(what string, cur, prev *float64) {
 			out = append(out, Flag{Version: v.Version, What: fmt.Sprintf("%s: %s, against %s on %s", what, pct(cur), pct(prev), p.Version)})
 		}
-		if worse(v.UncleanRate, p.UncleanRate, 0.05, v.InstallsUnclean) {
+		if worse(v.UncleanRate, p.UncleanRate, 0.05, v.InstallsUnclean, v.Installs) {
 			add("more unclean starts", v.UncleanRate, p.UncleanRate)
 		}
-		if worse(v.ApplyFailRate, p.ApplyFailRate, 0.02, v.InstallsApplyFailed) {
+		if worse(v.ApplyFailRate, p.ApplyFailRate, 0.02, v.InstallsApplyFailed, v.Installs) {
 			add("more changes fail", v.ApplyFailRate, p.ApplyFailRate)
 		}
-		if worse(v.TunnelFailRate, p.TunnelFailRate, 0.10, v.InstallsTunnelFailed) {
+		if worse(v.TunnelFailRate, p.TunnelFailRate, 0.10, v.InstallsTunnelFailed, v.Installs) {
 			add("more tunnel attempts fail", v.TunnelFailRate, p.TunnelFailRate)
 		}
-		if v.InstallsPanicked >= minFlagInstalls && p.InstallsPanicked == 0 {
+		if v.InstallsPanicked >= flagInstalls(v.Installs) && p.InstallsPanicked == 0 {
 			out = append(out, Flag{Version: v.Version, What: fmt.Sprintf("%d installs recovered from panics; none on %s", v.InstallsPanicked, p.Version)})
 		}
 	}
