@@ -60,6 +60,33 @@ type Service struct {
 	// telemetryNotice reports whether the user is yet to be told about
 	// telemetry (nil = not wired).
 	telemetryNotice func() bool
+	// heldRoutes are the routes another program keeps removing, which the
+	// Apply Protocol stopped putting back for now (nil = not wired).
+	heldRoutes func() []domain.HeldRoute
+}
+
+// LiveMissing counts the routes RiftRoute installed, and still wants, that the
+// kernel no longer holds and aren't held — what an apply would put back
+// (the reconciler's periodic check).
+func (s *Service) LiveMissing(ctx context.Context) int {
+	return s.computeDrift(ctx, s.actualManagedRoutes(ctx)).Missing
+}
+
+// SetHeldRoutes wires the Apply Protocol's live repair (safety.HeldRoutes):
+// drift and the doctor leave held routes out of what's pending and say why.
+func (s *Service) SetHeldRoutes(fn func() []domain.HeldRoute) { s.heldRoutes = fn }
+
+// held is heldRoutes, and its RouteKeys.
+func (s *Service) held() ([]domain.HeldRoute, map[string]bool) {
+	if s.heldRoutes == nil {
+		return nil, nil
+	}
+	hs := s.heldRoutes()
+	keys := make(map[string]bool, len(hs))
+	for _, h := range hs {
+		keys[routing.RouteKey(h.Route)] = true
+	}
+	return hs, keys
 }
 
 // SetTunnelEngine installs the "can tunnels run here" probe (doctor).
@@ -750,11 +777,15 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 		d.Reason = err.Error()
 		return d
 	}
-	// Tunnel routes the kernel dropped with their interface count as missing
-	// (as the Apply Protocol will see them), not as "in sync".
-	actualRoutes = routing.VerifyTunnelRoutes(actualRoutes, dRoutes, func(fam domain.Family) ([]domain.Route, error) {
+	// Routes the kernel no longer holds (a tunnel's interface went, another
+	// program removed them) count as missing — as the Apply Protocol will see
+	// them — not as "in sync". Held ones aren't pending: RiftRoute stopped
+	// putting them back, and says so.
+	held, heldKeys := s.held()
+	actualRoutes, missing := routing.VerifyRoutes(actualRoutes, dRoutes, func(fam domain.Family) ([]domain.Route, error) {
 		return s.prov.ListRoutes(ctx, fam)
-	})
+	}, heldKeys, nil)
+	d.Missing, d.Held = len(missing), held
 	plan := routing.Reconcile(dRoutes, actualRoutes, dRules, s.actualManagedRules(ctx), s.Platform())
 	for _, op := range plan.Ops {
 		switch op.Kind {

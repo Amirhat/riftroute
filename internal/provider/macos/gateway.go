@@ -41,3 +41,16 @@ func pickPhysicalDefault(routes []domain.Route, isVPN func(string) bool) (netip.
 	}
 	return netip.Addr{}, "", false
 }
+
+// physicalWinner is the winning default route's next hop (`route get
+// default`) when it goes out a physical interface: the system's primary
+// service. With Wi-Fi and Ethernet both up, interface order says nothing
+// about which one macOS uses. With a VPN's default winning (or the /1 halves
+// an OpenVPN redirect-gateway adds), it's no answer, and the caller looks
+// further.
+func physicalWinner(gw netip.Addr, iface string, err error, isPhysical func(string) bool) (netip.Addr, string, bool) {
+	if err != nil || !gw.Is4() || iface == "" || !isPhysical(iface) {
+		return netip.Addr{}, "", false
+	}
+	return gw, iface, true
+}

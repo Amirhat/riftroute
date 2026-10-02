@@ -143,6 +143,7 @@ func run() error {
 	svc := core.New(prov, st, version)
 	svc.SetBuild(build, buildinfo.NewWatcher(build))
 	proto := safety.NewProtocol(prov, st, safety.RealClock{}, nil, prov.Capabilities().Platform, logger)
+	svc.SetHeldRoutes(proto.HeldRoutes) // routes another program keeps removing: drift and doctor say so
 
 	// Crash recovery, step 1: replay the write-ahead journal. Any transaction that
 	// was in flight (or on probation) at the last shutdown is reverted to its

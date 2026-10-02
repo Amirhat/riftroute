@@ -653,21 +653,27 @@ func exceptText(except []domain.TunnelExcept) string {
 	return strings.Join(out, ", ")
 }
 
-// VerifyTunnelRoutes returns owned as the kernel really holds it: a tunnel
-// route desired still wants but the kernel no longer has is dropped, so a
-// reconcile against the result puts it back. A tunnel's routes vanish with its
-// interface, and when openvpn re-creates its tun under the same name, desired
-// and the ownership map still agree — nothing else would re-add them, and
-// drift would read "in sync". Missing routes desired no longer wants stay, so
-// the plan's (idempotent) delete clears their records.
+// VerifyRoutes returns owned as the kernel really holds it (kept), and what
+// it no longer holds (missing): a route desired still wants that the kernel
+// doesn't have is left out of kept, so a reconcile against kept puts it back.
+// A tunnel's routes vanish with its interface (openvpn re-creates its tun
+// under the same name), and another program — a VPN client tidying the
+// table — can delete any of RiftRoute's. Desired and the ownership map still
+// agree, so nothing else would re-add them, and drift would read "in sync".
+// Missing routes desired no longer wants stay, so the plan's (idempotent)
+// delete clears their records.
 //
-// read returns one family's kernel table. It runs once per family holding an
-// owned tunnel route; a failed read changes nothing.
-func VerifyTunnelRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error)) []domain.ManagedRoute {
+// held are RouteKeys to keep regardless: another program keeps removing
+// them, and putting them back would only fight it (the Apply Protocol's live
+// repair holds them for a while). only, when set, limits the check to the
+// routes it accepts (a tunnel's apply carries the others over as recorded).
+// read returns one family's kernel table. It runs once per family holding a
+// wanted route; a failed read changes nothing.
+func VerifyRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error), held map[string]bool, only func(domain.ManagedRoute) bool) (kept, missing []domain.ManagedRoute) {
 	wanted := indexRoutes(desired)
 	kernel := map[domain.Family]Installed{}
-	missing := func(o domain.ManagedRoute) bool {
-		if _, ok := wanted[RouteKey(o.Route)]; !ok || !strings.HasPrefix(o.ProfileID, TunnelProfilePrefix) {
+	gone := func(o domain.ManagedRoute) bool {
+		if _, ok := wanted[RouteKey(o.Route)]; !ok || held[RouteKey(o.Route)] || only != nil && !only(o) {
 			return false
 		}
 		in, read1 := kernel[o.Family]
@@ -680,13 +686,21 @@ func VerifyTunnelRoutes(owned, desired []domain.ManagedRoute, read func(domain.F
 		}
 		return in != nil && !in.Has(o.Route)
 	}
-	out := owned[:0:0]
+	kept = owned[:0:0]
 	for _, o := range owned {
-		if !missing(o) {
-			out = append(out, o)
+		if gone(o) {
+			missing = append(missing, o)
+		} else {
+			kept = append(kept, o)
 		}
 	}
-	return out
+	return kept, missing
+}
+
+// IsTunnelRoute says whether a route is one of a tunnel's (its routes, its
+// server pins, a tunnel-mode profile's).
+func IsTunnelRoute(o domain.ManagedRoute) bool {
+	return strings.HasPrefix(o.ProfileID, TunnelProfilePrefix)
 }
 
 // Installed indexes a kernel table read, to tell which routes are really

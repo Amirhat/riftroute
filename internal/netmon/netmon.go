@@ -21,7 +21,10 @@ const (
 	EventLinkChanged         EventType = "link_changed"
 	EventAddrChanged         EventType = "addr_changed"
 	EventDNSChanged          EventType = "dns_changed"
-	EventWake                EventType = "wake"
+	// EventPhysicalGatewayChanged: a physical default route's next hop
+	// changed while another default (a VPN's) kept winning.
+	EventPhysicalGatewayChanged EventType = "physical_gateway_changed"
+	EventWake                   EventType = "wake"
 )
 
 // Event is a single observed network change.

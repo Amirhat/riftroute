@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
@@ -305,5 +306,44 @@ func TestTunnelsNeverCarryEachOthersServer(t *testing.T) {
 	in.Tunnels[1].Bypass = in.Tunnels[1].Servers
 	if bs := PlanTunnels(in).Narrowed["a"]; len(bs) != 0 {
 		t.Errorf("a pinned server still kept out: %+v", bs)
+	}
+}
+
+// VerifyRoutes leaves out what desired still wants and the kernel no longer
+// holds — any route, not only a tunnel's — so a reconcile puts it back. It
+// keeps what's held, what desired no longer wants (so the plan's delete
+// clears it), and everything when the table can't be read; only limits it.
+func TestVerifyRoutes(t *testing.T) {
+	excl := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
+	tun := domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.20.0.0/16", Iface: "utun6", Family: domain.FamilyV4}, ProfileID: TunnelProfilePrefix + "lab"}
+	stale := domain.ManagedRoute{Route: domain.Route{DstCIDR: "8.8.8.8/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
+	owned := []domain.ManagedRoute{excl, tun, stale}
+	desired := []domain.ManagedRoute{excl, tun} // stale: no longer wanted
+	empty := func(domain.Family) ([]domain.Route, error) { return nil, nil }
+	keys := func(ms []domain.ManagedRoute) (out []string) {
+		for _, m := range ms {
+			out = append(out, m.DstCIDR)
+		}
+		return out
+	}
+
+	kept, missing := VerifyRoutes(owned, desired, empty, nil, nil)
+	if strings.Join(keys(missing), ",") != "9.9.9.0/24,10.20.0.0/16" || strings.Join(keys(kept), ",") != "8.8.8.8/32" {
+		t.Fatalf("kept %v, missing %v", keys(kept), keys(missing))
+	}
+	kept, missing = VerifyRoutes(owned, desired, empty, map[string]bool{RouteKey(excl.Route): true}, nil)
+	if strings.Join(keys(missing), ",") != "10.20.0.0/16" {
+		t.Fatalf("held: missing %v", keys(missing))
+	}
+	if _, missing = VerifyRoutes(owned, desired, empty, nil, IsTunnelRoute); strings.Join(keys(missing), ",") != "10.20.0.0/16" {
+		t.Fatalf("tunnels only: missing %v", keys(missing))
+	}
+	there := func(domain.Family) ([]domain.Route, error) { return []domain.Route{excl.Route, tun.Route}, nil }
+	if kept, missing = VerifyRoutes(owned, desired, there, nil, nil); len(missing) != 0 || len(kept) != 3 {
+		t.Fatalf("all there: kept %v, missing %v", keys(kept), keys(missing))
+	}
+	failed := func(domain.Family) ([]domain.Route, error) { return nil, errors.New("read failed") }
+	if kept, missing = VerifyRoutes(owned, desired, failed, nil, nil); len(missing) != 0 || len(kept) != 3 {
+		t.Fatal("a failed read changed the records")
 	}
 }

@@ -45,9 +45,22 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 	}
 
 	// Ownership drift (desired vs actual) — same computation as State/dashboard.
-	if dr := s.computeDrift(ctx, s.actualManagedRoutes(ctx)); dr.Pending {
+	dr := s.computeDrift(ctx, s.actualManagedRoutes(ctx))
+	switch {
+	case len(dr.Held) > 0:
+		them := "them"
+		if len(dr.Held) == 1 {
+			them = "it"
+		}
+		add("drift", domain.CheckWarn, fmt.Sprintf("another program keeps removing %s; RiftRoute stopped putting %s back until %s",
+			heldText(dr.Held), them, dr.Held[0].Until.Local().Format("15:04")),
+			"a VPN client's own routing or kill switch is the usual cause: let these destinations through in its split-tunnel settings")
+	case dr.Missing > 0:
+		add("drift", domain.CheckWarn, fmt.Sprintf("%d route(s) RiftRoute installed are gone from the kernel (another program removed them)", dr.Missing),
+			"auto-apply puts them back; with it off, run `riftroute apply`")
+	case dr.Pending:
 		add("drift", domain.CheckWarn, "reconciliation pending (desired != actual)", "run `riftroute apply` to converge")
-	} else {
+	default:
 		add("drift", domain.CheckPass, "desired routing matches actual", "")
 	}
 
@@ -221,6 +234,19 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 
 // narrowedText says what's kept out of a tunnel's routes on this network
 // ("" for nothing).
+// heldText names the held routes' destinations, a few of them.
+func heldText(hs []domain.HeldRoute) string {
+	var dst []string
+	for i, h := range hs {
+		if i == 3 {
+			dst = append(dst, fmt.Sprintf("and %d more", len(hs)-3))
+			break
+		}
+		dst = append(dst, h.Route.DstCIDR)
+	}
+	return strings.Join(dst, ", ")
+}
+
 func narrowedText(ns []domain.TunnelNarrowed) string {
 	var out []string
 	for _, n := range ns {

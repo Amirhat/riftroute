@@ -1,6 +1,8 @@
 package macos
 
 import (
+	"errors"
+	"net/netip"
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -56,5 +58,29 @@ func TestPickPhysicalDefaultSkipsNonMainTableAndReportsMiss(t *testing.T) {
 	}
 	if _, _, ok := pickPhysicalDefault(routes, vpnByName); ok {
 		t.Fatal("a table-5252 default (or a gateway-less tunnel) must not count as the physical gateway")
+	}
+}
+
+// The winning default answers when it's physical (Ethernet beside Wi-Fi:
+// whichever macOS made primary), never when a tunnel's wins.
+func TestPhysicalWinner(t *testing.T) {
+	phys := func(n string) bool { return n == "en0" || n == "en7" }
+	gw := netip.MustParseAddr("10.0.0.1")
+	if a, ifn, ok := physicalWinner(gw, "en7", nil, phys); !ok || a != gw || ifn != "en7" {
+		t.Fatalf("Ethernet winning: %v %s %v", a, ifn, ok)
+	}
+	for _, tc := range []struct {
+		gw    netip.Addr
+		iface string
+		err   error
+	}{
+		{netip.MustParseAddr("10.8.0.1"), "utun4", nil}, // a VPN's default wins
+		{netip.Addr{}, "ipsec0", nil},                   // on-link, no next hop
+		{gw, "en7", errors.New("no default route")},
+		{netip.MustParseAddr("fe80::1"), "en0", nil},
+	} {
+		if _, _, ok := physicalWinner(tc.gw, tc.iface, tc.err, phys); ok {
+			t.Errorf("answered for %v via %s (%v)", tc.gw, tc.iface, tc.err)
+		}
 	}
 }

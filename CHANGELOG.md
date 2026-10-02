@@ -4,6 +4,30 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A route another program removes is put back.** When a VPN client (or
+  anything else) deleted a route RiftRoute had installed without changing
+  the default route, nothing noticed: drift compared against RiftRoute's own
+  records and read "in sync", and the route stayed gone. Drift now checks
+  the kernel, so the dashboard, `status` and `doctor` show such routes. With
+  auto-apply on, RiftRoute looks every 30 seconds and puts them back through
+  the usual guarded apply. With it off, `riftroute apply` does. A route
+  removed again and again (three times in 10 minutes) isn't fought over: it
+  is left out for 30 minutes and `doctor` says another program keeps
+  removing it. A tunnel's own apply still puts back only tunnel routes.
+  Reported, with a first fix, by [@lzcook](https://github.com/lzcook) (#7).
+- **The physical gateway is the one macOS uses.** With Wi-Fi and Ethernet
+  both up and no VPN winning, exclude routes went through the first
+  interface by name, not the one macOS made primary. The winning default's
+  next hop now counts first when it's physical. (#7)
+- **A new router behind the VPN is noticed.** With a VPN's default winning,
+  a change of the physical gateway — a new Wi-Fi network with the same
+  addressing, Ethernet plugged in — fired no network event, and exclude
+  routes kept the old next hop until something else changed. The network
+  watcher now follows the physical defaults too. (#7)
+
 ## [0.7.0] — 2026-10-02
 
 Anonymous telemetry, with the exact report always one click away, and a

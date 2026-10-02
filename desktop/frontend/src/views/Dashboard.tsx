@@ -3,7 +3,7 @@ import { Card, CardHeader, Label, Badge, Dot, Addr, Skeleton, CapBadge } from '.
 import { DaemonSetup } from '../components/DaemonSetup'
 import { BuildNotes } from '../components/BuildNotes'
 import { fmtBuildMeta, fmtUptime } from '../lib/format'
-import type { State } from '../types'
+import type { DriftStatus, State } from '../types'
 
 export function Dashboard() {
   const { data, isLoading, isError, error, refetch } = useStateQuery()
@@ -46,15 +46,9 @@ function DashboardContent({ state }: { state: State }) {
         />
         <HeadlineCard
           label="Drift"
-          value={state.drift.pending ? (state.drift.reason ? 'Attention' : 'Pending') : 'None'}
-          tone={state.drift.pending ? 'warning' : 'success'}
-          sub={
-            state.drift.reason
-              ? state.drift.reason
-              : state.drift.pending
-                ? `+${state.drift.adds} to add · −${state.drift.dels} to remove`
-                : 'desired = actual'
-          }
+          value={state.drift.pending ? (state.drift.reason ? 'Attention' : 'Pending') : state.drift.held?.length ? 'Held' : 'None'}
+          tone={state.drift.pending || state.drift.held?.length ? 'warning' : 'success'}
+          sub={driftSub(state.drift)}
         />
       </div>
 
@@ -221,3 +215,18 @@ function DashboardSkeleton() {
   )
 }
 
+// driftSub explains the drift card: why desired can't be computed, what an
+// apply would change (routes another program removed among the adds), or
+// what RiftRoute stopped putting back because another program keeps
+// removing it.
+export function driftSub(d: DriftStatus): string {
+  if (d.reason) return d.reason
+  const held = d.held ?? []
+  const heldText = held.length
+    ? `another program keeps removing ${held.length} route${held.length === 1 ? '' : 's'}; not put back until ${new Date(held[0].until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : ''
+  if (!d.pending) return heldText || 'desired = actual'
+  const removed = d.missing ? ` (${d.missing} removed by another program)` : ''
+  const change = `+${d.adds} to add${removed} · −${d.dels} to remove`
+  return heldText ? `${change} · ${heldText}` : change
+}

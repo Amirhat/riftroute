@@ -82,7 +82,7 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 | Routing models | Exclude (Model A: host/CIDR routes) and Include — Linux **Model B** (dedicated table `5252` + `ip rule … proto riftroute`) or macOS **PF `route-to`** anchors (the Darwin analogue; policy routing + per-app parity) |
 | Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark; macOS PF match on uid/user) |
 | Lists | Inline static + subscribable remote lists (HTTPS-only, size-capped, checksummed, never executed) |
-| Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails |
+| Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails; a route another program removes is put back — and left alone, with a warning, if it keeps being removed |
 | Tunnels | Run an **OpenVPN**, **WireGuard** or **IKEv2** (certificate, username and password, or shared secret) connection as a split tunnel next to your main VPN — only the networks you list go through it; the server can't take the default route or DNS. A route that would carry your router's network, a DNS server or a tunnel's own server keeps those out and routes the rest, and says so. When it's down, its networks can be blocked rather than leak |
 | Profiles through a tunnel | `mode: tunnel` sends a profile's destinations (domains, lists, wildcards) through one of your tunnels, switched on and off without disconnecting it |
 | Kill switch | Default-drop egress fence (nftables on Linux / pf on macOS) with a reconnect allow-list |
