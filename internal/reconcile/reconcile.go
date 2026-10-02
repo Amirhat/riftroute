@@ -59,13 +59,15 @@ func (r *Reconciler) Reconcile(ctx context.Context) (safety.Result, error) {
 		return res, err
 	}
 	var buildErr error
+	opts := options()
+	opts.Background = true // nobody's change: it doesn't hold off a staged update's idle gate
 	res, err := r.proto.ApplyBuilt(ctx, func(ctx context.Context, _ []domain.ManagedRoute, o *safety.Options) ([]domain.ManagedRoute, []domain.ManagedRule, error) {
 		desired, rules, physGW, record, err := r.svc.DesiredForApply(ctx)
 		buildErr = err
 		o.UseGateway(physGW)
 		o.OnCommit = record
 		return desired, rules, err
-	}, options())
+	}, opts)
 	if buildErr != nil {
 		// Fail-safe: cannot resolve gateway/desired → keep existing routes.
 		r.log.Warn("auto-apply skipped: cannot derive desired state", "err", buildErr)
