@@ -159,6 +159,19 @@ const (
 	decRollbackShutdown             // the daemon stopped before it was kept
 )
 
+// code is why() as a fixed word (the audit's Codes).
+func (d decision) code() string {
+	switch d {
+	case decRollbackWatchdog:
+		return "watchdog"
+	case decRollbackUnconfirmed:
+		return "unconfirmed"
+	case decRollbackShutdown:
+		return "shutdown"
+	}
+	return "requested"
+}
+
 func (d decision) why() string {
 	switch d {
 	case decRollbackWatchdog:
@@ -518,7 +531,7 @@ func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRou
 		vet = &plan
 	}
 	if vs := checkGuardrails(ctx, p.prov, desired, vet, opts.PhysGW); len(vs) > 0 {
-		p.audit(opts.Actor, "apply", "refused", violationSummary(vs), &plan, false)
+		p.audit(opts.Actor, "apply", "refused", violationSummary(vs), &plan, false, violationRules(vs)...)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
 	mark(ctx, func(t *timing) *time.Time { return &t.vetted })
@@ -608,7 +621,7 @@ func (p *Protocol) ApplyPlan(ctx context.Context, action string, plan domain.Pla
 	}
 	progress.Report(ctx, domain.StepChecking, 0, 0)
 	if vs := checkPlanGuardrails(plan); len(vs) > 0 {
-		p.audit(opts.Actor, action, "refused", violationSummary(vs), &plan, false)
+		p.audit(opts.Actor, action, "refused", violationSummary(vs), &plan, false, violationRules(vs)...)
 		return Result{Plan: plan, Diff: diff, Violations: vs, Status: domain.TxFailed, Error: ErrGuardrail.Error()}, ErrGuardrail
 	}
 	mark(ctx, func(t *timing) *time.Time { return &t.vetted })
@@ -799,7 +812,7 @@ func (p *Protocol) resolve(pt *pendingTx, actor domain.Actor) {
 		}
 		p.clearPending(pt.id)
 		pt.result = domain.TxRolledBack
-		p.audit(actor, "rollback", "rolled_back", d.why(), nil, true)
+		p.audit(actor, "rollback", "rolled_back", d.why(), nil, true, d.code())
 	}
 	p.finishTx(pt)
 }
@@ -1242,12 +1255,13 @@ func (p *Protocol) auditApplied(actor domain.Actor, action string, plan *domain.
 	})
 }
 
-func (p *Protocol) audit(actor domain.Actor, action, result, reason string, plan *domain.Plan, rollback bool) {
+func (p *Protocol) audit(actor domain.Actor, action, result, reason string, plan *domain.Plan, rollback bool, codes ...string) {
 	if p.store == nil {
 		return
 	}
 	_, _ = p.store.AppendAudit(domain.AuditEvent{
 		TS: p.clock.Now(), Actor: actor, Action: action, Result: result, Reason: reason, Plan: plan, Rollback: rollback,
+		Codes: codes,
 	})
 }
 
@@ -1329,11 +1343,16 @@ func ruleAsRoute(r *domain.ManagedRule) domain.Route {
 }
 
 func violationSummary(vs []Violation) string {
+	return "guardrails: " + fmt.Sprint(violationRules(vs))
+}
+
+// violationRules are the guardrail rules a change broke.
+func violationRules(vs []Violation) []string {
 	parts := make([]string, 0, len(vs))
 	for _, v := range vs {
 		parts = append(parts, v.Rule)
 	}
-	return "guardrails: " + fmt.Sprint(parts)
+	return parts
 }
 
 func errString(err error) string {
