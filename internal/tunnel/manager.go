@@ -123,6 +123,10 @@ type live struct {
 	// set and the tunnel isn't connected, a block-mode tunnel refuses its
 	// destinations.
 	want bool
+	// loggedIn fingerprints the login that last connected (IKEv2 EAP): a
+	// rejection of the same one is taken for the server's trouble, not a
+	// wrong password (ikeLoginWorked).
+	loggedIn string
 }
 
 type session struct {

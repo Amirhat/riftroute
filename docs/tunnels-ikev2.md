@@ -231,7 +231,11 @@ protocols.
    - EAP and PSK profiles (done): secrets on stdin, never in the
      arguments, at most 128 characters (macOS's getpass reads no more; one
      longer is refused rather than cut). A rejected username or password
-     ends the session instead of retrying, so it can't lock the account. The
+     ends the session instead of retrying, so it can't lock the account —
+     unless that same login connected since the daemon started: then it's
+     the server's backend (RADIUS, a directory) failing for a moment, likely,
+     and it's tried again after 5, 15 and 30 minutes; a fourth rejection in
+     a row ends the session (the review's MEDIUM). The
      Docker test logs in with EAP on 5.9 and 6.1, refuses a wrong password
      once, and logs in with a shared secret on 6.1. On Debian/Ubuntu
      EAP-MSCHAPv2 is `libcharon-extauth-plugins` (in the install help);

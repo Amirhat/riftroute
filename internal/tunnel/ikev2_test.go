@@ -30,8 +30,11 @@ func fastIKE(t *testing.T) {
 	poll, start, conn, down, stop, bmin, bmax := ikePoll, ikeStartWait, ikeConnectWait, ikeDownAfter, ikeStopWait, ikeBackoffMin, ikeBackoffMax
 	ikePoll, ikeStartWait, ikeConnectWait, ikeDownAfter, ikeStopWait = 5*time.Millisecond, time.Second, 2*time.Second, 30*time.Millisecond, time.Second
 	ikeBackoffMin, ikeBackoffMax = time.Millisecond, 5*time.Millisecond
+	waits := ikeRejectWaits
+	ikeRejectWaits = []time.Duration{20 * time.Millisecond, 40 * time.Millisecond, 60 * time.Millisecond}
 	t.Cleanup(func() {
 		ikePoll, ikeStartWait, ikeConnectWait, ikeDownAfter, ikeStopWait, ikeBackoffMin, ikeBackoffMax = poll, start, conn, down, stop, bmin, bmax
+		ikeRejectWaits = waits
 	})
 }
 
@@ -335,6 +338,62 @@ func TestIKEv2RejectedPasswordIsNotRetried(t *testing.T) {
 	st := waitState(t, h.m, "eap", domain.TunnelFailed)
 	if !strings.Contains(st.LastError, "rejected the username or password") || strings.Contains(st.LastError, "gave up") || len(fi.Started()) != 1 {
 		t.Fatalf("%q after %d attempts", st.LastError, len(fi.Started()))
+	}
+}
+
+// A rejection of a login that has connected (since the daemon started) is
+// most likely the server's backend failing for a moment: it's tried again,
+// slowly, and the tunnel comes back once the server takes it again — a
+// block-mode one blocking meanwhile. Rejected a few times in a row, it
+// gives up.
+func TestIKEv2RejectionOfALoginThatWorkedIsRetried(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	spec := domain.TunnelSpec{Name: "eap", Type: domain.TunnelIKEv2, Routes: []string{"10.30.0.0/16"}, WhenDown: domain.TunnelBlock,
+		Config: profile("IKEv2", `
+        <key>RemoteAddress</key><string>203.0.113.9</string>
+        <key>AuthenticationMethod</key><string>None</string>
+        <key>ExtendedAuthEnabled</key><true/>
+        <key>AuthName</key><string>alice</string>
+        <key>AuthPassword</key><string>right</string>`, dataPayload(payloadRoot, "CA-UUID", newTestPKI(t).caDER, ""))}
+	if _, err := h.m.Save(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+
+	// The backend fails for a moment: rejected, then taken again.
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	fi.Drop()
+	waitFor(t, "two rejected attempts", func() bool { return len(fi.Started()) >= 3 })
+	if st, _ := h.m.Status("eap"); st.State == domain.TunnelFailed || !strings.Contains(st.LastError, "rejected the username or password") {
+		t.Fatalf("after a rejection: %+v", st)
+	}
+	fi.Fail = nil
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+
+	// Rejected again and again: it gives up, saying so.
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	fi.Drop()
+	st := waitState(t, h.m, "eap", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "gave up after 4 rejections in a row") {
+		t.Fatalf("gave up with %q", st.LastError)
+	}
+
+	// A login that never connected is never tried twice (see
+	// TestIKEv2RejectedPasswordIsNotRetried); nor is a changed one.
+	spec.Password, spec.Config = "changed", ""
+	if _, err := h.m.Save(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	n := len(fi.Started())
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	st = waitState(t, h.m, "eap", domain.TunnelFailed)
+	if len(fi.Started()) != n+1 || strings.Contains(st.LastError, "gave up") {
+		t.Fatalf("a changed password: %d attempts, %q", len(fi.Started())-n, st.LastError)
 	}
 }
 

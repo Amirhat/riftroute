@@ -44,9 +44,11 @@ dashboard that shows a bad release before most installs take it.
   tunnel add` asks for it (or reads it with `--password-stdin`), and so
   does the app. A shared secret needs strongSwan 6.1 or later: RiftRoute's
   own on macOS; on Linux an older one is refused, saying why. Secrets go to
-  strongSwan on its input, never in its command line. A rejected username
-  or password stops the tunnel instead of retrying, so it can't lock the
-  account.
+  strongSwan on its input, never in its command line. A username and
+  password the server rejects stop the tunnel instead of retrying, so they
+  can't lock the account — unless they had connected: then the server's
+  login backend is likely failing for a moment, and they're tried again
+  after 5, 15 and 30 minutes before the tunnel gives up.
 
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to

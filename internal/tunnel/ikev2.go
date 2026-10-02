@@ -2,7 +2,9 @@ package tunnel
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -84,6 +86,11 @@ var (
 	ikeStopWait = 4 * time.Second
 	// ikeBackoff bounds the pause before the next attempt.
 	ikeBackoffMin, ikeBackoffMax = 2 * time.Second, time.Minute
+	// ikeRejectWaits are the pauses before trying again a login the server
+	// rejected after it had worked (its backend's trouble, likely): a few
+	// tries over an hour, so a password that really changed can't lock the
+	// account. One more rejection in a row and the session ends.
+	ikeRejectWaits = []time.Duration{5 * time.Minute, 15 * time.Minute, 30 * time.Minute}
 )
 
 // ikeSession is one IKEv2 session: a charon-cmd per attempt, restarted
@@ -107,11 +114,18 @@ type errFatal struct{ msg string }
 
 func (e errFatal) Error() string { return e.msg }
 
+// errRejected: the server rejected a login that had worked; tried again,
+// slowly (ikeRejectWaits).
+type errRejected struct{ msg string }
+
+func (e errRejected) Error() string { return e.msg }
+
 func (k *ikeSession) run(ctx context.Context) {
 	if err := k.resolve(ctx); err != nil {
 		k.m.setErr(k.name, err.Error())
 		return
 	}
+	rejects := 0 // rejections in a row of a login that had worked
 	for attempt := 0; ; attempt++ {
 		wasUp, err := k.attempt(ctx, k.remotes[attempt%len(k.remotes)].Host)
 		if ctx.Err() != nil || k.s.stopping.Load() {
@@ -121,6 +135,17 @@ func (k *ikeSession) run(ctx context.Context) {
 		if errors.As(err, &fatal) {
 			k.m.setErr(k.name, fatal.msg)
 			return
+		}
+		var rejected errRejected
+		switch {
+		case errors.As(err, &rejected):
+			rejects++
+			if rejects > len(ikeRejectWaits) {
+				k.m.setErr(k.name, fmt.Sprintf("gave up after %d rejections in a row: %s", rejects, rejected.msg))
+				return
+			}
+		case wasUp:
+			rejects = 0
 		}
 		giveUp := false
 		var failures int
@@ -145,6 +170,9 @@ func (k *ikeSession) run(ctx context.Context) {
 		}
 		k.m.changed()
 		wait := min(ikeBackoffMin<<min(failures-1, 10), ikeBackoffMax)
+		if rejects > 0 && errors.As(err, &rejected) {
+			wait = ikeRejectWaits[rejects-1]
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -246,7 +274,13 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 			}
 			why := diagnoseIKE(k.name, k.d.Via, k.c.Auth, proc.Tail())
 			if k.c.Auth == IKEv2EAP && ikeRejected(proc.Tail()) {
-				// Trying the same password again could lock the account.
+				if k.loginWorked() {
+					// It connected with this very login: likely the server's
+					// backend (RADIUS, the directory) failing for a moment.
+					return false, errRejected{why}
+				}
+				// Never worked: trying the same password again could lock
+				// the account.
 				return false, errFatal{why}
 			}
 			return false, errors.New(why)
@@ -375,7 +409,9 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 		return why
 	}
 	now := time.Now()
+	login := k.loginPrint()
 	k.m.update(k.name, func(r *live) {
+		r.loggedIn = login
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = a.iface, a.local, a.v6
 		if st.Server.IsValid() {
@@ -390,6 +426,21 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 	k.m.requestApply()
 	k.m.changed()
 	return ""
+}
+
+// loginPrint fingerprints the session's login: the profile and what it
+// logs in with.
+func (k *ikeSession) loginPrint() string {
+	h := sha256.Sum256([]byte(k.d.Config + "\x00" + k.d.Username + "\x00" + k.d.Password))
+	return hex.EncodeToString(h[:])
+}
+
+// loginWorked reports whether this very login has connected (since the
+// daemon started).
+func (k *ikeSession) loginWorked() bool {
+	login, worked := k.loginPrint(), false
+	k.m.update(k.name, func(r *live) { worked = r.loggedIn == login })
+	return worked
 }
 
 // ikeRejected reports whether the server turned the login down: it said
