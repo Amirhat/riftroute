@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite: nothing to install on the host
 
+	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -43,6 +45,20 @@ var migrations = []string{
 	   rollout_percent INTEGER NOT NULL,
 	   halt            INTEGER NOT NULL,
 	   updated_at      INTEGER NOT NULL
+	 );`,
+	// Anonymous telemetry reports: one per install per day (a repeat
+	// replaces it), the validated report as doc. Kept telemetryKeepDays.
+	`CREATE TABLE telemetry_reports (
+	   day      TEXT NOT NULL,
+	   install  TEXT NOT NULL,
+	   level    TEXT NOT NULL,
+	   version  TEXT NOT NULL,
+	   os       TEXT NOT NULL,
+	   arch     TEXT NOT NULL,
+	   channel  TEXT NOT NULL,
+	   doc      TEXT NOT NULL,
+	   received INTEGER NOT NULL,
+	   PRIMARY KEY (day, install)
 	 );`,
 }
 
@@ -165,6 +181,49 @@ func (s *store) setAdvice(channel string, a update.Advice, now time.Time) error 
 	_, err := s.db.Exec(`INSERT INTO update_channels(channel, rollout_percent, halt, updated_at) VALUES(?,?,?,?)
 	   ON CONFLICT(channel) DO UPDATE SET rollout_percent=excluded.rollout_percent, halt=excluded.halt, updated_at=excluded.updated_at`,
 		channel, a.RolloutPercent, halt, now.Unix())
+	return err
+}
+
+// putReport stores a validated report, replacing the install's report for
+// the same day.
+func (s *store) putReport(r *telemetry.Report, now time.Time) error {
+	doc, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO telemetry_reports(day, install, level, version, os, arch, channel, doc, received)
+	   VALUES(?,?,?,?,?,?,?,?,?)
+	   ON CONFLICT(day, install) DO UPDATE SET level=excluded.level, version=excluded.version, os=excluded.os,
+	     arch=excluded.arch, channel=excluded.channel, doc=excluded.doc, received=excluded.received`,
+		r.Day, r.Install, r.Level, r.App.Version, r.App.OS, r.App.Arch, r.App.Channel, string(doc), now.Unix())
+	return err
+}
+
+// reports returns the reports for days from..to (YYYY-MM-DD), oldest first.
+func (s *store) reports(from, to string) ([]telemetry.Report, error) {
+	rows, err := s.db.Query(`SELECT doc FROM telemetry_reports WHERE day>=? AND day<=? ORDER BY day, received`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []telemetry.Report
+	for rows.Next() {
+		var doc string
+		if err := rows.Scan(&doc); err != nil {
+			return nil, err
+		}
+		var r telemetry.Report
+		if err := json.Unmarshal([]byte(doc), &r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// pruneReports deletes reports for days before day.
+func (s *store) pruneReports(day string) error {
+	_, err := s.db.Exec(`DELETE FROM telemetry_reports WHERE day<?`, day)
 	return err
 }
 

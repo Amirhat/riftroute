@@ -1,11 +1,12 @@
 // Command riftroute-server serves riftroute.tellnew.tech: the bilingual
-// landing page and the admin dashboard (later: update API, telemetry ingest,
-// bug-report upload). It binds loopback only — Caddy terminates TLS in front
-// of it — and refuses any other address.
+// landing page, the admin dashboard, the update API and telemetry ingest
+// (later: bug-report upload). It binds loopback only — Caddy terminates TLS
+// in front of it — and refuses any other address.
 //
 //	riftroute-server serve  -listen 127.0.0.1:7780 -data /var/lib/riftroute-server
 //	riftroute-server passwd -data /var/lib/riftroute-server   (prompts; never an argument)
 //	riftroute-server publish -data /var/lib/riftroute-server -channel stable -manifest m.json -sig m.json.sig [-rollout 100]
+//	riftroute-server telemetry-token -data /var/lib/riftroute-server   (prints a new summary-API token once)
 //	riftroute-server version
 package main
 
@@ -46,6 +47,8 @@ func main() {
 		err = passwd(os.Args[2:])
 	case "publish":
 		err = publish(os.Args[2:])
+	case "telemetry-token":
+		err = telemetryToken(os.Args[2:])
 	case "version":
 		fmt.Println(buildinfo.Short(buildinfo.Current(version)))
 	default:
@@ -59,7 +62,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: riftroute-server serve|passwd|publish|version [flags]")
+	fmt.Fprintln(os.Stderr, "usage: riftroute-server serve|passwd|publish|telemetry-token|version [flags]")
 }
 
 func serve(args []string) error {
@@ -134,7 +137,7 @@ func passwd(args []string) error {
 	fs := flag.NewFlagSet("passwd", flag.ExitOnError)
 	data := fs.String("data", "/var/lib/riftroute-server", "data directory")
 	_ = fs.Parse(args)
-	if err := requireDataOwner(*data); err != nil {
+	if err := requireDataOwner(*data, "passwd"); err != nil {
 		return err
 	}
 
@@ -184,7 +187,7 @@ func publish(args []string) error {
 	if *manifest == "" || *sig == "" {
 		return errors.New("-manifest and -sig are required")
 	}
-	if err := requireDataOwner(*data); err != nil {
+	if err := requireDataOwner(*data, "publish"); err != nil {
 		return err
 	}
 	raw, err := os.ReadFile(*manifest)
@@ -200,5 +203,25 @@ func publish(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "published %s %s (%d assets)\n", *channel, m.Version, len(m.Assets))
+	return nil
+}
+
+// telemetryToken creates the read-only token for the telemetry summary API
+// (GET /api/v1/telemetry/summary), replacing any earlier one. It's printed
+// once, to stdout; the server keeps only its hash.
+func telemetryToken(args []string) error {
+	fs := flag.NewFlagSet("telemetry-token", flag.ExitOnError)
+	data := fs.String("data", "/var/lib/riftroute-server", "data directory")
+	_ = fs.Parse(args)
+	if err := requireDataOwner(*data, "telemetry-token"); err != nil {
+		return err
+	}
+	token, err := server.NewTelemetryToken(*data)
+	if err != nil {
+		return err
+	}
+	fmt.Println(token)
+	fmt.Fprintln(os.Stderr, "the telemetry summary token above is shown only now; any earlier one no longer works.\n"+
+		"use it as: Authorization: Bearer <token>  on  GET /api/v1/telemetry/summary?days=7")
 	return nil
 }

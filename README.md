@@ -468,6 +468,29 @@ Maintainers: tag → CI builds the release → on your machine
 `scripts/publish-manifest.sh <tag> [channel] [rollout%]` (update server). A
 release reaches users only once its manifest is signed and published.
 
+## Telemetry
+
+RiftRoute sends an **anonymous report once a day**, so a broken release is
+noticed before most installs take it (design: [`docs/telemetry.md`](docs/telemetry.md)).
+It holds counts and versions only: the version, OS and architecture; starts,
+unclean starts and update outcomes; and at `full` (the default) how many
+profiles, rules of each kind and tunnels of each type you have, and how
+changes and tunnel connections went, by fixed error codes. **Never sent, at
+any level:** IP addresses or networks, domains, profile, list, app, user or
+tunnel names, network or host names, or anything you typed. The install id
+is random and replaced every 30 days.
+
+```bash
+riftroute telemetry               # the level, when the next report goes, when the last went
+riftroute telemetry show          # the exact report that would be sent now, and the last one sent
+riftroute telemetry basic|full|off
+```
+
+The app tells you once (with *See what's sent* and *Turn off*), and Settings →
+Telemetry shows the same; the CLI tells you on the first `status` or `doctor`.
+No report goes before you've been told (or a week after the first start, where
+nobody can be). `off` makes no request at all.
+
 ## Packaging & release
 
 `make dist` cross-compiles CLI+daemon tarballs (darwin/linux × amd64/arm64) and

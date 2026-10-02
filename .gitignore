@@ -4,6 +4,7 @@ desktop/build/bin/
 # Stray binaries from `go build ./cmd/<x>` without -o
 /riftroute
 /riftrouted
+/riftroute-server
 *.exe
 
 # Frontend build output & deps (keep the dir for go:embed via dist/gitkeep)

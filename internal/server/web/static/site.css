@@ -441,4 +441,30 @@ body.admin .later p { color: var(--ink-2); max-width: 70ch; }
 .btn.danger { background: var(--signal); color: #fff; }
 .halted { color: var(--signal); }
 .muted { color: var(--ink-2); }
-
+.small { font-size: .875rem; }
+.tabs { display: flex; gap: 6px; margin-inline-end: auto; margin-inline-start: 24px; }
+.tabs a { padding: 6px 14px; border-radius: 999px; color: var(--ink-2); font-weight: 700; text-decoration: none; }
+.tabs a:hover { color: var(--ink); }
+.tabs a[aria-current="page"] { background: var(--ground); color: var(--ink); box-shadow: inset 0 0 0 1.5px var(--rule); }
+.card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; margin-block-end: 14px; }
+.window { display: flex; gap: 6px; }
+.window a { padding: 4px 12px; border: 1.5px solid var(--rule); border-radius: 999px; color: var(--ink); font-size: .875rem; font-weight: 700; text-decoration: none; }
+.window a[aria-current="page"] { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+.dash h3 { font-size: 1rem; margin-block: 0 8px; }
+.daily { margin: 22px 0 0; }
+.daily svg { display: block; width: 100%; height: 120px; }
+.daily rect, .shares rect { fill: var(--vpn); }
+.daily figcaption { margin-block-start: 8px; font-size: .875rem; color: var(--ink-2); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 22px; }
+.scroll { overflow-x: auto; }
+.tbl { border-collapse: collapse; width: 100%; font-size: .9375rem; font-variant-numeric: tabular-nums; }
+.tbl th, .tbl td { padding: 6px 10px 6px 0; text-align: start; vertical-align: top; border-block-end: 1px solid var(--rule); }
+.tbl thead th { font-size: .8125rem; color: var(--ink-2); font-weight: 700; white-space: nowrap; }
+.tbl tbody th { font-family: var(--mono); font-weight: 700; }
+.shares th { font-family: var(--sans) !important; font-weight: 400 !important; width: 45%; }
+.shares td.bar { width: 40%; }
+.shares svg { display: block; width: 100%; height: 8px; margin-block-start: 8px; background: var(--ground-2); border-radius: 4px; }
+.stats.small dd { font-size: 1rem; }
+.stats.small { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); margin-block-end: 12px; }
+body.admin .top { flex-wrap: wrap; }
+.dash > * { min-width: 0; }

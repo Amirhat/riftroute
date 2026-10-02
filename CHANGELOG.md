@@ -4,6 +4,43 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Anonymous telemetry, with the exact report always one click away, and a
+dashboard that shows a bad release before most installs take it.
+
+### Added
+- **An anonymous daily report** (docs/telemetry.md). Counts and versions
+  only: version, OS and architecture; starts, unclean starts and update
+  outcomes; at `full` (the default), what's configured (how many profiles,
+  rules of each kind, tunnels of each type) and how changes and tunnel
+  connections went, by fixed error codes. Never an address, a network, a
+  domain, a name, or anything you typed — at any level, hashed or not; the
+  report holds only numbers and values from fixed lists, and both ends
+  refuse anything else. The install id is random and renewed every 30
+  days. `basic` sends the first half only; `off` makes no request at all
+  and keeps no counts.
+- **You're told before anything is sent.** The app shows a one-time notice
+  with *See what's sent* and a one-click *Turn off*; the CLI tells you on
+  the first `riftroute status` or `doctor` on a terminal. No report goes
+  until then (or a week after the first start, where nobody can be told).
+- **The exact report.** `riftroute telemetry show`, the notice, and
+  Settings → Telemetry show the report as it would be sent now, the last
+  one sent, and when the next goes (`GET /telemetry` on the daemon).
+- **Monitoring on the update server.** Reports are taken strictly (16 KiB,
+  schema-checked, one per install per day, throttled, no address
+  recorded) and kept 180 days. The admin dashboard shows, for 7, 30 or 90
+  days, installs per day, each version's unclean starts, updates and
+  rollbacks, failed and slow changes and tunnel failures; tunnel sessions
+  per protocol with failure causes; why changes were refused or rolled
+  back; platforms and feature use — and flags a version doing clearly worse
+  than the one before it. The same numbers are a JSON summary behind a
+  read-only token (`riftroute-server telemetry-token`).
+
+### Changed
+- `riftroute update mode` no longer says automatic install is still to
+  come: it's been here since 0.2.6.
+
 ## [0.6.1] — 2026-10-01
 
 IKEv2 tunnels connect to servers that don't ask for the client's certificate.
