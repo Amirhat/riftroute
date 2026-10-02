@@ -171,9 +171,14 @@ func (s *Sender) step(ctx context.Context) {
 	}
 	if p := st.Pending; p != nil && (p.Level != string(level) || dayPast(p.Day, now)) {
 		// Built at a level the user has since changed, or for a day the
-		// server no longer takes: built afresh (its counts are still on the
-		// counters, its audit events not yet counted).
+		// server no longer takes: not sent again. The server may have it
+		// (it didn't answer), so what it carries is taken as sent rather
+		// than sent twice — a release looking a little better than it is
+		// beats one looking broken.
+		st.AuditAfter, st.Taken, st.TakenCounts = st.PendingAudit, st.PendingID, st.PendingCounts
 		dropPending(&st)
+		_ = s.env.SaveState(st)
+		s.settle(&st)
 	}
 	if st.Pending == nil {
 		if why := s.waiting(st, now); why != "" {

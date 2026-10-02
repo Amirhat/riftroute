@@ -131,9 +131,13 @@ nothing.
   report per install and day, so a copy it already had is replaced, not
   counted twice. Only then do the counters lose what it carried, settled
   by the report's id so a crash in between can't take them off twice. A
-  report the server refused, built for a day it no longer takes, or at a
-  level the user has since changed isn't sent again: its counts go with
-  the next one. Nothing is queued beyond that one report and the counters.
+  report the server refused isn't sent again, and its counts go with the
+  next one (the server doesn't have them). One built for a day the server
+  no longer takes, or at a level the user has since changed, isn't sent
+  again either, but the server may have it: its counts are taken as sent
+  — a possible undercount rather than an overcount that would make a
+  release look broken. Nothing is queued beyond that one report and the
+  counters.
 - To `https://riftroute.tellnew.tech/api/v1/telemetry`; no fallback host.
   A daemon under `-provider fake` sends nothing unless given
   `-telemetry-url` (for testing against a local server).

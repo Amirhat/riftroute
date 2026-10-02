@@ -254,7 +254,8 @@ func TestSenderResendsTheSameReport(t *testing.T) {
 
 // A report the server refused isn't sent again: it doesn't have it, so its
 // counts go with the next one. One whose day the server no longer takes,
-// or built at a level the user has since changed, is built afresh.
+// or built at a level the user has since changed, isn't sent again either
+// — but the server may have it, so its counts are taken as sent.
 func TestSenderDropsWhatCantGoAgain(t *testing.T) {
 	ctx := t.Context()
 	start := time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
@@ -280,8 +281,8 @@ func TestSenderDropsWhatCantGoAgain(t *testing.T) {
 	f.status = http.StatusNoContent
 	f.at(f.state.NextAt)
 	s.step(ctx)
-	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Level != "basic" || r.Usage != nil || r.Daemon.Starts != 1 {
-		t.Fatalf("a full report went after the user chose basic: %+v", r)
+	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Level != "basic" || r.Usage != nil || r.Daemon.Starts != 0 {
+		t.Fatalf("after the user chose basic: %+v", r)
 	}
 
 	f.status = http.StatusServiceUnavailable
@@ -291,9 +292,13 @@ func TestSenderDropsWhatCantGoAgain(t *testing.T) {
 	day := f.state.Pending.Day
 	f.status = http.StatusNoContent
 	f.at(f.now.Add(72 * time.Hour))
+	env.Counters.Add(KeyUnclean, 1) // counted after it was built
 	s.step(ctx)
-	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Day == day || r.Daemon.Starts != 1 {
-		t.Fatalf("a report for a past day went: %+v", r)
+	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Day == day || r.Daemon.Starts != 0 || r.Daemon.Unclean != 1 {
+		t.Fatalf("after a report for a past day: %+v", r)
+	}
+	if c := env.Counters.Snapshot(); len(c) != 0 || f.state.Taken != "" {
+		t.Fatalf("counters %v, state %+v", c, f.state)
 	}
 }
 
