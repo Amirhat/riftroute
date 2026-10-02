@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -132,6 +133,7 @@ func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 		if skip {
 			msg += " — this release is skipped on this computer"
 			_, _ = updateState(u.env.StateDir, func(ps *persisted) { ps.Skip = m.Version })
+			u.count(telemetry.KeySkippedBroken)
 		}
 		u.set(func(s *domain.UpdateStatus) { s.State, s.Error = "error", msg })
 		_ = os.RemoveAll(stagingDir(u.env.StateDir))

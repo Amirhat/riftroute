@@ -136,7 +136,8 @@ func newWGManager(t *testing.T, sys *fakeWG) *Manager {
 		Resolve: func(context.Context, string) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Count: func(string) {}, // see newHarness
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +408,8 @@ func TestWireGuardVetsTheAddressBeforeTheInterfaceHoldsIt(t *testing.T) {
 		Resolve: func(context.Context, string) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Count: func(string) {}, // see newHarness
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)

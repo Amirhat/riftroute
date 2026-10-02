@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -87,5 +88,6 @@ func (u *Updater) repairHelpers(ctx context.Context, m update.Manifest) {
 			continue
 		}
 		u.env.Log.Info("installed the "+h.name+" RiftRoute ships", "release", m.Version, "running", u.env.Current, "path", h.path)
+		u.count(telemetry.KeyHelpersRepaired)
 	}
 }

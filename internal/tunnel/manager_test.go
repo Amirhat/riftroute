@@ -59,7 +59,10 @@ func newHarness(t *testing.T, opts ...func(*FakeLauncher)) *harness {
 		Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 			return []netip.Addr{netip.MustParseAddr("192.0.2.44")}, nil
 		},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		// Counted in every test, so a changed() called under m.mu (observe
+		// takes it) deadlocks one.
+		Count: func(string) {},
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
