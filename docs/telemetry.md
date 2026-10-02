@@ -124,8 +124,16 @@ nothing.
   with no app or CLI use) — the daemon also logs at every start that
   telemetry is on.
 - Over the normal route, like an update check (not only when a tunnel is
-  up: reports from machines whose VPN is broken matter most). A failed send
-  is retried at the next day's slot; nothing is queued beyond the counters.
+  up: reports from machines whose VPN is broken matter most).
+- **Counted once.** A report the server didn't answer (it may have taken
+  it) is sent again — the same report, its day too — 10 minutes later, then
+  less often (up to every 4 hours), until the server answers: it keeps one
+  report per install and day, so a copy it already had is replaced, not
+  counted twice. Only then do the counters lose what it carried, settled
+  by the report's id so a crash in between can't take them off twice. A
+  report the server refused, built for a day it no longer takes, or at a
+  level the user has since changed isn't sent again: its counts go with
+  the next one. Nothing is queued beyond that one report and the counters.
 - To `https://riftroute.tellnew.tech/api/v1/telemetry`; no fallback host.
   A daemon under `-provider fake` sends nothing unless given
   `-telemetry-url` (for testing against a local server).

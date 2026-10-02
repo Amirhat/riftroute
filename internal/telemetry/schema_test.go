@@ -80,8 +80,13 @@ func TestDecodeRefusesWhatsNotInTheSchema(t *testing.T) {
 			t.Errorf("%s: accepted %s", name, b)
 		}
 	}
-	if _, err := Decode(append(append([]byte{}, good...), []byte(`{}`)...)); err == nil {
-		t.Error("trailing data accepted")
+	for _, tail := range []string{`{}`, `}`, `]`, `}}]] garbage`, ` x`} {
+		if _, err := Decode(append(append([]byte{}, good...), tail...)); err == nil {
+			t.Errorf("trailing %q accepted", tail)
+		}
+	}
+	if _, err := Decode(append(append([]byte{}, good...), " \n"...)); err != nil {
+		t.Errorf("trailing whitespace refused: %v", err)
 	}
 	if _, err := Decode(make([]byte, MaxReportBytes+1)); err == nil {
 		t.Error("oversized report accepted")

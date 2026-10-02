@@ -205,3 +205,136 @@ func TestNextSlotIsTomorrow(t *testing.T) {
 		}
 	}
 }
+
+// A report the server took but whose answer was lost is sent again — the
+// same report, its day too — so the server, which keeps one report per
+// install and day, replaces it instead of counting it twice. Once it's
+// taken, the counters lose what it carried, and the next report is new.
+func TestSenderResendsTheSameReport(t *testing.T) {
+	ctx := t.Context()
+	start := time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
+	f := &fakeDaemon{level: domain.TelemetryFull, now: start, status: http.StatusBadGateway}
+	env := f.env(t, t.TempDir())
+	s := NewSender(env)
+	env.Counters.Add(KeyStarts, 3)
+	s.step(ctx)
+	f.state.NoticeSeen = start
+	f.at(f.state.NextAt)
+	s.step(ctx) // "lost": the server may have it
+	if len(f.sent()) != 1 || f.state.Pending == nil || env.Counters.Snapshot()[KeyStarts] != 3 {
+		t.Fatalf("after a lost answer: %d sent, pending %v, %v", len(f.sent()), f.state.Pending != nil, env.Counters.Snapshot())
+	}
+	if p, _ := s.Preview(ctx); p.Next == nil || !strings.Contains(p.Waiting, "again") || string(mustJSON(p.Next)) != string(f.sent()[0]) {
+		t.Fatalf("the preview doesn't show the report going again: %+v", p)
+	}
+	env.Counters.Inc(KeyStarts) // counted meanwhile: goes with the next report
+	f.at(f.state.NextAt)        // still unanswered: again, later
+	s.step(ctx)
+	if len(f.sent()) != 2 || !f.state.NextAt.Equal(f.now.Add(2*retryMin)) {
+		t.Fatalf("second try: %d sent, next %v", len(f.sent()), f.state.NextAt.Sub(f.now))
+	}
+	// Answered the next day: still that day's report (the server takes
+	// yesterday's).
+	f.at(time.Date(2026, 10, 4, 23, 0, 0, 0, time.UTC))
+	f.status = http.StatusNoContent
+	s.step(ctx)
+	got := f.sent()
+	if len(got) != 3 || string(got[2]) != string(got[0]) || mustDecode(t, got[0]).Day != "2026-10-03" {
+		t.Fatalf("not the same report again:\n%s\n%s", got[0], got[len(got)-1])
+	}
+	if c := env.Counters.Snapshot(); c[KeyStarts] != 1 || f.state.Pending != nil || f.state.Taken != "" {
+		t.Fatalf("after it was taken: %v, %+v", c, f.state)
+	}
+	f.at(f.state.NextAt)
+	s.step(ctx)
+	if r := mustDecode(t, f.sent()[3]); r.Daemon.Starts != 1 || r.Day == "2026-10-03" {
+		t.Fatalf("the next report: %s", f.sent()[3])
+	}
+}
+
+// A report the server refused isn't sent again: it doesn't have it, so its
+// counts go with the next one. One whose day the server no longer takes,
+// or built at a level the user has since changed, is built afresh.
+func TestSenderDropsWhatCantGoAgain(t *testing.T) {
+	ctx := t.Context()
+	start := time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
+	f := &fakeDaemon{level: domain.TelemetryFull, now: start, status: http.StatusBadRequest}
+	env := f.env(t, t.TempDir())
+	s := NewSender(env)
+	env.Counters.Inc(KeyStarts)
+	s.step(ctx)
+	f.state.NoticeSeen = start
+	f.at(f.state.NextAt)
+	s.step(ctx)
+	if f.state.Pending != nil || env.Counters.Snapshot()[KeyStarts] != 1 || !f.state.NextAt.After(f.now.Add(time.Hour)) {
+		t.Fatalf("after a refusal: %+v %v", f.state, env.Counters.Snapshot())
+	}
+
+	f.status = http.StatusServiceUnavailable
+	f.at(f.state.NextAt)
+	s.step(ctx)
+	if f.state.Pending == nil || f.state.Pending.Level != "full" {
+		t.Fatal("no pending report")
+	}
+	f.level = domain.TelemetryBasic
+	f.status = http.StatusNoContent
+	f.at(f.state.NextAt)
+	s.step(ctx)
+	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Level != "basic" || r.Usage != nil || r.Daemon.Starts != 1 {
+		t.Fatalf("a full report went after the user chose basic: %+v", r)
+	}
+
+	f.status = http.StatusServiceUnavailable
+	env.Counters.Inc(KeyStarts)
+	f.at(f.state.NextAt)
+	s.step(ctx)
+	day := f.state.Pending.Day
+	f.status = http.StatusNoContent
+	f.at(f.now.Add(72 * time.Hour))
+	s.step(ctx)
+	if r := mustDecode(t, f.sent()[len(f.sent())-1]); r.Day == day || r.Daemon.Starts != 1 {
+		t.Fatalf("a report for a past day went: %+v", r)
+	}
+}
+
+// A report the server took is settled on the counters once, even if the
+// daemon stopped between recording it and taking its counts off.
+func TestSenderSettlesATakenReportOnce(t *testing.T) {
+	f := &fakeDaemon{level: domain.TelemetryFull, now: time.Now(), status: http.StatusNoContent}
+	dir := t.TempDir()
+	env := f.env(t, dir)
+	env.Counters.Add(KeyStarts, 2)
+	_ = env.Counters.Flush()
+	f.state = State{FirstStart: f.now, NextAt: f.now.Add(time.Hour), Taken: "abc", TakenCounts: map[string]int{KeyStarts: 1}}
+	NewSender(env).step(t.Context())
+	if c := env.Counters.Snapshot(); c[KeyStarts] != 1 || f.state.Taken != "" {
+		t.Fatalf("not settled: %v %+v", c, f.state)
+	}
+	// Had the state not been cleared (a crash right after the counters'
+	// write), settling again takes nothing more off.
+	again := OpenCounters(dir, true)
+	_ = again.Settle("abc", map[string]int{KeyStarts: 1})
+	if c := again.Snapshot(); c[KeyStarts] != 1 {
+		t.Fatalf("settled twice: %v", c)
+	}
+}
+
+// A time scheduled while the clock was far ahead is pulled back.
+func TestSenderClockJump(t *testing.T) {
+	now := time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC)
+	f := &fakeDaemon{level: domain.TelemetryFull, now: now, status: http.StatusNoContent}
+	f.state = State{FirstStart: now.Add(-time.Hour), NoticeSeen: now, NextAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+	NewSender(f.env(t, t.TempDir())).step(t.Context())
+	if f.state.NextAt.After(now.Add(48 * time.Hour)) {
+		t.Fatalf("still scheduled for %v", f.state.NextAt)
+	}
+}
+
+func mustDecode(t *testing.T, b []byte) *Report {
+	t.Helper()
+	r, err := Decode(b)
+	if err != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	return r
+}

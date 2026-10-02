@@ -51,11 +51,16 @@ func countersFile(dir string) string { return filepath.Join(dir, "telemetry-coun
 // The zero value and nil discard everything (a test); so does one that's
 // off (SetOn).
 type Counters struct {
-	on     atomic.Bool
+	on atomic.Bool
+	// fileMu orders writes and the removal of the file: a write that
+	// raced turning telemetry off can't bring the file back.
+	fileMu sync.Mutex
 	mu     sync.Mutex
 	path   string
 	counts map[string]int
-	dirty  bool
+	// settled is the last report whose counts were taken off (Settle).
+	settled string
+	dirty   bool
 }
 
 // SetOn starts or stops counting: telemetry is on, or off. Off also
@@ -82,29 +87,38 @@ func OpenCounters(dir string, on bool) *Counters {
 		c.Discard()
 		return c
 	}
-	c.counts = readCounts(c.path)
+	f := readFile(c.path)
+	c.counts, c.settled = f.Counts, f.Settled
 	c.on.Store(true)
 	_ = c.Keep()
 	return c
 }
 
-func readCounts(path string) map[string]int {
-	out := map[string]int{}
+// countsFile is the counters file.
+type countsFile struct {
+	V       int            `json:"v"`
+	Counts  map[string]int `json:"counts"`
+	Settled string         `json:"settled,omitempty"`
+}
+
+// readFile reads the counters file (empty if there's none or it can't be
+// read), keeping only counts a report has a place for.
+func readFile(path string) countsFile {
+	out := countsFile{V: 1, Counts: map[string]int{}}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return out
 	}
-	var f struct {
-		Counts map[string]int `json:"counts"`
-	}
+	var f countsFile
 	if json.Unmarshal(b, &f) != nil {
 		return out
 	}
 	for k, n := range f.Counts {
 		if reKey.MatchString(k) && n > 0 && n <= maxCount {
-			out[k] = n
+			out.Counts[k] = n
 		}
 	}
+	out.Settled = f.Settled
 	return out
 }
 
@@ -160,25 +174,38 @@ func (c *Counters) Snapshot() map[string]int {
 	return maps.Clone(c.counts)
 }
 
-// Subtract takes away what a sent report carried, keeping what was counted
-// since.
-func (c *Counters) Subtract(sent map[string]int) {
-	if c == nil {
-		return
+// Settle takes off what the report id, which the server took, carried —
+// once: the counters remember the last report settled, so settling it
+// again (after a crash between saving the sender's state and these) takes
+// nothing off twice. What was counted since stays.
+func (c *Counters) Settle(id string, sent map[string]int) error {
+	if c == nil || c.path == "" {
+		return nil
 	}
 	c.mu.Lock()
+	if c.settled == id {
+		c.mu.Unlock()
+		return nil
+	}
 	for k, n := range sent {
 		if c.counts[k] -= n; c.counts[k] <= 0 {
 			delete(c.counts, k)
 		}
 	}
-	c.dirty = true
+	c.settled, c.dirty = id, true
 	c.mu.Unlock()
+	return c.Flush()
 }
 
-// Flush writes the counts if they changed (0600, replaced atomically).
+// Flush writes the counts if they changed (0600, replaced atomically) —
+// never while off.
 func (c *Counters) Flush() error {
 	if c == nil || c.path == "" {
+		return nil
+	}
+	c.fileMu.Lock()
+	defer c.fileMu.Unlock()
+	if !c.on.Load() {
 		return nil
 	}
 	c.mu.Lock()
@@ -186,10 +213,10 @@ func (c *Counters) Flush() error {
 		c.mu.Unlock()
 		return nil
 	}
-	snap := maps.Clone(c.counts)
+	f := countsFile{V: 1, Counts: maps.Clone(c.counts), Settled: c.settled}
 	c.dirty = false
 	c.mu.Unlock()
-	if err := writeCounts(c.path, snap); err != nil {
+	if err := writeFile(c.path, f); err != nil {
 		c.mu.Lock()
 		c.dirty = true
 		c.mu.Unlock()
@@ -198,11 +225,8 @@ func (c *Counters) Flush() error {
 	return nil
 }
 
-func writeCounts(path string, counts map[string]int) error {
-	b, err := json.Marshal(struct {
-		V      int            `json:"v"`
-		Counts map[string]int `json:"counts"`
-	}{1, counts})
+func writeFile(path string, f countsFile) error {
+	b, err := json.Marshal(f)
 	if err != nil {
 		return err
 	}
@@ -226,9 +250,9 @@ func AddToFile(dir, key string, n int) error {
 	if _, err := os.Stat(path); err != nil {
 		return nil // telemetry off (or never on)
 	}
-	counts := readCounts(path)
-	counts[key] = min(counts[key]+n, maxCount)
-	return writeCounts(path, counts)
+	f := readFile(path)
+	f.Counts[key] = min(f.Counts[key]+n, maxCount)
+	return writeFile(path, f)
 }
 
 // Keep makes sure the counters file exists, so what AddToFile counts before
@@ -251,9 +275,11 @@ func (c *Counters) Discard() {
 	if c == nil || c.path == "" {
 		return
 	}
+	c.fileMu.Lock()
+	defer c.fileMu.Unlock()
 	c.mu.Lock()
 	clear(c.counts)
-	c.dirty = false
+	c.settled, c.dirty = "", false
 	c.mu.Unlock()
 	_ = os.Remove(c.path)
 }

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
 	"time"
@@ -286,7 +287,7 @@ func Decode(b []byte) (*Report, error) {
 	if err := d.Decode(&r); err != nil {
 		return nil, fmt.Errorf("report: %w", err)
 	}
-	if d.More() {
+	if _, err := d.Token(); err != io.EOF {
 		return nil, errors.New("report: trailing data")
 	}
 	if err := r.Validate(); err != nil {

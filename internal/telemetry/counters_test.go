@@ -32,9 +32,19 @@ func TestCountersLifecycle(t *testing.T) {
 		}
 	}
 	c2.Inc(KeyStarts) // counted after the snapshot
-	c2.Subtract(snap)
+	if err := c2.Settle("r1", snap); err != nil {
+		t.Fatal(err)
+	}
 	if got := c2.Snapshot(); len(got) != 1 || got[KeyStarts] != 1 {
-		t.Fatalf("after subtract %v", got)
+		t.Fatalf("after settling %v", got)
+	}
+	// Settled once, even across a restart (a crash before the sender's
+	// state recorded it).
+	if err := OpenCounters(dir, true).Settle("r1", snap); err != nil {
+		t.Fatal(err)
+	}
+	if got := OpenCounters(dir, true).Snapshot(); len(got) != 1 || got[KeyStarts] != 1 {
+		t.Fatalf("settled twice: %v", got)
 	}
 
 	// The boot guard, before the daemon opens them.
@@ -89,5 +99,22 @@ func TestEveryCounterKeyFitsTheReport(t *testing.T) {
 				t.Errorf("%s %s", typ, code)
 			}
 		}
+	}
+}
+
+// A write racing telemetry being turned off can't bring the file back.
+func TestCountersDontWriteWhileOff(t *testing.T) {
+	dir := t.TempDir()
+	c := OpenCounters(dir, true)
+	c.Inc(KeyStarts)
+	c.SetOn(false)
+	c.mu.Lock()
+	c.counts[KeyStarts], c.dirty = 5, true // what a Flush that snapshotted before Discard would write
+	c.mu.Unlock()
+	if err := c.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "telemetry-counters.json")); !os.IsNotExist(err) {
+		t.Fatal("the counters file came back while off")
 	}
 }

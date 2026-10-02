@@ -33,6 +33,9 @@ var (
 	noticeGrace = 7 * 24 * time.Hour
 	// sendTimeout bounds one report's request.
 	sendTimeout = 30 * time.Second
+	// retryMin and retryMax bound the wait before a report the server
+	// didn't answer is sent again.
+	retryMin, retryMax = 10 * time.Minute, 4 * time.Hour
 )
 
 // State is what the daemon keeps between reports (in its settings).
@@ -46,6 +49,22 @@ type State struct {
 	LastSent   time.Time `json:"last_sent,omitzero"`
 	LastReport *Report   `json:"last_report,omitempty"`
 	NoticeSeen time.Time `json:"notice_seen,omitzero"`
+
+	// Pending is a report sent without an answer. It's sent again, the
+	// same (its day too), until the server takes it: the server keeps one
+	// report per install and day, so a copy it already had is replaced,
+	// not counted twice.
+	Pending *Report `json:"pending,omitempty"`
+	// PendingID names it (locally); PendingCounts are the counters it
+	// carries, PendingAudit the newest audit event it counts.
+	PendingID     string         `json:"pending_id,omitempty"`
+	PendingCounts map[string]int `json:"pending_counts,omitempty"`
+	PendingAudit  int64          `json:"pending_audit,omitempty"`
+	PendingTries  int            `json:"pending_tries,omitempty"`
+	// Taken is a report the server took whose counts may still be on the
+	// counters: they're settled by its id (once), then it's cleared.
+	Taken       string         `json:"taken,omitempty"`
+	TakenCounts map[string]int `json:"taken_counts,omitempty"`
 }
 
 // Preview is what the user is shown: the exact report that would go now,
@@ -130,28 +149,100 @@ func (s *Sender) step(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	s.settle(&st)
 	now := s.env.Now()
 	if !on {
-		// Off: nothing counted; when it's back on, it counts from then.
-		if st.AuditAfter != s.env.LatestAudit() {
+		// Off: nothing counted, nothing sent (not a pending report either);
+		// when it's back on, it counts from then.
+		if st.AuditAfter != s.env.LatestAudit() || st.Pending != nil {
 			st.AuditAfter = s.env.LatestAudit()
+			dropPending(&st)
 			_ = s.env.SaveState(st)
 		}
 		return
 	}
+	if st.NextAt.Sub(now) > 48*time.Hour {
+		// Scheduled while the clock was far ahead.
+		st.NextAt = nextSlot(now)
+		_ = s.env.SaveState(st)
+	}
 	if now.Before(st.NextAt) {
 		return
 	}
-	if why := s.waiting(st, now); why != "" {
-		st.NextAt = nextSlot(now)
+	if p := st.Pending; p != nil && (p.Level != string(level) || dayPast(p.Day, now)) {
+		// Built at a level the user has since changed, or for a day the
+		// server no longer takes: built afresh (its counts are still on the
+		// counters, its audit events not yet counted).
+		dropPending(&st)
+	}
+	if st.Pending == nil {
+		if why := s.waiting(st, now); why != "" {
+			st.NextAt = nextSlot(now)
+			_ = s.env.SaveState(st)
+			return
+		}
+		r, snap, last, err := s.build(ctx, &st, level, now)
+		if err != nil {
+			s.env.Log.Info("telemetry report not built; trying again tomorrow", "err", err)
+			st.NextAt = nextSlot(now)
+			_ = s.env.SaveState(st)
+			return
+		}
+		id, err := newInstall()
+		if err != nil {
+			return
+		}
+		st.Pending, st.PendingID, st.PendingCounts, st.PendingAudit, st.PendingTries = r, id, snap, last, 0
+		// Recorded before it's sent: if the daemon stops mid-send, the same
+		// report goes again.
 		_ = s.env.SaveState(st)
+	}
+	switch err := s.post(ctx, st.Pending); {
+	case err == nil:
+		s.env.Log.Info("telemetry report sent", "level", level, "day", st.Pending.Day)
+		st.AuditAfter, st.LastSent, st.LastReport = st.PendingAudit, now, st.Pending
+		st.Taken, st.TakenCounts = st.PendingID, st.PendingCounts
+		dropPending(&st)
+		st.NextAt = nextSlot(now)
+		_ = s.env.SaveState(st) // first: a crash after it settles the counts at the next start
+		s.settle(&st)
+	case errors.Is(err, errRefused):
+		// The server didn't take it (so it doesn't have it): its counts go
+		// with the next report.
+		s.env.Log.Info("telemetry report refused; its counts go with the next one", "err", err)
+		dropPending(&st)
+		st.NextAt = nextSlot(now)
+	default:
+		st.PendingTries++
+		st.NextAt = now.Add(min(retryMin<<min(st.PendingTries-1, 10), retryMax))
+		s.env.Log.Info("telemetry report not sent; sending it again later", "err", err, "at", st.NextAt)
+	}
+	_ = s.env.SaveState(st)
+}
+
+// settle takes a report the server took off the counters (once), and
+// forgets it.
+func (s *Sender) settle(st *State) {
+	if st.Taken == "" {
 		return
 	}
-	if err := s.send(ctx, &st, level, now); err != nil {
-		s.env.Log.Info("telemetry report not sent; trying again tomorrow", "err", err)
+	if err := s.env.Counters.Settle(st.Taken, st.TakenCounts); err != nil {
+		return // the next tick tries again
 	}
-	st.NextAt = nextSlot(now)
-	_ = s.env.SaveState(st)
+	st.Taken, st.TakenCounts = "", nil
+	_ = s.env.SaveState(*st)
+}
+
+// dropPending forgets a pending report.
+func dropPending(st *State) {
+	st.Pending, st.PendingID, st.PendingCounts, st.PendingAudit, st.PendingTries = nil, "", nil, 0, 0
+}
+
+// dayPast reports whether day is older than the server takes (the day
+// before its own).
+func dayPast(day string, now time.Time) bool {
+	d, err := time.Parse(time.DateOnly, day)
+	return err != nil || d.Before(now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -1))
 }
 
 // state loads the state, starting it on the first run: counting starts now
@@ -181,13 +272,12 @@ func (s *Sender) waiting(st State, now time.Time) string {
 	return ""
 }
 
-// send builds the report and posts it; on success the counters lose what
-// it carried, and it's kept as the last one sent.
-func (s *Sender) send(ctx context.Context, st *State, level domain.TelemetryLevel, now time.Time) error {
-	r, snap, last, err := s.build(ctx, st, level, now)
-	if err != nil {
-		return err
-	}
+// errRefused: the server answered, and didn't take the report.
+var errRefused = errors.New("refused")
+
+// post sends r: nil once the server took it, errRefused (wrapped) when it
+// answered no.
+func (s *Sender) post(ctx context.Context, r *Report) error {
 	body, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -206,14 +296,13 @@ func (s *Sender) send(ctx context.Context, st *State, level domain.TelemetryLeve
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("server answered %s", resp.Status)
+	switch {
+	case resp.StatusCode/100 == 2:
+		return nil
+	case resp.StatusCode/100 == 4 && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusRequestTimeout:
+		return fmt.Errorf("%w: server answered %s", errRefused, resp.Status)
 	}
-	s.env.Counters.Subtract(snap)
-	_ = s.env.Counters.Flush()
-	st.AuditAfter, st.LastSent, st.LastReport = last, now, r
-	s.env.Log.Info("telemetry report sent", "level", level, "day", r.Day)
-	return nil
+	return fmt.Errorf("server answered %s", resp.Status)
 }
 
 // build makes the report as it would go now, renewing the install id when
@@ -261,6 +350,11 @@ func (s *Sender) Preview(ctx context.Context) (Preview, error) {
 	now := s.env.Now()
 	next := st.NextAt
 	p.NextAt = &next
+	if pr := st.Pending; pr != nil && pr.Level == string(level) && !dayPast(pr.Day, now) {
+		// What goes next is the report the server didn't answer, again.
+		p.Next, p.Waiting = pr, "to send this report again (the server didn't answer)"
+		return p, nil
+	}
 	p.Waiting = s.waiting(st, now)
 	id := st.Install
 	r, _, _, err := s.build(ctx, &st, level, now)
