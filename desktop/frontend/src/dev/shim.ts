@@ -209,6 +209,8 @@ const App = {
     }),
   GetPreferences: () => req('GET', '/preferences'),
   SetPreferences: (patch: unknown) => req('PUT', '/preferences', patch),
+  GetTelemetryPreview: () => req('GET', '/telemetry'),
+  TelemetryNoticeSeen: () => req('POST', '/telemetry/notice'),
   // No app build in browser dev mode: only the daemon's own restart warning.
   BuildNotes: () =>
     req('GET', '/healthz').then((b) =>

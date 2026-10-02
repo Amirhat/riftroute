@@ -291,13 +291,11 @@ func (s *Sender) MarkNoticeSeen() error {
 }
 
 // NoticeDue reports whether the user should be told (telemetry is on and
-// they haven't been).
+// they haven't been). It doesn't wait for a report being sent: State asks.
 func (s *Sender) NoticeDue() bool {
 	if s.env.Level() == domain.TelemetryOff {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	st, err := s.env.LoadState()
 	return err == nil && st.NoticeSeen.IsZero()
 }

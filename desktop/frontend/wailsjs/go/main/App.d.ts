@@ -6,6 +6,7 @@ import {domain} from '../models';
 import {appupdate} from '../models';
 import {main} from '../models';
 import {sysinfo} from '../models';
+import {telemetry} from '../models';
 
 export function Apply(arg1:boolean,arg2:number):Promise<safety.Result>;
 
@@ -67,6 +68,8 @@ export function GetSystemApps():Promise<Array<sysinfo.App>>;
 
 export function GetSystemUsers():Promise<Array<sysinfo.User>>;
 
+export function GetTelemetryPreview():Promise<telemetry.Preview>;
+
 export function GetTunnelEngine():Promise<domain.TunnelEngine>;
 
 export function GetTunnels():Promise<Array<domain.TunnelStatus>>;
@@ -126,6 +129,8 @@ export function SetSplitDNS(arg1:Array<domain.SplitDNSRoute>):Promise<Array<doma
 export function StartDaemon():Promise<void>;
 
 export function StopDaemon():Promise<void>;
+
+export function TelemetryNoticeSeen():Promise<void>;
 
 export function UninstallDaemon():Promise<void>;
 

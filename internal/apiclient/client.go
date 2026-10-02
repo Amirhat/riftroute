@@ -24,6 +24,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/progress"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/sysinfo"
+	"github.com/Amirhat/riftroute/internal/telemetry"
 )
 
 // ConfigResult is the response to a declarative config apply.
@@ -654,6 +655,19 @@ func (c *Client) SetPreferences(ctx context.Context, patch domain.PreferencesPat
 	var p domain.Preferences
 	err := c.do(ctx, http.MethodPut, "/preferences", patch, &p)
 	return p, err
+}
+
+// TelemetryPreview returns the exact report the daemon would send now, and
+// the last one it sent.
+func (c *Client) TelemetryPreview(ctx context.Context) (telemetry.Preview, error) {
+	var p telemetry.Preview
+	err := c.do(ctx, http.MethodGet, "/telemetry", nil, &p)
+	return p, err
+}
+
+// TelemetryNoticeSeen records that the user has been told about telemetry.
+func (c *Client) TelemetryNoticeSeen(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, "/telemetry/notice", nil, nil)
 }
 
 // SplitDNS returns the persisted per-domain resolver routes.

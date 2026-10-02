@@ -29,6 +29,11 @@ func doctorCmd() *cobra.Command {
 				}
 			}
 			fmt.Fprintf(out, "\n%d pass, %d warn, %d fail — %s\n", rep.Pass, rep.Warn, rep.Fail, overall(rep.OK))
+			if stdoutTerminal(out) {
+				if st, err := client().State(cmd.Context()); err == nil {
+					tellAboutTelemetry(cmd.Context(), out, st.TelemetryNotice)
+				}
+			}
 			if !rep.OK {
 				return errDoctorIssues // distinct non-zero exit; report already printed
 			}

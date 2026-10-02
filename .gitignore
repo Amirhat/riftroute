@@ -39,3 +39,4 @@ riftroute-bugreport-*.txt
 
 # openvpn build (scripts/build-openvpn.sh): sources, work tree, outputs
 /build/
+/desktop/desktop

@@ -21,6 +21,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/platform"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/sysinfo"
+	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -545,6 +546,21 @@ func (a *App) SetPreferences(patch domain.PreferencesPatch) (domain.Preferences,
 	ctx, cancel := a.call()
 	defer cancel()
 	return a.client.SetPreferences(ctx, patch)
+}
+
+// GetTelemetryPreview returns the exact report the daemon would send now,
+// and the last one it sent.
+func (a *App) GetTelemetryPreview() (telemetry.Preview, error) {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.TelemetryPreview(ctx)
+}
+
+// TelemetryNoticeSeen records that the user has been told about telemetry.
+func (a *App) TelemetryNoticeSeen() error {
+	ctx, cancel := a.call()
+	defer cancel()
+	return a.client.TelemetryNoticeSeen(ctx)
 }
 
 // BuildNotes lists warnings about the daemon's build as seen from this app:

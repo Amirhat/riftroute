@@ -83,6 +83,36 @@ func TestAuditAppendAndList(t *testing.T) {
 	}
 }
 
+func TestAuditAfter(t *testing.T) {
+	s := openTest(t)
+	if id, err := s.LatestAuditID(); err != nil || id != 0 {
+		t.Fatalf("empty: %d %v", id, err)
+	}
+	var ids []int64
+	for _, action := range []string{"a", "b", "c"} {
+		id, err := s.AppendAudit(domain.AuditEvent{Actor: domain.ActorCLI, Action: action, Result: "applied"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if id, _ := s.LatestAuditID(); id != ids[2] {
+		t.Fatalf("latest %d, want %d", id, ids[2])
+	}
+	evs, last, err := s.AuditAfter(ids[0], 1)
+	if err != nil || len(evs) != 1 || evs[0].Action != "b" || last != ids[1] {
+		t.Fatalf("after first, one: %+v %d %v", evs, last, err)
+	}
+	evs, last, _ = s.AuditAfter(last, 0)
+	if len(evs) != 1 || evs[0].Action != "c" || last != ids[2] {
+		t.Fatalf("the rest: %+v %d", evs, last)
+	}
+	evs, last, _ = s.AuditAfter(last, 0)
+	if len(evs) != 0 || last != ids[2] {
+		t.Fatalf("none left: %+v %d", evs, last)
+	}
+}
+
 func TestOwnershipMap(t *testing.T) {
 	s := openTest(t)
 	mr := domain.ManagedRoute{

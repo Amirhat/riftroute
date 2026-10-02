@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { stateKey, useStateQuery } from '../lib/queries'
 import { Card, CardHeader, Badge, Stat, Skeleton, CapBadge, Toggle } from '../components/ui'
@@ -9,6 +9,7 @@ import { SplitDNSEditor } from '../components/SplitDNSEditor'
 import { useDaemon } from '../lib/useDaemon'
 import { BuildNotes } from '../components/BuildNotes'
 import { AppUpdateSection, useAppUpdate } from '../components/AppUpdate'
+import { TELEMETRY_NEVER, TelemetryReportModal, TelemetrySchedule } from '../components/Telemetry'
 import { fmtBuildMeta, fmtUptime, friendly } from '../lib/format'
 import type { Preferences, TelemetryLevel, UpdateMode, UpdateStatus } from '../types'
 
@@ -562,10 +563,16 @@ function UpdateLine({ st }: { st?: UpdateStatus }) {
   return <p className="text-xs text-muted">Running {st.current}.</p>
 }
 
-// TelemetryCard: how much anonymous usage data RiftRoute may send. The hard
-// limits hold at every level, and nothing is sent by this version.
+// TelemetryCard: how much anonymous usage data RiftRoute sends, when, and
+// the exact report. The hard limits hold at every level.
 function TelemetryCard({ prefs }: { prefs?: Preferences }) {
   const pref = usePreferenceSetter()
+  const [viewing, setViewing] = useState(false)
+  const preview = useQuery({
+    queryKey: ['telemetry', prefs?.telemetry],
+    queryFn: api.telemetryPreview,
+    enabled: !!prefs,
+  })
   return (
     <Card>
       <CardHeader title="Telemetry" hint="anonymous usage data" />
@@ -580,14 +587,19 @@ function TelemetryCard({ prefs }: { prefs?: Preferences }) {
         {!prefs && <p className="text-warning">This daemon is too old to store a telemetry preference — install the current daemon.</p>}
         {pref.err && <p className="text-danger">{pref.err}</p>}
         <p>
-          <span className="font-medium text-default">Never sent, at any level:</span> IP addresses, domains, profile, list,
-          app or user names, and network or host names.
+          <span className="font-medium text-default">Never sent, at any level:</span> {TELEMETRY_NEVER}
         </p>
-        <p>
-          This version doesn’t send telemetry yet. When one does, it will tell you first and show you the exact data it
-          sends.
-        </p>
+        {preview.data && <TelemetrySchedule p={preview.data} />}
+        {prefs && (
+          <button
+            onClick={() => setViewing(true)}
+            className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-default"
+          >
+            See what’s sent
+          </button>
+        )}
       </div>
+      {viewing && <TelemetryReportModal onClose={() => setViewing(false)} />}
     </Card>
   )
 }

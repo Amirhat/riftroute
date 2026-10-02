@@ -326,6 +326,7 @@ export namespace domain {
 	    result: string;
 	    rollback?: boolean;
 	    reason?: string;
+	    codes?: string[];
 	    timing?: ApplyTiming;
 	
 	    static createFrom(source: any = {}) {
@@ -343,6 +344,7 @@ export namespace domain {
 	        this.result = source["result"];
 	        this.rollback = source["rollback"];
 	        this.reason = source["reason"];
+	        this.codes = source["codes"];
 	        this.timing = this.convertValues(source["timing"], ApplyTiming);
 	    }
 	
@@ -1328,6 +1330,7 @@ export namespace domain {
 	    kill_switch_notice?: string;
 	    preferences: Preferences;
 	    update?: UpdateStatus;
+	    telemetry_notice?: boolean;
 	    tunnels?: TunnelStatus[];
 	    // Go type: time
 	    generated_at: any;
@@ -1353,6 +1356,7 @@ export namespace domain {
 	        this.kill_switch_notice = source["kill_switch_notice"];
 	        this.preferences = this.convertValues(source["preferences"], Preferences);
 	        this.update = this.convertValues(source["update"], UpdateStatus);
+	        this.telemetry_notice = source["telemetry_notice"];
 	        this.tunnels = this.convertValues(source["tunnels"], TunnelStatus);
 	        this.generated_at = this.convertValues(source["generated_at"], null);
 	    }
@@ -1643,6 +1647,260 @@ export namespace sysinfo {
 	        this.full_name = source["full_name"];
 	    }
 	}
+
+}
+
+export namespace telemetry {
+	
+	export class App {
+	    version: string;
+	    channel: string;
+	    os: string;
+	    os_major: number;
+	    distro?: string;
+	    arch: string;
+	    service: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new App(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.version = source["version"];
+	        this.channel = source["channel"];
+	        this.os = source["os"];
+	        this.os_major = source["os_major"];
+	        this.distro = source["distro"];
+	        this.arch = source["arch"];
+	        this.service = source["service"];
+	    }
+	}
+	export class Applies {
+	    applied: number;
+	    auto: number;
+	    failed: number;
+	    refused: Record<string, number>;
+	    rolled_back: Record<string, number>;
+	    slow: number;
+	    ms: Record<string, number>;
+	
+	    static createFrom(source: any = {}) {
+	        return new Applies(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.applied = source["applied"];
+	        this.auto = source["auto"];
+	        this.failed = source["failed"];
+	        this.refused = source["refused"];
+	        this.rolled_back = source["rolled_back"];
+	        this.slow = source["slow"];
+	        this.ms = source["ms"];
+	    }
+	}
+	export class Daemon {
+	    starts: number;
+	    unclean: number;
+	    panics?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Daemon(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.starts = source["starts"];
+	        this.unclean = source["unclean"];
+	        this.panics = source["panics"];
+	    }
+	}
+	export class Events {
+	    killswitch_safe_mode: number;
+	    dns_failures: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Events(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.killswitch_safe_mode = source["killswitch_safe_mode"];
+	        this.dns_failures = source["dns_failures"];
+	    }
+	}
+	export class TunnelSessions {
+	    connected: number;
+	    drops: number;
+	    gave_up: number;
+	    failed: Record<string, number>;
+	
+	    static createFrom(source: any = {}) {
+	        return new TunnelSessions(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.connected = source["connected"];
+	        this.drops = source["drops"];
+	        this.gave_up = source["gave_up"];
+	        this.failed = source["failed"];
+	    }
+	}
+	export class Usage {
+	    profiles: number;
+	    profiles_enabled: number;
+	    profile_modes: Record<string, number>;
+	    rules: Record<string, number>;
+	    lists: number;
+	    lists_remote: number;
+	    tunnels: Record<string, number>;
+	    tunnels_block: number;
+	    tunnels_direct: number;
+	    kill_switch: boolean;
+	    split_dns: boolean;
+	    auto_apply: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Usage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.profiles = source["profiles"];
+	        this.profiles_enabled = source["profiles_enabled"];
+	        this.profile_modes = source["profile_modes"];
+	        this.rules = source["rules"];
+	        this.lists = source["lists"];
+	        this.lists_remote = source["lists_remote"];
+	        this.tunnels = source["tunnels"];
+	        this.tunnels_block = source["tunnels_block"];
+	        this.tunnels_direct = source["tunnels_direct"];
+	        this.kill_switch = source["kill_switch"];
+	        this.split_dns = source["split_dns"];
+	        this.auto_apply = source["auto_apply"];
+	    }
+	}
+	export class Updates {
+	    installed: number;
+	    rolled_back_health: number;
+	    rolled_back_user: number;
+	    skipped_broken: number;
+	    helpers_repaired: number;
+	    check_failed: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Updates(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.installed = source["installed"];
+	        this.rolled_back_health = source["rolled_back_health"];
+	        this.rolled_back_user = source["rolled_back_user"];
+	        this.skipped_broken = source["skipped_broken"];
+	        this.helpers_repaired = source["helpers_repaired"];
+	        this.check_failed = source["check_failed"];
+	    }
+	}
+	export class Report {
+	    schema: number;
+	    install: string;
+	    level: string;
+	    day: string;
+	    app: App;
+	    daemon: Daemon;
+	    updates: Updates;
+	    usage?: Usage;
+	    applies?: Applies;
+	    tunnel_sessions?: Record<string, TunnelSessions>;
+	    events?: Events;
+	
+	    static createFrom(source: any = {}) {
+	        return new Report(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema = source["schema"];
+	        this.install = source["install"];
+	        this.level = source["level"];
+	        this.day = source["day"];
+	        this.app = this.convertValues(source["app"], App);
+	        this.daemon = this.convertValues(source["daemon"], Daemon);
+	        this.updates = this.convertValues(source["updates"], Updates);
+	        this.usage = this.convertValues(source["usage"], Usage);
+	        this.applies = this.convertValues(source["applies"], Applies);
+	        this.tunnel_sessions = this.convertValues(source["tunnel_sessions"], TunnelSessions, true);
+	        this.events = this.convertValues(source["events"], Events);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class Preview {
+	    level: string;
+	    next?: Report;
+	    // Go type: time
+	    next_at?: any;
+	    waiting?: string;
+	    // Go type: time
+	    last_sent?: any;
+	    last?: Report;
+	    notice_seen: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new Preview(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.level = source["level"];
+	        this.next = this.convertValues(source["next"], Report);
+	        this.next_at = this.convertValues(source["next_at"], null);
+	        this.waiting = source["waiting"];
+	        this.last_sent = this.convertValues(source["last_sent"], null);
+	        this.last = this.convertValues(source["last"], Report);
+	        this.notice_seen = source["notice_seen"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
+	
 
 }
 

@@ -101,12 +101,17 @@ func TestCacheRemembersAFailureBriefly(t *testing.T) {
 func TestCacheDoesntBlameTheNameForACanceledCaller(t *testing.T) {
 	r := &countingResolver{}
 	c := NewCache(r, time.Minute)
+	failures := 0
+	c.OnFailure(func() { failures++ })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	c.Lookup(ctx, "corp.internal")
 	c.Lookup(context.Background(), "corp.internal")
 	if r.n != 2 {
 		t.Fatalf("%d lookups, want the second caller to try again", r.n)
+	}
+	if failures != 1 { // the name's own failure, not the canceled caller's
+		t.Fatalf("%d failures counted, want 1", failures)
 	}
 }
 

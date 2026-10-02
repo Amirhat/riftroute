@@ -57,6 +57,9 @@ type Service struct {
 	// tunnelEngine reports whether tunnels can run here at all (openvpn
 	// installed, new enough) and how to install it (doctor).
 	tunnelEngine func() domain.TunnelEngine
+	// telemetryNotice reports whether the user is yet to be told about
+	// telemetry (nil = not wired).
+	telemetryNotice func() bool
 }
 
 // SetTunnelEngine installs the "can tunnels run here" probe (doctor).
@@ -287,6 +290,17 @@ func (s *Service) SetKillSwitchStatus(fn func() bool) { s.killStatus = fn }
 
 // SetUpdateStatus wires the updater's status into State (nil: no updater).
 func (s *Service) SetUpdateStatus(fn func() domain.UpdateStatus) { s.updateStatus = fn }
+
+// SetTelemetryNotice wires "the user is yet to be told about telemetry"
+// into State (the app's notice).
+func (s *Service) SetTelemetryNotice(fn func() bool) { s.telemetryNotice = fn }
+
+// OnDNSFailure has fn called for each domain-rule lookup that fails.
+func (s *Service) OnDNSFailure(fn func()) {
+	if s.domains != nil {
+		s.domains.OnFailure(fn)
+	}
+}
 
 // SetWildcardIPs installs the daemon's learned-answer source for wildcard
 // domain rules (see internal/dnsproxy).
@@ -862,6 +876,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Preferences:       s.Preferences(),
 		Update:            s.updateSnapshot(),
 		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
+		TelemetryNotice:   s.telemetryNotice != nil && s.telemetryNotice(),
 		Tunnels:           tunnels,
 		GeneratedAt:       s.now(),
 	}, nil

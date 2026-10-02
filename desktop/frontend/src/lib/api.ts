@@ -51,6 +51,8 @@ import {
   BuildNotes,
   GetPreferences,
   SetPreferences,
+  GetTelemetryPreview,
+  TelemetryNoticeSeen,
   CreateBugReport,
   SaveBugReport,
   OpenIssuePage,
@@ -66,6 +68,7 @@ import {
 } from '../../wailsjs/go/main/App'
 import type {
   State,
+  TelemetryPreview,
   Route,
   PolicyRule,
   Iface,
@@ -143,6 +146,10 @@ export const api = {
   preferences: () => GetPreferences() as unknown as Promise<Preferences>,
   setPreferences: (patch: Partial<Preferences>) =>
     SetPreferences(patch as unknown as Parameters<typeof SetPreferences>[0]) as unknown as Promise<Preferences>,
+  // Telemetry: the exact report the daemon would send now (and the last one
+  // sent); marking the first-run notice seen.
+  telemetryPreview: () => GetTelemetryPreview() as unknown as Promise<TelemetryPreview>,
+  telemetryNoticeSeen: () => TelemetryNoticeSeen() as Promise<void>,
   // Declarative config import/export (native dialogs).
   openConfigDialog: () => OpenConfigDialog() as unknown as Promise<ConfigFile>,
   applyConfigContent: (content: string, format: string, dryRun: boolean, yes: boolean) =>
