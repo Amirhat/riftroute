@@ -4,10 +4,12 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] — 2026-10-02
 
 Anonymous telemetry, with the exact report always one click away, and a
-dashboard that shows a bad release before most installs take it.
+dashboard that shows a bad release before most installs take it. IKEv2
+tunnels log in with a username and password or a shared secret, and a
+tunnel route keeps out what it mustn't carry and routes the rest.
 
 ### Added
 - **An anonymous daily report** (docs/telemetry.md). Counts and versions
@@ -66,6 +68,10 @@ dashboard that shows a bad release before most installs take it.
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to
   come: it's been here since 0.2.6.
+- Built with Go 1.25.14, which `go.mod` now pins, so local and
+  `go install` builds get its security fixes too (releases already had
+  them). The `wails dev` web framework and the frontend's test tools are
+  updated past their security advisories; none of them is in what ships.
 - On Debian and Ubuntu, IKEv2's install help adds
   `libcharon-extauth-plugins` (username-and-password logins need it).
 
