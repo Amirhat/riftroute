@@ -222,7 +222,7 @@ func (s *Service) tailscale(ctx context.Context, ifaces []domain.Iface) (domain.
 			}
 		}
 	}
-	if _, _, ok := tailscale.Find(ifaces, resolvers); !ok {
+	if _, _, ok := tailscale.Find(ifaces, nil, resolvers); !ok {
 		return domain.TailscaleStatus{}, false
 	}
 	var routes []domain.Route

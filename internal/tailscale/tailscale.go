@@ -36,9 +36,12 @@ const maxNetworks = 256
 //     and NetBird use that space too.
 //
 // sure: by name or by its IPv6 address. Only then are the routes into it its
-// networks; otherwise only its own two ranges are.
-func Find(ifaces []domain.Iface, resolvers []netip.Addr) (name string, sure, ok bool) {
+// networks; otherwise only its own two ranges are. Among several such utuns
+// (WARP's beside a Tailscale with no IPv6 address), the one routes (when
+// given) send MagicDNS into wins, else the first.
+func Find(ifaces []domain.Iface, routes []domain.Route, resolvers []netip.Addr) (name string, sure, ok bool) {
 	magic := slices.Contains(resolvers, MagicDNS)
+	magicVia := magicDNSIface(routes)
 	for _, i := range ifaces {
 		if !i.Up {
 			continue
@@ -61,17 +64,33 @@ func Find(ifaces []domain.Iface, resolvers []netip.Addr) (name string, sure, ok 
 			}
 		}
 		if v4 && magic {
-			name, ok = i.Name, true
+			if !ok || i.Name == magicVia {
+				name, ok = i.Name, true
+			}
 		}
 	}
 	return name, false, ok
+}
+
+// magicDNSIface is the interface the main table sends MagicDNS into: its
+// most specific route's, as the kernel picks (a default doesn't count), or "".
+func magicDNSIface(routes []domain.Route) string {
+	via, bits := "", 0
+	for _, r := range routes {
+		p, err := netip.ParsePrefix(r.DstCIDR)
+		if err != nil || r.Scoped || r.Table != "" || r.Reject || !p.Contains(MagicDNS) || p.Bits() <= bits {
+			continue
+		}
+		via, bits = r.Iface, p.Bits()
+	}
+	return via
 }
 
 // Detect finds Tailscale (Find) and, from routes (the main table's, and on
 // Linux table 52's), what it routes and whether its exit node is on (a
 // default route into it). ok is false without one.
 func Detect(ifaces []domain.Iface, routes []domain.Route, resolvers []netip.Addr) (st domain.TailscaleStatus, ok bool) {
-	name, sure, ok := Find(ifaces, resolvers)
+	name, sure, ok := Find(ifaces, routes, resolvers)
 	if !ok {
 		return st, false
 	}

@@ -105,3 +105,27 @@ func TestDetectMacOSAsItReallyIs(t *testing.T) {
 		t.Fatalf("%+v %v", st, ok)
 	}
 }
+
+// Two utuns with a CGNAT address and MagicDNS in use (WARP beside a
+// Tailscale without its IPv6 address): Tailscale's is the one MagicDNS is
+// routed into — by the most specific route, as the kernel picks (WARP's
+// /12 holds it too) — whichever comes first.
+func TestFindPrefersTheUtunMagicDNSGoesInto(t *testing.T) {
+	ifaces := []domain.Iface{
+		{Name: "utun3", Up: true, Addrs: []string{"100.92.45.62/32"}},
+		{Name: "utun4", Up: true, Addrs: []string{"100.96.0.5/32"}},
+	}
+	dns := []netip.Addr{MagicDNS}
+	routes := []domain.Route{{DstCIDR: "100.100.100.100/32", Iface: "utun3"}, {DstCIDR: "100.96.0.0/12", Iface: "utun4"}}
+	if name, sure, ok := Find(ifaces, routes, dns); !ok || sure || name != "utun3" {
+		t.Fatalf("got %s sure=%v ok=%v", name, sure, ok)
+	}
+	ifaces[0], ifaces[1] = ifaces[1], ifaces[0] // WARP's first
+	if name, _, _ := Find(ifaces, routes, dns); name != "utun3" {
+		t.Fatalf("WARP's listed first: got %s", name)
+	}
+	ifaces[0], ifaces[1] = ifaces[1], ifaces[0]
+	if name, _, _ := Find(ifaces, nil, dns); name != "utun3" {
+		t.Fatalf("without routes: %s, want the first", name)
+	}
+}

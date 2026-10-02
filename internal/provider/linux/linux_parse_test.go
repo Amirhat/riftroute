@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -128,6 +129,31 @@ func TestParseRulesJSON_SuppressPrefixLength(t *testing.T) {
 	}
 	if rules[0].Selector != "from all suppress_prefixlength 0" || rules[1].Selector != "from all" {
 		t.Errorf("selectors %q, %q", rules[0].Selector, rules[1].Selector)
+	}
+}
+
+// A rule's command always names its family: Tailscale's "from all …"
+// rules have no address for `ip` to tell v6 from, and without -6 the v6 one
+// lands on its v4 twin ("File exists", taken for success).
+func TestRuleArgsCarryTheFamily(t *testing.T) {
+	rule := func(sel string, fam domain.Family) domain.ManagedRule {
+		return domain.ManagedRule{PolicyRule: domain.PolicyRule{Priority: 5251, Selector: sel, Table: "52", Family: fam}}
+	}
+	for _, tc := range []struct {
+		mr   domain.ManagedRule
+		want string
+	}{
+		{rule("from all suppress_prefixlength 0", domain.FamilyV6), "-6 rule add from all suppress_prefixlength 0 lookup 52 priority 5251"},
+		{rule("from all suppress_prefixlength 0", domain.FamilyV4), "-4 rule add from all suppress_prefixlength 0 lookup 52 priority 5251"},
+		{rule("to fd00::/8", ""), "-6 rule add to fd00::/8 lookup 52 priority 5251"},     // an old record: from the address
+		{rule("fwmark 0x5252", ""), "-4 rule add fwmark 0x5252 lookup 52 priority 5251"}, // nothing to tell: v4, as before
+	} {
+		if got := strings.Join(ruleArgs("add", tc.mr), " "); got != tc.want {
+			t.Errorf("got  %s\nwant %s", got, tc.want)
+		}
+	}
+	if got := strings.Join(ruleArgs("del", rule("from all", domain.FamilyV6)), " "); got != "-6 rule del from all lookup 52 priority 5251" {
+		t.Errorf("del: %s", got)
 	}
 }
 
