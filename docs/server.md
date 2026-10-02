@@ -115,6 +115,23 @@ new one fails its health check.
 
 Step 4 again. It signs out every session and forgets every remembered device.
 
+## Telemetry
+
+Reports arrive at `POST /api/v1/telemetry` through the same site block (no
+Caddy change); the dashboard is **Telemetry** in the admin area. For tools,
+the same numbers are JSON at `GET /api/v1/telemetry/summary?days=7`, behind a
+read-only token. Create one (it's printed once; only its hash is kept, and a
+new one replaces the old):
+
+```bash
+$S 'sudo -u riftroute-server /opt/riftroute-server/bin/riftroute-server telemetry-token -data /var/lib/riftroute-server'
+```
+
+Keep it in a 0600 file as a header line (`Authorization: Bearer <token>`),
+never on a command line, and let curl read the header from it:
+`curl -H @summary-auth.txt 'https://riftroute.tellnew.tech/api/v1/telemetry/summary?days=7'`.
+Reports are kept 180 days. Design: `docs/telemetry.md`.
+
 ## Sign-in protection
 
 - Each attempt counts when it starts (so a burst can't slip past the check
