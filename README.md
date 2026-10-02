@@ -21,7 +21,10 @@ the networks you choose.
 > [latest release](https://github.com/Amirhat/riftroute/releases/latest) and
 > the [changelog](CHANGELOG.md).
 
-![RiftRoute dashboard](docs/screenshot-dashboard.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshot-dashboard-dark.png">
+  <img alt="RiftRoute's dashboard: the VPN, the default route, what RiftRoute manages, drift, DNS and interfaces" src="docs/screenshot-dashboard.png">
+</picture>
 
 ## Two non-negotiable pillars
 
