@@ -201,6 +201,7 @@ export namespace domain {
 	    table?: string;
 	    profile?: string;
 	    cloned?: boolean;
+	    scoped?: boolean;
 	    reject?: boolean;
 	    profile_id: string;
 	    // Go type: time
@@ -222,6 +223,7 @@ export namespace domain {
 	        this.table = source["table"];
 	        this.profile = source["profile"];
 	        this.cloned = source["cloned"];
+	        this.scoped = source["scoped"];
 	        this.reject = source["reject"];
 	        this.profile_id = source["profile_id"];
 	        this.created_at = this.convertValues(source["created_at"], null);
@@ -504,6 +506,7 @@ export namespace domain {
 	    table?: string;
 	    profile?: string;
 	    cloned?: boolean;
+	    scoped?: boolean;
 	    reject?: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -522,6 +525,7 @@ export namespace domain {
 	        this.table = source["table"];
 	        this.profile = source["profile"];
 	        this.cloned = source["cloned"];
+	        this.scoped = source["scoped"];
 	        this.reject = source["reject"];
 	    }
 	}
