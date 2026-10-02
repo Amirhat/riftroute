@@ -51,12 +51,14 @@ func TestDownBlockTunnelRefusesItsDestinations(t *testing.T) {
 	}
 }
 
-// A reject route goes through the same checks as a route into a tunnel: one
-// holding the router, a resolver, an anchor or a tunnel's server would cut
-// the connection (or the tunnel's own way back) — left out and reported.
-// A destination a live tunnel routes stays the live tunnel's.
-func TestDownBlockTunnelLeavesOutWhatWouldCutTheConnection(t *testing.T) {
+// A reject route goes through the same checks as a route into a tunnel:
+// what it holds that would cut the connection (or the tunnel's own way
+// back) — the router's network, a resolver, an anchor, a tunnel's server —
+// is kept out of it, and the rest refused. A destination a live tunnel
+// routes stays the live tunnel's.
+func TestDownBlockTunnelKeepsOutWhatWouldCutTheConnection(t *testing.T) {
 	in := testInput()
+	in.PhysNetV4 = netip.MustParsePrefix("192.168.1.0/24")
 	in.DNSServers = []netip.Addr{netip.MustParseAddr("10.255.255.1")}
 	server := netip.MustParseAddr("203.0.113.9")
 	in.Tunnels = []TunnelInput{
@@ -69,24 +71,38 @@ func TestDownBlockTunnelLeavesOutWhatWouldCutTheConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	oneRoutePerDestination(t, desired)
-	if got := rejects(desired); len(got) != 1 || got["9.9.9.9/32"] == "" {
+	got := rejects(desired)
+	if got["9.9.9.9/32"] == "" || got["192.168.0.0/24"] == "" {
 		t.Fatalf("reject routes = %v", got)
+	}
+	for dst := range got {
+		p := netip.MustParsePrefix(dst)
+		for _, a := range []string{"192.168.1.1", "192.168.1.200", "10.255.255.1", "203.0.113.9", "172.16.5.1"} {
+			if p.Contains(netip.MustParseAddr(a)) {
+				t.Errorf("reject route %s refuses %s", p, a)
+			}
+		}
 	}
 	if byDestination(desired)["v4||172.16.5.0/24"][0].Iface != "utun6" {
 		t.Errorf("the live tunnel lost its destination: %+v", desired)
 	}
-	reasons := map[string]string{}
-	for _, b := range PlanTunnels(in).Blocked["con3"] {
-		reasons[b.Route] = b.Reason
+	tp := PlanTunnels(in)
+	if bs := tp.Blocked["con3"]; len(bs) != 1 || bs[0].Route != "172.16.5.0/24" || !strings.Contains(bs[0].Reason, "tunnel live") {
+		t.Errorf("blocked %+v", bs)
+	}
+	kept := map[string]string{}
+	for _, n := range tp.Narrowed["con3"] {
+		for _, e := range n.Except {
+			kept[n.Route] += e.Reason
+		}
 	}
 	for route, want := range map[string]string{
-		"192.168.0.0/16": "router",
+		"192.168.0.0/16": "the network of your router",
 		"10.255.0.0/16":  "DNS server",
 		"203.0.113.0/24": "own server",
-		"172.16.5.0/24":  "tunnel live",
 	} {
-		if !strings.Contains(reasons[route], want) {
-			t.Errorf("%s: reason %q, want it to say %q", route, reasons[route], want)
+		if !strings.Contains(kept[route], want) {
+			t.Errorf("%s: kept out %q, want it to say %q", route, kept[route], want)
 		}
 	}
 }

@@ -144,9 +144,10 @@ func TestDriftSeesTunnelRoutesTheKernelDropped(t *testing.T) {
 
 // A tunnel route containing the resolver in use would send every name lookup
 // into the tunnel, and one containing the watchdog's canary would make the
-// check guarding every change probe through it: both are left out. A resolver
-// the user pointed a domain at (split DNS) is often behind the tunnel on
-// purpose, and doesn't count.
+// check guarding every change probe through it: both are kept out of the
+// routes, which go in otherwise, and the status says so. A resolver the user
+// pointed a domain at (split DNS) is often behind the tunnel on purpose, and
+// doesn't count.
 func TestTunnelRoutesKeepDNSAndTheCanaryOut(t *testing.T) {
 	svc := newSvc(t)
 	svc.Provider().(*fake.Provider).SetDNS("10.255.255.1", "192.168.70.53")
@@ -156,26 +157,36 @@ func TestTunnelRoutesKeepDNSAndTheCanaryOut(t *testing.T) {
 	withTunnels(svc, routing.TunnelInput{Name: "infra", Iface: "utun6", Routes: []string{"10.0.0.0/8", "1.1.1.0/24", "192.168.70.0/24", "172.16.0.0/12"}})
 	ctx := context.Background()
 
-	got := blockedReasons(svc.TunnelStatuses(ctx))
-	if !strings.Contains(got["infra 10.0.0.0/8"], "DNS server 10.255.255.1") {
-		t.Errorf("route holding the resolver not reported: %v", got)
+	ts := svc.TunnelStatuses(ctx)
+	if len(blockedReasons(ts)) != 0 {
+		t.Errorf("blocked = %v, want none", blockedReasons(ts))
 	}
-	if !strings.Contains(got["infra 1.1.1.0/24"], "1.1.1.1") {
-		t.Errorf("route holding the canary not reported: %v", got)
+	kept := map[string]string{}
+	for _, n := range ts[0].Narrowed {
+		for _, e := range n.Except {
+			kept[n.Route] += e.Net + ": " + e.Reason
+		}
 	}
-	if len(got) != 2 {
-		t.Errorf("blocked = %v, want exactly those two", got)
+	if !strings.Contains(kept["10.0.0.0/8"], "10.255.255.1: your DNS server 10.255.255.1") ||
+		!strings.Contains(kept["1.1.1.0/24"], "1.1.1.1: 1.1.1.1, which RiftRoute probes") || len(kept) != 2 {
+		t.Errorf("kept out = %v", kept)
 	}
 	desired, _, _, err := svc.DesiredManaged(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var routes []string
+	have := map[string]bool{}
 	for _, d := range desired {
-		routes = append(routes, d.DstCIDR)
+		p := netip.MustParsePrefix(d.DstCIDR)
+		have[d.DstCIDR] = true
+		for _, a := range []string{"10.255.255.1", "1.1.1.1"} {
+			if p.Contains(netip.MustParseAddr(a)) {
+				t.Errorf("%s carries %s", p, a)
+			}
+		}
 	}
-	if strings.Join(routes, ",") != "172.16.0.0/12,192.168.70.0/24" {
-		t.Errorf("desired = %v", routes)
+	if !have["172.16.0.0/12"] || !have["192.168.70.0/24"] || !have["10.0.0.0/9"] || !have["1.1.1.128/25"] {
+		t.Errorf("desired = %v", have)
 	}
 }
 

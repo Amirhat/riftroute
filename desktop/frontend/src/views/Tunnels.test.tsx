@@ -327,6 +327,28 @@ describe('Tunnels view — routes left out', () => {
     expect(screen.getByText('192.168.70.0/24')).toBeInTheDocument()
   })
 
+  it('shows what is kept out of a route on this network, the rest going in', async () => {
+    mockApi.state.mockResolvedValue({
+      tunnels: [
+        {
+          ...connected,
+          routes: ['10.0.0.0/8'],
+          narrowed: [
+            {
+              route: '10.0.0.0/8',
+              except: [{ net: '10.255.255.1', reason: 'your DNS server 10.255.255.1' }],
+            },
+          ],
+        },
+      ],
+    } as unknown as State)
+    renderView()
+    const note = await screen.findByText(/goes in except/)
+    expect(note).toHaveTextContent('10.0.0.0/8 goes in except 10.255.255.1 (your DNS server 10.255.255.1)')
+    expect(note).toHaveTextContent('that keeps its usual path')
+    expect(screen.queryByText(/isn't installed on this network/)).not.toBeInTheDocument()
+  })
+
   it('explains up front how to install openvpn on this system, and holds Connect until it is', async () => {
     const failed: TunnelStatus = { ...connected, state: 'disconnected', iface: undefined, since: undefined }
     withTunnels([failed])

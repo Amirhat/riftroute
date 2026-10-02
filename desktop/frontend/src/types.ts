@@ -441,9 +441,13 @@ export interface TunnelStatus {
   needs_auth: boolean
   servers: string[] | null
   ignored?: string[] | null
-  // Routes left out on this network, and why (contains its router, or
-  // another VPN/the system already routes that exact destination).
+  // Routes left out on this network, and why (another VPN or the system
+  // already routes that exact destination; nothing left once what mustn't
+  // go in is kept out).
   blocked?: TunnelBlocked[] | null
+  // Routes installed with parts kept out on this network: the router's
+  // network, a DNS server, an address RiftRoute probes, a tunnel's server.
+  narrowed?: TunnelNarrowed[] | null
   // Installed, but an app rule of an include profile still sends that app's
   // traffic for them elsewhere (another VPN).
   captured?: TunnelBlocked[] | null
@@ -469,6 +473,11 @@ export interface TunnelStatus {
 export interface TunnelBlocked {
   route: string
   reason: string
+}
+
+export interface TunnelNarrowed {
+  route: string
+  except: { net: string; reason: string }[]
 }
 
 // TunnelSpec mirrors domain.TunnelSpec. Empty config/password on an update

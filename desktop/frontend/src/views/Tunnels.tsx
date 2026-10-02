@@ -562,6 +562,7 @@ function TunnelCard({
   const routes = t.routes ?? []
   const profilesOn = (t.profiles ?? []).some((p) => p.enabled)
   const blocked = new Map((t.blocked ?? []).map((b) => [b.route, b.reason]))
+  const narrowed = new Map((t.narrowed ?? []).map((n) => [n.route, n.except]))
   const detail = t.detail && t.detail !== t.state ? t.detail : ''
   const expiry = certExpiry(t.cert_expires)
   return (
@@ -699,6 +700,14 @@ function TunnelCard({
                     >
                       <Addr>{r}</Addr>
                     </span>
+                  ) : narrowed.has(r) ? (
+                    <span
+                      key={r}
+                      title={`On this network, kept out: ${(narrowed.get(r) ?? []).map((e) => e.net).join(', ')}`}
+                      className="rounded-md bg-elevated px-2 py-0.5 ring-1 ring-inset ring-accent/40"
+                    >
+                      <Addr>{r}</Addr> <span className="text-muted">*</span>
+                    </span>
                   ) : (
                     <span key={r} className="rounded-md bg-elevated px-2 py-0.5">
                       <Addr>{r}</Addr>
@@ -706,6 +715,18 @@ function TunnelCard({
                   ),
                 )}
               </div>
+              {[...narrowed].map(([r, except]) => (
+                <p key={'nar-' + r} className="mt-1.5 text-xs text-muted">
+                  * <span className="ltr font-mono">{r}</span> goes in except{' '}
+                  {except.map((e, i) => (
+                    <span key={e.net}>
+                      {i > 0 && ', '}
+                      <span className="ltr font-mono text-default">{e.net}</span> ({e.reason})
+                    </span>
+                  ))}{' '}
+                  — on this network {except.length === 1 ? 'that keeps its' : 'those keep their'} usual path.
+                </p>
+              ))}
               {[...blocked].map(([r, why]) => (
                 <p key={r} className="mt-1.5 text-xs text-warning">
                   <span className="ltr font-mono">{r}</span> isn't installed on this network: {why}.

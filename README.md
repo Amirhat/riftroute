@@ -288,12 +288,19 @@ Or use the **Tunnels** page in the app. How it works:
 - A tunnel's networks win over exclude profiles: while it's up, an exclude
   rule can't pull a host inside them back out (e.g. `*.example.com` resolving
   `gitlab.example.com` to `192.168.70.42`, which sits behind the tunnel).
-- A route that contains your current router (say `192.168.0.0/16` on a
-  `192.168.1.x` Wi-Fi) is left out on that network — it would cut you off —
-  and so is one for a destination another VPN or the system already routes
-  (the kernel keeps one route per destination, and RiftRoute never takes over
-  routes it didn't create). Both show as blocked, with the reason; the
-  tunnel's other routes still apply.
+- What a route holds that mustn't go into the tunnel is kept out of it, and
+  the rest goes in: your router's network (say `192.168.0.0/16` on a
+  `192.168.1.x` Wi-Fi goes in except `192.168.1.0/24`, which stays local), a
+  DNS server in use (every name lookup would go into the tunnel), an address
+  RiftRoute probes to check a change kept you online, and a tunnel's server
+  nothing holds off the tunnels. Routes other VPNs or the system have inside
+  it keep theirs. The tunnel's card, `riftroute tunnel list`, `doctor`, and
+  saving the tunnel all say what was kept out and why, for this network
+  only — on another it's worked out again. A route for a destination
+  another VPN or the system already routes exactly is left out (the kernel
+  keeps one route per destination, and RiftRoute never takes over routes it
+  didn't create), and shows as blocked, with the reason; the tunnel's other
+  routes still apply.
 - The profile is checked against an allowlist before a root process sees it:
   scripts, plugins, OpenSSL engines, and file paths are refused; files it
   references are inlined by the CLI/app as *you* — only from the profile's

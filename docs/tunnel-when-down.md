@@ -122,11 +122,12 @@ tunnel while that tunnel is wanted.
 `PlanTunnels`:
 
 - **Down with `Block`:** each destination that would go into the tunnel
-  gets a reject route instead. It goes through the same checks: it's left
-  out, and reported, if it holds the router, a resolver, an anchor, a
-  destination someone else routes, or any tunnel's server that nothing
-  holds off it. A reject route there would cut the connection, or the
-  tunnel's own way back. It claims the destination like a live tunnel's
+  gets a reject route instead. It goes through the same checks: what it
+  holds of the router's network, a resolver, an anchor, or any tunnel's
+  server that nothing holds off it is kept out of the reject routes (and
+  reported as narrowed), and one for a destination someone else routes
+  exactly is left out. A reject route there would cut the connection, or
+  the tunnel's own way back. It claims the destination like a live tunnel's
   route, and joins the plan's `nets`, so exclude routes still yield inside
   it, and include rules (Linux policy rules, macOS route-to) are still cut
   around it. Otherwise a rule that's matched before the table would carry

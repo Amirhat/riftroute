@@ -90,10 +90,10 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 				add(name, domain.CheckWarn, string(t.State)+"; "+blockingDetail(expected[t.Name], installed),
 					"it's set to block when down: they're back once it connects, or `riftroute tunnel down "+t.Name+"` stops blocking")
 			case len(t.Blocked) > 0:
-				add(name, domain.CheckWarn, "not installed on this network: "+blockedList(t.Blocked),
+				add(name, domain.CheckWarn, "not installed on this network: "+blockedList(t.Blocked)+narrowedText(t.Narrowed),
 					"narrow those routes, or ignore this while on this network")
 			default:
-				add(name, domain.CheckPass, string(t.State), "")
+				add(name, domain.CheckPass, string(t.State)+narrowedText(t.Narrowed), "")
 			}
 		}
 	}
@@ -210,12 +210,30 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 		detail += "; not installed on this network: " + blockedList(t.Blocked)
 		fixes = append(fixes, "narrow the routes left out, or ignore them while on this network")
 	}
+	detail += narrowedText(t.Narrowed)
 	if len(t.Captured) > 0 {
 		status = domain.CheckWarn
 		detail += "; some traffic to it goes elsewhere: " + blockedList(t.Captured)
 		fixes = append(fixes, "use destination rules instead of app rules in the include profile, or disable it while the tunnel is up")
 	}
 	return status, detail, strings.Join(fixes, "; ")
+}
+
+// narrowedText says what's kept out of a tunnel's routes on this network
+// ("" for nothing).
+func narrowedText(ns []domain.TunnelNarrowed) string {
+	var out []string
+	for _, n := range ns {
+		var parts []string
+		for _, e := range n.Except {
+			parts = append(parts, e.Net+" ("+e.Reason+")")
+		}
+		out = append(out, n.Route+" except "+strings.Join(parts, ", "))
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "; kept out on this network: " + strings.Join(out, "; ")
 }
 
 // blockingDetail says how many of a down tunnel's destinations its reject

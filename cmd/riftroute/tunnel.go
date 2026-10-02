@@ -83,9 +83,29 @@ func tunnelListCmd() *cobra.Command {
 				if t.Blocking {
 					fmt.Fprintf(cmd.OutOrStdout(), "\n%s is down and set to block: its destinations are refused until it's back (`riftroute tunnel down %s` stops that)\n", t.Name, t.Name)
 				}
+				renderTunnelRouteNotes(cmd.OutOrStdout(), t)
 			}
 			return nil
 		},
+	}
+}
+
+// renderTunnelRouteNotes says what of a tunnel's routes the current network
+// changes: parts kept out of them, routes left out.
+func renderTunnelRouteNotes(w io.Writer, t domain.TunnelStatus) {
+	for _, n := range t.Narrowed {
+		var parts []string
+		for _, e := range n.Except {
+			parts = append(parts, e.Net+" ("+e.Reason+")")
+		}
+		path := "that keeps its"
+		if len(parts) > 1 {
+			path = "those keep their"
+		}
+		fmt.Fprintf(w, "\n%s: %s goes in except %s — on this network %s usual path\n", t.Name, n.Route, strings.Join(parts, ", "), path)
+	}
+	for _, b := range t.Blocked {
+		fmt.Fprintf(w, "\n%s: %s isn't installed on this network: %s\n", t.Name, b.Route, b.Reason)
 	}
 }
 
