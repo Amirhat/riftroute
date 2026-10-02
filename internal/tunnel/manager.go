@@ -23,6 +23,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/config"
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/routing"
+	"github.com/Amirhat/riftroute/internal/telemetry"
 )
 
 // Options wires a Manager into the daemon.
@@ -45,6 +46,9 @@ type Options struct {
 	Apply func(ctx context.Context) error
 	// OnChange is called after a status change (the daemon broadcasts state).
 	OnChange func()
+	// Count counts a telemetry event (telemetry.Counters.Inc): sessions
+	// connected, dropped, given up, failed attempts by cause. nil: none.
+	Count func(key string)
 	// WireGuard makes WireGuard's tun devices; nil is this OS's own.
 	WireGuard WGSystem
 	// IKE starts IKEv2 sessions (charon-cmd); nil: IKEv2 tunnels don't
@@ -83,8 +87,10 @@ type Manager struct {
 	// this run will bring back after its own restart. Both stay wanted
 	// while they're down, so a block-mode one keeps blocking.
 	resume, restarting map[string]bool
-	closed             chan struct{}
-	shut               sync.Once
+	// seen is what observe saw of each tunnel last (telemetry).
+	seen   map[string]seen
+	closed chan struct{}
+	shut   sync.Once
 }
 
 type live struct {
@@ -718,6 +724,13 @@ func (m *Manager) Connect(name string) error {
 		}
 	}
 	if e := drv.engine(); !e.Available {
+		if m.o.Count != nil {
+			typ := d.Type
+			if typ == "" {
+				typ = domain.TunnelOpenVPN
+			}
+			m.o.Count(telemetry.FailureKey(string(typ), "engine"))
+		}
 		return &EngineError{Engine: e}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1581,6 +1594,7 @@ func (m *Manager) setErr(name, msg string) {
 }
 
 func (m *Manager) changed() {
+	m.observe()
 	if m.o.OnChange != nil {
 		m.o.OnChange()
 	}

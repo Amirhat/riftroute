@@ -122,6 +122,8 @@ export interface State {
   preferences?: Preferences
   // The daemon's updater (absent from daemons without one).
   update?: UpdateStatus
+  // Telemetry is on and the user hasn't been told yet: show the notice.
+  telemetry_notice?: boolean
   // VPN connections RiftRoute runs itself; absent when there are none.
   tunnels?: TunnelStatus[]
   generated_at: string
@@ -141,6 +143,18 @@ export type TelemetryLevel = 'full' | 'basic' | 'off'
 export interface Preferences {
   updates: UpdateMode
   telemetry: TelemetryLevel
+}
+
+// TelemetryPreview mirrors internal/telemetry.Preview. A report is shown
+// as the JSON it is, so it isn't typed field by field here.
+export interface TelemetryPreview {
+  level: TelemetryLevel
+  next?: Record<string, unknown> // the report as it would be sent now (none while off)
+  next_at?: string
+  waiting?: string // why nothing is sent yet
+  last_sent?: string
+  last?: Record<string, unknown>
+  notice_seen: boolean
 }
 
 export interface SystemUser {

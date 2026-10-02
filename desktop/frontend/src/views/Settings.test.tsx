@@ -20,6 +20,13 @@ vi.mock('../lib/api', () => ({
     appUpdate: vi.fn().mockResolvedValue({ state: 'idle', current: '0.2.8' }),
     installAppUpdate: vi.fn(),
     restartApp: vi.fn(),
+    telemetryPreview: vi.fn().mockResolvedValue({
+      level: 'basic',
+      next: { schema: 1 },
+      next_at: new Date(0).toISOString(),
+      notice_seen: true,
+    }),
+    telemetryNoticeSeen: vi.fn().mockResolvedValue(undefined),
   },
 }))
 vi.mock('../lib/useDaemon', () => ({ useDaemon: () => ({ info: null }) }))
@@ -77,13 +84,16 @@ describe('Settings — updates & telemetry preferences', () => {
     await waitFor(() => expect(mockApi.setPreferences).toHaveBeenCalledWith({ telemetry: 'off' }))
   })
 
-  // The hard privacy limits and "nothing is sent yet" must be stated plainly.
-  it('states what is never sent and that nothing is sent yet', async () => {
+  // The hard privacy limits, when it's sent, and the exact report.
+  it('states what is never sent, when, and shows the exact report', async () => {
     current = { ...base, preferences: { updates: 'notify', telemetry: 'basic' } }
     await renderSettings()
     expect(screen.getByText(/Never sent, at any level:/)).toBeInTheDocument()
-    expect(screen.getByText(/IP addresses, domains/)).toBeInTheDocument()
-    expect(screen.getByText(/doesn’t send telemetry yet/)).toBeInTheDocument()
+    expect(screen.getByText(/IP addresses or networks, domains/)).toBeInTheDocument()
+    expect(await screen.findByText(/Next report: around/)).toBeInTheDocument()
+    expect(screen.getByText(/Nothing sent yet/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'See what’s sent' }))
+    expect(await screen.findByLabelText('Next report')).toHaveTextContent('"schema": 1')
   })
 
   it('disables the choices against a daemon that predates preferences', async () => {

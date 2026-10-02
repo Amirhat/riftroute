@@ -25,6 +25,7 @@ func statusCmd() *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), st)
 			}
 			renderStatus(cmd.OutOrStdout(), st)
+			tellAboutTelemetry(cmd.Context(), cmd.OutOrStdout(), st.TelemetryNotice)
 			return nil
 		},
 	}

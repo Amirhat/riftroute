@@ -90,6 +90,10 @@ type AuditEvent struct {
 	Result   string    `json:"result"`
 	Rollback bool      `json:"rollback,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
+	// Codes say why in fixed words, beside Reason's sentence: a refusal's
+	// guardrail rules, a rollback's reason (watchdog, unconfirmed,
+	// requested, shutdown). Anonymous telemetry counts these, never Reason.
+	Codes []string `json:"codes,omitempty"`
 	// Timing is how long an applied change took, by part (on "applied").
 	Timing *ApplyTiming `json:"timing,omitempty"`
 }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/Amirhat/riftroute/internal/telemetry"
 )
 
 // marker is the "an update is on probation" note swap leaves for the next
@@ -262,4 +264,11 @@ func recordRolledBack(dir, version, by string) {
 	_, _ = updateState(dir, func(ps *persisted) {
 		ps.RolledBackFrom, ps.RolledBackBy, ps.Skip, ps.RollbackError = version, by, version, ""
 	})
+	// Before the database is open: straight into the counters file (kept
+	// only while telemetry is on).
+	key := telemetry.KeyRolledBackHlth
+	if by == "you" {
+		key = telemetry.KeyRolledBackUser
+	}
+	_ = telemetry.AddToFile(dir, key, 1)
 }

@@ -2,4 +2,4 @@
 
 package main
 
-func requireDataOwner(string) error { return nil }
+func requireDataOwner(string, string) error { return nil }

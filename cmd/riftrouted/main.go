@@ -38,6 +38,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/splitdns"
 	"github.com/Amirhat/riftroute/internal/store"
+	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/tunnel"
 	"github.com/Amirhat/riftroute/internal/updater"
 )
@@ -70,6 +71,7 @@ func run() error {
 		selfTest     bool
 		channel      string
 		fakeNoVPN    bool
+		telemetryURL string
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -81,6 +83,7 @@ func run() error {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&selfTest, "selftest", false, "check this binary against a database copy (-db) and exit (used by the updater)")
 	flag.StringVar(&channel, "update-channel", "stable", "update channel")
+	flag.StringVar(&telemetryURL, "telemetry-url", "", "where telemetry reports go (default: the RiftRoute server; set, reports are sent under -provider fake too)")
 	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn and strongSwan weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
 	flag.Parse()
@@ -129,6 +132,7 @@ func run() error {
 		return err
 	}
 	defer st.Close()
+	counts = openCounters(st, updateDir)
 
 	prov, err := selectProvider(providerName, logger)
 	if err != nil {
@@ -278,6 +282,7 @@ func run() error {
 			return rec.ApplyTunnels(ctx)
 		},
 		OnChange: broadcastSoon,
+		Count:    counts.Inc,
 		Log:      logger,
 	})
 	if err != nil {
@@ -292,6 +297,7 @@ func run() error {
 		return on
 	})
 	srv.InitKillSwitch(context.Background())
+	svc.OnDNSFailure(func() { counts.Inc(telemetry.KeyDNSFailures) })
 
 	// Wildcard DNS learner (spec §5.1 "*.domain"): a loopback forwarder the
 	// wildcard apexes are pointed at via split-DNS resolver files. Answers
@@ -543,15 +549,36 @@ func run() error {
 	// binary; the boot guard confirms this start once it's serving.
 	var restartCode atomic.Int32
 	upd, uerr := newUpdater(ctx, st, proto, current, exe, updateDir, dbPath, providerName, channel, &restartCode, stop, logger)
+	guard.OnConfirm = func() { counts.Inc(telemetry.KeyInstalled) }
 	if uerr != nil {
 		logger.Warn("updater unavailable", "err", uerr)
 	} else {
 		srv.SetUpdater(upd)
 		svc.SetUpdateStatus(upd.Status)
-		guard.OnConfirm = upd.Reload
+		guard.OnConfirm = func() {
+			counts.Inc(telemetry.KeyInstalled)
+			upd.Reload()
+		}
 		go supervise(ctx, logger, "updater", upd.Run)
 	}
 	go confirmWhenServing(ctx, guard, socketPath)
+
+	// Telemetry: the anonymous daily report (docs/telemetry.md). Its preview
+	// and notice work everywhere; it's sent from a real daemon (or to a
+	// -telemetry-url given for testing).
+	sender := newSender(telemetryDeps{
+		st: st, tunnels: tunnels, ks: ks, autoApply: autoApplyOn.Load,
+		app: telemetry.NewApp(version, channel, installedService(exe)),
+	}, telemetryURL, logger)
+	srv.SetTelemetry(sender)
+	svc.SetTelemetryNotice(sender.NoticeDue)
+	if p := svc.Preferences(); p.Telemetry != domain.TelemetryOff {
+		logger.Info("telemetry is on: an anonymous daily report (see `riftroute telemetry show`; `riftroute telemetry off` stops it)",
+			"level", p.Telemetry)
+	}
+	if providerName != "fake" || telemetryURL != "" {
+		go supervise(ctx, logger, "telemetry", sender.Run)
+	}
 
 	if pushInterval > 0 {
 		go supervise(ctx, logger, "broadcast", func(c context.Context) { broadcastLoop(c, srv, pushInterval) })
@@ -646,6 +673,7 @@ func run() error {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
+				counts.Inc(telemetry.KeyPanics)
 				logger.Error("recovered panic starting tunnels", "panic", r)
 			}
 		}()
@@ -688,6 +716,9 @@ func run() error {
 
 	// Clean up the socket so the next launch starts fresh (spec/AGENTS §4).
 	_ = os.Remove(socketPath)
+	// A clean end: the counters kept, the next start not counted unclean.
+	_ = counts.Flush()
+	_ = os.Remove(runMarker(updateDir))
 	if code := restartCode.Load(); code != 0 {
 		logger.Info("riftrouted stopped to restart into an update or rollback")
 		return restartExit(code)
@@ -708,6 +739,7 @@ func supervise(ctx context.Context, logger *slog.Logger, name string, fn func(co
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
+					counts.Inc(telemetry.KeyPanics)
 					logger.Error("recovered panic in loop; restarting", "loop", name, "panic", r)
 				}
 			}()

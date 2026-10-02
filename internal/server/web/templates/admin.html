@@ -11,6 +11,7 @@
 <body class="admin">
 <header class="top">
   <span class="brand"><img src="{{asset "favicon.svg"}}" alt="" width="28" height="28">RiftRoute admin</span>
+  <nav class="tabs"><a href="/admin" aria-current="page">Overview</a><a href="/admin/telemetry">Telemetry</a></nav>
   <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="btn">Sign out</button></form>
 </header>
 <main class="dash">
@@ -24,7 +25,19 @@
       <div><dt>Signed-in sessions</dt><dd>{{.Sessions}}</dd></div>
     </dl>
   </section>
-  <section class="card later"><h2>Telemetry</h2><p>Coming in phase 3: anonymous usage counts from the app (opt-out, never addresses, domains or names), as charts here.</p></section>
+  <section class="card">
+    <h2>Telemetry <span class="muted small">last 7 days</span></h2>
+    {{with .Telemetry}}
+    <dl class="stats">
+      <div><dt>Installs</dt><dd>{{.Installs}}</dd></div>
+      <div><dt>Reports</dt><dd>{{.Reports}}</dd></div>
+      <div><dt>Versions</dt><dd>{{len .Versions}}</dd></div>
+      <div><dt>Flags</dt><dd{{if .Flags}} class="halted"{{end}}>{{len .Flags}}</dd></div>
+    </dl>
+    {{range .Flags}}<p class="note warn">{{if .Version}}<b>{{.Version}}</b> — {{end}}{{.What}}</p>{{end}}
+    {{else}}<p class="note error">The telemetry summary couldn't be read; see the server log.</p>{{end}}
+    <p><a href="/admin/telemetry">Open the telemetry dashboard</a></p>
+  </section>
   <section class="card" id="releases">
     <h2>Releases &amp; updates</h2>
     {{range .Channels}}

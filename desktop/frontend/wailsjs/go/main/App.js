@@ -122,6 +122,10 @@ export function GetSystemUsers() {
   return window['go']['main']['App']['GetSystemUsers']();
 }
 
+export function GetTelemetryPreview() {
+  return window['go']['main']['App']['GetTelemetryPreview']();
+}
+
 export function GetTunnelEngine() {
   return window['go']['main']['App']['GetTunnelEngine']();
 }
@@ -240,6 +244,10 @@ export function StartDaemon() {
 
 export function StopDaemon() {
   return window['go']['main']['App']['StopDaemon']();
+}
+
+export function TelemetryNoticeSeen() {
+  return window['go']['main']['App']['TelemetryNoticeSeen']();
 }
 
 export function UninstallDaemon() {

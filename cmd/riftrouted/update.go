@@ -192,7 +192,8 @@ func newUpdater(ctx context.Context, st *store.Store, proto *safety.Protocol, cu
 			restart.Store(updater.RestartExitCode)
 			stop()
 		},
-		Log: logger,
+		Count: counts.Inc,
+		Log:   logger,
 	})
 }
 

@@ -1,9 +1,9 @@
 // Package server is riftroute-server: the public site at riftroute.tellnew.tech
 // (bilingual landing page) and the admin dashboard behind a password. It
 // listens on loopback only, behind Caddy/Cloudflare, keeps no access log, and
-// never records client addresses (the login throttle holds keyed hashes in
-// memory for its window only). Later phases add the update API, telemetry
-// ingest and bug-report upload here.
+// never records client addresses (the throttles hold keyed hashes in memory
+// for their window only). It serves the update API and takes telemetry;
+// a later phase adds bug-report upload.
 package server
 
 import (
@@ -24,6 +24,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/buildinfo"
@@ -67,12 +68,18 @@ type Server struct {
 	cfg       Config
 	st        *store
 	lim       *limiter
+	tlim      *limiter      // telemetry uploads
 	verify    chan struct{} // one password check at a time
 	tmpl      *template.Template
 	static    map[string][]byte
 	assetHash string
 	started   time.Time
 	mux       *http.ServeMux
+
+	tfull   sync.Mutex
+	tfullAt time.Time // when refusing reports was last logged
+	sumMu   sync.Mutex
+	sums    map[int]cachedSummary // by window, for summaryTTL
 }
 
 // New opens the data directory's database and prepares the handlers.
@@ -87,13 +94,21 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	s := &Server{cfg: cfg, st: st, lim: newLimiter(15*time.Minute, 5, 50), verify: make(chan struct{}, 1), started: cfg.Now(), static: map[string][]byte{}}
+	s := &Server{cfg: cfg, st: st, lim: newLimiter(15*time.Minute, 5, 50), tlim: newTelemetryLimiter(), verify: make(chan struct{}, 1), started: cfg.Now(), static: map[string][]byte{}}
 	if err := s.loadStatic(); err != nil {
 		return nil, err
 	}
 	s.tmpl, err = template.New("").Funcs(template.FuncMap{
-		"asset": func(name string) string { return "/static/" + s.assetHash + "/" + name },
-		"bytes": humanBytes,
+		"asset":  func(name string) string { return "/static/" + s.assetHash + "/" + name },
+		"bytes":  humanBytes,
+		"pct":    pct,
+		"shares": shares,
+		"sumOf":  sumOf,
+		// barH scales n of peak into a chart's 100 units of height.
+		"barH": func(n, peak int) int { return n * 100 / max(peak, 1) },
+		"add":  func(a, b int) int { return a + b },
+		"sub":  func(a, b int) int { return a - b },
+		"mul":  func(a, b int) int { return a * b },
 	}).ParseFS(webFS, "web/templates/*.html")
 	if err != nil {
 		return nil, err
@@ -110,8 +125,8 @@ func New(cfg Config) (*Server, error) {
 // Close releases the database.
 func (s *Server) Close() error { return s.st.close() }
 
-// Maintain prunes expired sessions, stale devices and the login throttle's
-// memory until ctx ends.
+// Maintain prunes expired sessions, stale devices, the throttles' memory
+// and telemetry reports past their keep until ctx ends.
 func (s *Server) Maintain(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
@@ -134,6 +149,10 @@ func (s *Server) maintain() {
 		s.cfg.Logger.Warn("device prune failed", "err", err)
 	}
 	s.lim.sweep(now)
+	s.tlim.sweep(now)
+	if err := s.st.pruneReports(utcDay(now).AddDate(0, 0, -telemetryKeepDays).Format(time.DateOnly)); err != nil {
+		s.cfg.Logger.Warn("telemetry prune failed", "err", err)
+	}
 }
 
 // loadStatic reads the embedded assets and derives the cache-busting hash:
@@ -175,6 +194,9 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /licenses/{name}", s.handleLicense)
 	m.HandleFunc("GET /api/v1/update/{channel}", s.handleUpdate)
 	m.HandleFunc("POST /admin/releases", s.handleReleasesPost)
+	m.HandleFunc("POST /api/v1/telemetry", s.handleTelemetry)
+	m.HandleFunc("GET /api/v1/telemetry/summary", s.handleTelemetrySummary)
+	m.HandleFunc("GET /admin/telemetry", s.handleTelemetryDashboard)
 	m.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprint(w, "User-agent: *\nDisallow: /admin\nDisallow: /login\n")
@@ -461,6 +483,9 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	}
 	data["Channels"], data["ChannelErrors"] = s.channels()
 	data["RolloutSteps"] = rolloutSteps
+	if sum, err := s.summary(7); err == nil {
+		data["Telemetry"] = sum
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.render(w, http.StatusOK, "admin.html", data)
 }

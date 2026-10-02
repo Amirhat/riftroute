@@ -26,15 +26,17 @@ import (
 
 // Server exposes the daemon's core over a UDS.
 type Server struct {
-	updater  Updater // nil: no updater wired
-	svc      *core.Service
-	store    *store.Store
-	proto    *safety.Protocol
-	hub      *Hub
-	allowUID uint32
-	version  string
-	log      *slog.Logger
-	mux      *http.ServeMux
+	updater Updater // nil: no updater wired
+	// telemetry is the report sender (nil: the telemetry endpoints answer 503).
+	telemetry Telemetry
+	svc       *core.Service
+	store     *store.Store
+	proto     *safety.Protocol
+	hub       *Hub
+	allowUID  uint32
+	version   string
+	log       *slog.Logger
+	mux       *http.ServeMux
 
 	// debugVPN, if set (fake provider only), toggles the simulated VPN so the
 	// auto-apply path can be demonstrated against a running daemon. nil in prod.
@@ -148,6 +150,7 @@ func (s *Server) routes() {
 	// Redacted diagnostics report for bug reports (never uploaded).
 	s.mux.HandleFunc("GET /bugreport", s.handleBugReport)
 	s.routesUpdate()
+	s.routesTelemetry()
 
 	// Mutating endpoints — peer-credential gated (spec §12). /plan is a dry-run
 	// preview and does not mutate, but lives with its siblings for clarity.

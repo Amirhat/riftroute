@@ -577,6 +577,49 @@ func (s *Store) ListAudit(since time.Time, limit int) ([]domain.AuditEvent, erro
 	return out, rows.Err()
 }
 
+// AuditAfter returns up to limit (<=0 = 5000) audit events with an id above
+// after, oldest first, and the id of the last one returned (after, when
+// there are none): a reader that keeps it reads each event once.
+func (s *Store) AuditAfter(after int64, limit int) ([]domain.AuditEvent, int64, error) {
+	if limit <= 0 {
+		limit = 5000
+	}
+	rows, err := s.db.Query(`SELECT id, doc FROM audit WHERE id > ? ORDER BY id LIMIT ?`, after, limit)
+	if err != nil {
+		return nil, after, err
+	}
+	defer rows.Close()
+	var out []domain.AuditEvent
+	last := after
+	for rows.Next() {
+		var (
+			id  int64
+			doc string
+		)
+		if err := rows.Scan(&id, &doc); err != nil {
+			return nil, after, err
+		}
+		var ev domain.AuditEvent
+		if err := json.Unmarshal([]byte(doc), &ev); err != nil {
+			return nil, after, err
+		}
+		ev.ID = id
+		out = append(out, ev)
+		last = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, after, err
+	}
+	return out, last, nil
+}
+
+// LatestAuditID is the newest audit event's id (0 with none).
+func (s *Store) LatestAuditID() (int64, error) {
+	var id sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(id) FROM audit`).Scan(&id)
+	return id.Int64, err
+}
+
 // --- Snapshots ---
 
 // SaveSnapshot persists a full-state snapshot.

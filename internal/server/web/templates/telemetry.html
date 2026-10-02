@@ -1,0 +1,120 @@
+{{define "telemetry.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Telemetry — RiftRoute admin</title>
+<link rel="icon" href="{{asset "favicon.svg"}}" type="image/svg+xml">
+<link rel="stylesheet" href="{{asset "site.css"}}">
+</head>
+<body class="admin">
+<header class="top">
+  <span class="brand"><img src="{{asset "favicon.svg"}}" alt="" width="28" height="28">RiftRoute admin</span>
+  <nav class="tabs"><a href="/admin">Overview</a><a href="/admin/telemetry" aria-current="page">Telemetry</a></nav>
+  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit" class="btn">Sign out</button></form>
+</header>
+<main class="dash">
+  {{$s := .S}}
+  <section class="card">
+    <div class="card-head">
+      <h2>Telemetry</h2>
+      <nav class="window" aria-label="Window">{{range .Windows}}<a href="/admin/telemetry?days={{.}}"{{if eq . $s.Days}} aria-current="page"{{end}}>{{.}} days</a>{{end}}</nav>
+    </div>
+    <dl class="stats">
+      <div><dt>Installs</dt><dd>{{$s.Installs}}</dd></div>
+      <div><dt>Reports</dt><dd>{{$s.Reports}}</dd></div>
+      <div><dt>At full</dt><dd>{{$s.Usage.Installs}}</dd></div>
+      <div><dt>Window (UTC)</dt><dd>{{$s.From}} – {{$s.To}}</dd></div>
+    </dl>
+    {{range $s.Flags}}<p class="note warn">{{if .Version}}<b>{{.Version}}</b> — {{end}}{{.What}}</p>{{end}}
+    <figure class="daily">
+      <svg viewBox="0 0 {{mul (len $s.Daily) 10}} 100" preserveAspectRatio="none" role="img" aria-label="Installs reporting per day">
+        {{range $i, $d := $s.Daily}}<rect x="{{add (mul $i 10) 1}}" y="{{sub 100 (barH $d.Installs $.Peak)}}" width="8" height="{{barH $d.Installs $.Peak}}"><title>{{$d.Day}}: {{$d.Installs}} ({{$d.Full}} at full)</title></rect>{{end}}
+      </svg>
+      <figcaption>Installs reporting each day (peak {{.Peak}}). Install ids are renewed every 30 days, so the window's install count runs a little high.</figcaption>
+    </figure>
+  </section>
+
+  <section class="card">
+    <h2>Versions</h2>
+    <div class="scroll">
+    <table class="tbl">
+      <thead><tr>
+        <th scope="col">Version</th><th scope="col">Installs</th><th scope="col">Starts</th><th scope="col">Unclean</th><th scope="col">Panics</th>
+        <th scope="col">Updated to</th><th scope="col">Rolled back here<br><span class="muted">health / user</span></th><th scope="col">Skipped broken</th>
+        <th scope="col">Applied</th><th scope="col">Failed</th><th scope="col">Slow</th><th scope="col">Tunnel failures</th>
+      </tr></thead>
+      <tbody>
+      {{range $s.Versions}}<tr>
+        <th scope="row">{{.Version}}</th><td>{{.Installs}}</td><td>{{.Daemon.Starts}}</td>
+        <td>{{.Daemon.Unclean}} <span class="muted">{{.InstallsUnclean}} inst. · {{pct .UncleanRate}}</span></td><td>{{.Daemon.Panics}} <span class="muted">{{.InstallsPanicked}} inst.</span></td>
+        <td>{{.Updates.Installed}}</td><td>{{.Updates.RolledBackHealth}} / {{.Updates.RolledBackUser}}</td><td>{{.Updates.SkippedBroken}}</td>
+        <td>{{.Applies.Applied}}</td><td>{{.Applies.Failed}} <span class="muted">{{pct .ApplyFailRate}}</span></td>
+        <td>{{.Applies.Slow}} <span class="muted">{{pct .SlowRate}}</span></td><td><span class="muted">{{pct .TunnelFailRate}}</span></td>
+      </tr>{{else}}<tr><td colspan="12" class="muted">No reports in this window.</td></tr>{{end}}
+      </tbody>
+    </table>
+    </div>
+    <p class="muted small">Every install weighs the same: a rate is the share of installs (unclean starts), or the installs' own rates averaged (changes, tunnels), shown from {{.MinInstalls}} installs; a panic or rollback is flagged from {{.MinFlagInstalls}}. Each report counts for at most one machine's day. A rollback is reported by the version the install went back to. Reports are anonymous: a flag is a hint.</p>
+  </section>
+
+  <section class="card">
+    <h2>Tunnels</h2>
+    <div class="grid">
+    {{range $typ, $t := $s.Tunnels}}
+      <div>
+        <h3>{{$typ}}</h3>
+        <dl class="stats small">
+          <div><dt>Connected</dt><dd>{{$t.Connected}}</dd></div>
+          <div><dt>Failed</dt><dd>{{$t.Failed}}</dd></div>
+          <div><dt>Connect rate</dt><dd>{{pct $t.ConnectRate}}</dd></div>
+          <div><dt>Drops</dt><dd>{{$t.Drops}}</dd></div>
+          <div><dt>Gave up</dt><dd>{{$t.GaveUp}}</dd></div>
+        </dl>
+        {{template "share-list" shares $t.FailedBy $t.Failed}}
+      </div>
+    {{else}}<p class="muted">No tunnel sessions reported.</p>{{end}}
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Changes</h2>
+    <div class="grid">
+      <div><h3>Refused, by rule</h3>{{template "share-list" shares $s.Usage.Refused (sumOf $s.Usage.Refused)}}</div>
+      <div><h3>Rolled back, by reason</h3>{{template "share-list" shares $s.Usage.RolledBack (sumOf $s.Usage.RolledBack)}}</div>
+      <div><h3>How long they took</h3>{{template "share-list" .Durations}}</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Platforms <span class="muted small">installs</span></h2>
+    <div class="grid">
+      <div><h3>OS</h3>{{template "share-list" shares $s.Platforms.OS $s.Installs}}</div>
+      <div><h3>Architecture</h3>{{template "share-list" shares $s.Platforms.Arch $s.Installs}}</div>
+      <div><h3>Linux distribution</h3>{{template "share-list" shares $s.Platforms.Distro (sumOf $s.Platforms.Distro)}}</div>
+      <div><h3>Level</h3>{{template "share-list" shares $s.Platforms.Level $s.Installs}}</div>
+      <div><h3>Channel</h3>{{template "share-list" shares $s.Platforms.Channel $s.Installs}}</div>
+      <div><h3>Installed as a service</h3>{{template "share-list" .Service}}</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Usage <span class="muted small">installs at full</span></h2>
+    <div class="grid">
+      <div><h3>Features on</h3>{{template "share-list" .Features}}</div>
+      <div><h3>Profile modes</h3>{{template "share-list" shares $s.Usage.ProfileModes $s.Usage.Installs}}</div>
+      <div><h3>Rule kinds</h3>{{template "share-list" shares $s.Usage.RuleKinds $s.Usage.Installs}}</div>
+      <div><h3>Tunnel types</h3>{{template "share-list" shares $s.Usage.TunnelTypes $s.Usage.Installs}}</div>
+    </div>
+    <p class="muted small">The same numbers as JSON: <code>GET /api/v1/telemetry/summary?days={{$s.Days}}</code> with the token from <code>riftroute-server telemetry-token</code>.</p>
+  </section>
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "share-list"}}<table class="tbl shares">
+{{range .}}<tr><th scope="row">{{.Name}}</th><td>{{.N}}</td><td class="bar"><svg viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect width="{{.Pct}}" height="8"/></svg></td></tr>
+{{else}}<tr><td class="muted">None yet.</td></tr>{{end}}
+</table>{{end}}

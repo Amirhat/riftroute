@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/update"
 )
 
@@ -93,8 +94,16 @@ type Env struct {
 	SelfTest func(ctx context.Context, bin, db string) error
 	// Restart ends the daemon gracefully with RestartExitCode.
 	Restart func()
-	Log     *slog.Logger
-	Now     func() time.Time
+	// Count counts a telemetry event (telemetry.Counters.Inc); nil: none.
+	Count func(key string)
+	Log   *slog.Logger
+	Now   func() time.Time
+}
+
+func (u *Updater) count(key string) {
+	if u.env.Count != nil {
+		u.env.Count(key)
+	}
 }
 
 // Updater is the daemon's update state machine.
@@ -312,6 +321,7 @@ func (u *Updater) job(ctx context.Context, kind jobKind, decided chan struct{}) 
 		return
 	case err != nil:
 		u.env.Log.Warn("update check failed", "err", err)
+		u.count(telemetry.KeyCheckFailed)
 		u.set(func(s *domain.UpdateStatus) { s.State, s.Error = "error", err.Error() })
 		return
 	}

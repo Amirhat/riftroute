@@ -37,6 +37,8 @@ type Cache struct {
 
 	mu      sync.Mutex
 	entries map[string]cacheEntry
+	// onFail is told of each lookup that failed (OnFailure; telemetry).
+	onFail func()
 }
 
 type cacheEntry struct {
@@ -65,6 +67,14 @@ func NewCache(r Resolver, ttl time.Duration) *Cache {
 	return &Cache{resolver: r, ttl: ttl, now: time.Now, entries: map[string]cacheEntry{}}
 }
 
+// OnFailure has fn called for each lookup that fails (not one its caller
+// gave up on): the count telemetry reports.
+func (c *Cache) OnFailure(fn func()) {
+	c.mu.Lock()
+	c.onFail = fn
+	c.mu.Unlock()
+}
+
 // Lookup returns cached addresses, resolving (and caching) on a miss/expiry.
 func (c *Cache) Lookup(ctx context.Context, host string) []netip.Addr {
 	c.mu.Lock()
@@ -83,11 +93,16 @@ func (c *Cache) Lookup(ctx context.Context, host string) []netip.Addr {
 		// nothing about it, and must not keep it unresolved for the next.
 		c.mu.Lock()
 		e = c.entries[host]
+		var told func()
 		if ctx.Err() == nil {
 			e.failed = c.now()
 			c.entries[host] = e
+			told = c.onFail
 		}
 		c.mu.Unlock()
+		if told != nil {
+			told()
+		}
 		return e.addrs
 	}
 	sortAddrs(addrs)
