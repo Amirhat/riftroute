@@ -193,7 +193,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
       - name: Import signing certificate
@@ -243,7 +243,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install WebKit deps + FUSE
         run: |
           sudo apt-get update
