@@ -38,9 +38,26 @@ dashboard that shows a bad release before most installs take it.
   than the one before it. The same numbers are a JSON summary behind a
   read-only token (`riftroute-server telemetry-token`).
 
+- **IKEv2 profiles that log in with a username and password (EAP) or a
+  shared secret connect.** The username and password are the profile's, or
+  yours when it leaves the password for the device to ask: `riftroute
+  tunnel add` asks for it (or reads it with `--password-stdin`), and so
+  does the app. A shared secret needs strongSwan 6.1 or later: RiftRoute's
+  own on macOS; on Linux an older one is refused, saying why. Secrets go to
+  strongSwan on its input, never in its command line. A rejected username
+  or password stops the tunnel instead of retrying, so it can't lock the
+  account.
+
 ### Changed
 - `riftroute update mode` no longer says automatic install is still to
   come: it's been here since 0.2.6.
+- On Debian and Ubuntu, IKEv2's install help adds
+  `libcharon-extauth-plugins` (username-and-password logins need it).
+
+### Fixed
+- **An IKEv2 tunnel follows a new address.** When strongSwan connects
+  again after a network change and the server hands out another address,
+  the tunnel's address and routes move with it; it stayed on the old one.
 
 ## [0.6.1] — 2026-10-01
 

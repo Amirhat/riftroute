@@ -172,8 +172,8 @@ VICI, so it needs no `pkcs12` plugin and no OpenSSL legacy provider.
 | `AuthenticationMethod` Certificate | `local.auth = pubkey` with the PKCS#12's cert and key |
 | server auth | `remote.auth = pubkey`, `remote.cacerts` = the profile's CAs (none: the system's, from its CA bundle) |
 | `ServerCertificateCommonName` | not checked apart: the server must prove `RemoteIdentifier` with a certificate the CAs vouch for |
-| `ExtendedAuthEnabled` + `AuthName`/`AuthPassword` | `eap-mschapv2` — later: charon-cmd asks for it on a terminal; refused at connect until then |
-| `SharedSecret` | `psk` — later, likewise |
+| `ExtendedAuthEnabled` + `AuthName`/`AuthPassword` | `--profile ikev2-eap --eap-identity <AuthName>`; the password on charon-cmd's stdin (it asks with getpass, which reads stdin with no terminal). A profile without `AuthPassword` takes the user's (the CLI and the app ask for it), saved with the tunnel like an OpenVPN password |
+| `SharedSecret` | `--profile ikev2-psk`, the secret on stdin — strongSwan 6.1 and later (RiftRoute's own on macOS); refused, saying why, with an older one (Debian 12's 5.9) |
 | `IKESecurityAssociationParameters` | `proposals`, e.g. `aes256gcm16-prfsha256-ecp384` |
 | `ChildSecurityAssociationParameters` + `EnablePFS` | `esp_proposals`, e.g. `aes256gcm16-ecp384` |
 | `LifeTimeInMinutes` | `rekey_time` (IKE and child) |
@@ -228,7 +228,17 @@ protocols.
      (5.9), and with the 6.1 RiftRoute builds for macOS (`SWAN=6`, from the
      same source and patch), against a strongSwan server with a full
      tunnel, a virtual-IP pool and ECDSA certificates (done);
-   - EAP and PSK profiles (later).
+   - EAP and PSK profiles (done): secrets on stdin, never in the
+     arguments, at most 128 characters (macOS's getpass reads no more; one
+     longer is refused rather than cut). A rejected username or password
+     ends the session instead of retrying, so it can't lock the account. The
+     Docker test logs in with EAP on 5.9 and 6.1, refuses a wrong password
+     once, and logs in with a shared secret on 6.1. On Debian/Ubuntu
+     EAP-MSCHAPv2 is `libcharon-extauth-plugins` (in the install help);
+     MD4 comes from OpenSSL's legacy provider, which strongSwan loads.
+   - A connection charon makes again after a network change, with another
+     address from the server, is followed: the tunnel's address and routes
+     move with it, still connected (done).
 4. **The app and release:**
    - import `.mobileconfig` on the Tunnels page;
    - the certificate's expiry;

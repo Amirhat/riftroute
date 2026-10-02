@@ -247,9 +247,10 @@ distribution's (Debian/Ubuntu: `sudo apt install --no-install-recommends
 charon-cmd libcharon-extra-plugins libcharon-extauth-plugins libstrongswan-standard-plugins
 strongswan-swanctl`; the Tunnels page says what to install elsewhere). The
 profile's full tunnel, DNS and on-demand rules are left out: only the
-networks you list go through it, as with the others. Profiles that log in
-with a certificate work now; ones that log in with a username and password
-(EAP) or a shared secret are saved but don't connect yet. Design and details:
+networks you list go through it, as with the others. They log in with a
+certificate, a username and password (EAP — the profile's, or the one you
+give when it leaves the password out), or a shared secret (macOS, or a Linux
+strongSwan 6.1 or later). Design and details:
 [docs/tunnels-ikev2.md](docs/tunnels-ikev2.md).
 
 ```bash
