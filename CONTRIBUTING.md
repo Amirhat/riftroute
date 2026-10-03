@@ -25,7 +25,7 @@ spec is the source of truth.
 ## Prerequisites
 
 - **Go 1.25+** (a transitive dep requires it; the toolchain auto-downloads)
-- **Node 20+** and **npm** (GUI frontend)
+- **Node 22.13+** and **npm** (GUI frontend; Vite 8 and Vitest 5 need it)
 - **Wails v2.12**: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`
 - **macOS**: Xcode Command Line Tools.
   **Linux**: `libgtk-3-dev`, `libwebkit2gtk-4.1-dev` (GUI built with
