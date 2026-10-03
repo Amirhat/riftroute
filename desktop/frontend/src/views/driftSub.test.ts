@@ -10,6 +10,11 @@ describe('driftSub', () => {
     const text = driftSub({ pending: false, adds: 0, dels: 0, held: [{ route: { dst_cidr: '9.9.9.0/24', iface: 'en0' } as never, until }] })
     expect(text).toMatch(/^another program keeps removing 1 route; not put back until /)
   })
+  it('says what another program now routes itself', () => {
+    expect(driftSub({ pending: false, adds: 0, dels: 0, taken: [{ dst_cidr: '9.9.9.0/24', iface: 'utun3' } as never] })).toBe(
+      '1 destination now routed by another program; left alone',
+    )
+  })
   it('is in sync otherwise', () => {
     expect(driftSub({ pending: false, adds: 0, dels: 0 })).toBe('desired = actual')
   })

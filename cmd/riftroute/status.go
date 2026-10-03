@@ -112,6 +112,9 @@ func renderStatus(w io.Writer, st domain.State) {
 	default:
 		fmt.Fprintln(w, "  Drift:         none")
 	}
+	if n := len(st.Drift.Taken); n > 0 {
+		fmt.Fprintf(w, "  Taken:         another program routes %d of RiftRoute's destinations; left alone — see `riftroute doctor`\n", n)
+	}
 	if n := len(st.Drift.Held); n > 0 {
 		fmt.Fprintf(w, "  Held:          another program keeps removing %d route(s); not put back until %s — see `riftroute doctor`\n",
 			n, st.Drift.Held[0].Until.Local().Format("15:04"))

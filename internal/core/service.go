@@ -782,10 +782,14 @@ func (s *Service) computeDrift(ctx context.Context, actualRoutes []domain.Manage
 	// them — not as "in sync". Held ones aren't pending: RiftRoute stopped
 	// putting them back, and says so.
 	held, heldKeys := s.held()
-	actualRoutes, missing := routing.VerifyRoutes(actualRoutes, dRoutes, func(fam domain.Family) ([]domain.Route, error) {
+	v := routing.VerifyRoutes(actualRoutes, dRoutes, func(fam domain.Family) ([]domain.Route, error) {
 		return s.prov.ListRoutes(ctx, fam)
 	}, heldKeys, nil)
-	d.Missing, d.Held = len(missing), held
+	actualRoutes = v.Kept
+	d.Missing, d.Held = len(v.Missing), held
+	for _, t := range v.Taken {
+		d.Taken = append(d.Taken, t.Route)
+	}
 	plan := routing.Reconcile(dRoutes, actualRoutes, dRules, s.actualManagedRules(ctx), s.Platform())
 	for _, op := range plan.Ops {
 		switch op.Kind {

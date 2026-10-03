@@ -66,6 +66,10 @@ type DriftStatus struct {
 	// Held: routes another program keeps removing, which RiftRoute stopped
 	// putting back for now (not in Adds).
 	Held []HeldRoute `json:"held,omitempty"`
+	// Taken: routes whose destination another program's route now holds.
+	// RiftRoute never replaces a route it didn't make; once that one goes,
+	// they're put back (not in Adds).
+	Taken []Route `json:"taken,omitempty"`
 }
 
 // HeldRoute is a route RiftRoute stopped putting back until Until: another

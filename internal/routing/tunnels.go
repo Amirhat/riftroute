@@ -653,48 +653,64 @@ func exceptText(except []domain.TunnelExcept) string {
 	return strings.Join(out, ", ")
 }
 
-// VerifyRoutes returns owned as the kernel really holds it (kept), and what
-// it no longer holds (missing): a route desired still wants that the kernel
-// doesn't have is left out of kept, so a reconcile against kept puts it back.
-// A tunnel's routes vanish with its interface (openvpn re-creates its tun
-// under the same name), and another program — a VPN client tidying the
-// table — can delete any of RiftRoute's. Desired and the ownership map still
-// agree, so nothing else would re-add them, and drift would read "in sync".
-// Missing routes desired no longer wants stay, so the plan's (idempotent)
-// delete clears their records.
+// Verified is what VerifyRoutes found.
+type Verified struct {
+	// Kept is owned as the kernel really holds it: the plan's "actual".
+	Kept []domain.ManagedRoute
+	// Missing are routes desired still wants that the kernel no longer has
+	// (not in Kept): a reconcile puts them back.
+	Missing []domain.ManagedRoute
+	// Taken are wanted routes the kernel doesn't have because another route
+	// holds their destination — another program's. They stay in Kept:
+	// RiftRoute never replaces a route it didn't make, and adding beside it
+	// only meets "File exists". Once that route goes, they're Missing.
+	Taken []domain.ManagedRoute
+}
+
+// VerifyRoutes checks owned against the kernel: a route desired still wants
+// that the kernel doesn't have is Missing, left out of Kept, so a reconcile
+// against Kept puts it back. A tunnel's routes vanish with its interface
+// (openvpn re-creates its tun under the same name), and another program — a
+// VPN client tidying the table — can delete any of RiftRoute's. Desired and
+// the ownership map still agree, so nothing else would re-add them, and
+// drift would read "in sync". Missing routes desired no longer wants stay,
+// so the plan's (idempotent) delete clears their records.
 //
 // held are RouteKeys to keep regardless: another program keeps removing
 // them, and putting them back would only fight it (the Apply Protocol's live
-// repair holds them for a while). only, when set, limits the check to the
-// routes it accepts (a tunnel's apply carries the others over as recorded).
-// read returns one family's kernel table. It runs once per family holding a
+// repair holds them for a while). A tunnel's routes are never held: its
+// routes, its pins and block mode's reject routes keep its promise, and are
+// put back every time. only, when set, limits the check to the routes it
+// accepts (a tunnel's apply carries the others over as recorded). read
+// returns one family's kernel table. It runs once per family holding a
 // wanted route; a failed read changes nothing.
-func VerifyRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error), held map[string]bool, only func(domain.ManagedRoute) bool) (kept, missing []domain.ManagedRoute) {
+func VerifyRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error), held map[string]bool, only func(domain.ManagedRoute) bool) Verified {
 	wanted := indexRoutes(desired)
 	kernel := map[domain.Family]Installed{}
-	gone := func(o domain.ManagedRoute) bool {
-		if _, ok := wanted[RouteKey(o.Route)]; !ok || held[RouteKey(o.Route)] || only != nil && !only(o) {
-			return false
-		}
-		in, read1 := kernel[o.Family]
-		if !read1 {
-			rs, err := read(o.Family)
-			if err == nil {
-				in = IndexInstalled(rs)
-			}
-			kernel[o.Family] = in // nil after a failed read: trust the records
-		}
-		return in != nil && !in.Has(o.Route)
-	}
-	kept = owned[:0:0]
+	var v Verified
 	for _, o := range owned {
-		if gone(o) {
-			missing = append(missing, o)
-		} else {
-			kept = append(kept, o)
+		in := Installed(nil)
+		if _, ok := wanted[RouteKey(o.Route)]; ok && (only == nil || only(o)) {
+			var read1 bool
+			if in, read1 = kernel[o.Family]; !read1 {
+				if rs, err := read(o.Family); err == nil {
+					in = IndexInstalled(rs)
+				}
+				kernel[o.Family] = in // nil after a failed read: trust the records
+			}
 		}
+		switch {
+		case in == nil || in.Has(o.Route):
+		case in.HasDestination(o.Route):
+			v.Taken = append(v.Taken, o)
+		case held[RouteKey(o.Route)] && !IsTunnelRoute(o):
+		default:
+			v.Missing = append(v.Missing, o)
+			continue
+		}
+		v.Kept = append(v.Kept, o)
 	}
-	return kept, missing
+	return v
 }
 
 // IsTunnelRoute says whether a route is one of a tunnel's (its routes, its
@@ -715,6 +731,7 @@ func IndexInstalled(kernel []domain.Route) Installed {
 		if k.Cloned {
 			continue
 		}
+		in[maskedDstKey(k)+"|any"] = true
 		if k.Reject {
 			in[maskedDstKey(k)+"|reject"] = true
 			continue
@@ -739,6 +756,10 @@ func (in Installed) Has(r domain.Route) bool {
 	}
 	return in[maskedDstKey(r)+"|dev "+r.Iface]
 }
+
+// HasDestination reports whether the kernel holds any route to r's
+// destination (same family, table and masked prefix), whoever's.
+func (in Installed) HasDestination(r domain.Route) bool { return in[maskedDstKey(r)+"|any"] }
 
 // SameGateway reports whether two spellings name the same gateway (see
 // gatewayKey).

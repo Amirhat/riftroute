@@ -16,6 +16,10 @@ import (
 // enforcing its own table) would be fought forever, so a route found missing
 // liveStrikes times within liveWindow is held: kept as if installed, not put
 // back, for liveHold, and reported (HeldRoutes). After that it's tried again.
+// A tunnel's routes are never held (they keep its promise: block mode's
+// reject routes above all), and neither is a destination another route now
+// holds (routing.Verified.Taken: nothing to put back beside it). Holds live
+// in memory: after a restart, the fight resumes for liveStrikes sightings.
 const (
 	liveStrikes = 3
 	liveWindow  = 10 * time.Minute
@@ -119,16 +123,20 @@ func (p *Protocol) installed(ctx context.Context, owned, desired []domain.Manage
 	if tunnelsOnly {
 		only = routing.IsTunnelRoute
 	}
-	kept, missing := routing.VerifyRoutes(owned, desired, func(fam domain.Family) ([]domain.Route, error) {
+	v := routing.VerifyRoutes(owned, desired, func(fam domain.Family) ([]domain.Route, error) {
 		return p.prov.ListRoutes(ctx, fam)
 	}, p.live.held(now), only)
-	if note && len(missing) > 0 {
-		for _, m := range missing {
+	if note && len(v.Missing) > 0 {
+		var counted []domain.ManagedRoute
+		for _, m := range v.Missing {
 			p.log.Info("putting back a route the kernel no longer has", "dst", m.DstCIDR, "gateway", m.Gateway, "iface", m.Iface, "profile", m.ProfileID)
+			if !routing.IsTunnelRoute(m) { // a tunnel's are put back every time (VerifyRoutes)
+				counted = append(counted, m)
+			}
 		}
-		for _, h := range p.live.note(missing, now) {
+		for _, h := range p.live.note(counted, now) {
 			p.log.Warn("another program keeps removing a route; not putting it back for now", "dst", h.DstCIDR, "gateway", h.Gateway, "iface", h.Iface, "for", liveHold)
 		}
 	}
-	return kept
+	return v.Kept
 }

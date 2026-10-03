@@ -695,6 +695,7 @@ export namespace domain {
 	    reason?: string;
 	    missing?: number;
 	    held?: HeldRoute[];
+	    taken?: Route[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DriftStatus(source);
@@ -708,6 +709,7 @@ export namespace domain {
 	        this.reason = source["reason"];
 	        this.missing = source["missing"];
 	        this.held = this.convertValues(source["held"], HeldRoute);
+	        this.taken = this.convertValues(source["taken"], Route);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -16,8 +16,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the usual guarded apply. With it off, `riftroute apply` does. A route
   removed again and again (three times in 10 minutes) isn't fought over: it
   is left out for 30 minutes and `doctor` says another program keeps
-  removing it. A tunnel's own apply still puts back only tunnel routes.
-  Reported, with a first fix, by [@lzcook](https://github.com/lzcook) (#7).
+  removing it. A tunnel's routes are never left out (block mode's
+  refusals above all): they're put back every time, as before. And where
+  another program now routes the same destination itself, RiftRoute leaves
+  that route alone — it never replaces a route it didn't make — says so,
+  and puts its own back once the other is gone. Reported, with a first fix,
+  by [@lzcook](https://github.com/lzcook) (#7).
 - **The physical gateway is the one macOS uses.** With Wi-Fi and Ethernet
   both up and no VPN winning, exclude routes went through the first
   interface by name, not the one macOS made primary. The winning default's

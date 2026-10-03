@@ -55,6 +55,10 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 		add("drift", domain.CheckWarn, fmt.Sprintf("another program keeps removing %s; RiftRoute stopped putting %s back until %s",
 			heldText(dr.Held), them, dr.Held[0].Until.Local().Format("15:04")),
 			"a VPN client's own routing or kill switch is the usual cause: let these destinations through in its split-tunnel settings")
+	case len(dr.Taken) > 0:
+		add("drift", domain.CheckWarn, fmt.Sprintf("another program now routes %s, which RiftRoute routes too; RiftRoute leaves its route alone and puts its own back once it's gone",
+			destText(dr.Taken)),
+			"a VPN client pushing these destinations is the usual cause: let them through in its split-tunnel settings, or drop them from RiftRoute's profile")
 	case dr.Missing > 0:
 		add("drift", domain.CheckWarn, fmt.Sprintf("%d route(s) RiftRoute installed are gone from the kernel (another program removed them)", dr.Missing),
 			"auto-apply puts them back; with it off, run `riftroute apply`")
@@ -236,13 +240,22 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 // ("" for nothing).
 // heldText names the held routes' destinations, a few of them.
 func heldText(hs []domain.HeldRoute) string {
-	var dst []string
+	rs := make([]domain.Route, len(hs))
 	for i, h := range hs {
+		rs[i] = h.Route
+	}
+	return destText(rs)
+}
+
+// destText names routes' destinations, a few of them.
+func destText(rs []domain.Route) string {
+	var dst []string
+	for i, r := range rs {
 		if i == 3 {
-			dst = append(dst, fmt.Sprintf("and %d more", len(hs)-3))
+			dst = append(dst, fmt.Sprintf("and %d more", len(rs)-3))
 			break
 		}
-		dst = append(dst, h.Route.DstCIDR)
+		dst = append(dst, r.DstCIDR)
 	}
 	return strings.Join(dst, ", ")
 }

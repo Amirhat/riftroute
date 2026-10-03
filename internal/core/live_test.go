@@ -52,3 +52,37 @@ func TestDriftSeesRoutesAnotherProgramRemoved(t *testing.T) {
 		t.Fatalf("held: drift %+v, check %+v", d, c)
 	}
 }
+
+// Another program's route to the destination: not missing (an apply can't
+// put RiftRoute's beside it), but taken, and the doctor says so.
+func TestDriftSeesADestinationAnotherProgramRoutes(t *testing.T) {
+	svc := newSvc(t)
+	ctx := context.Background()
+	if err := svc.Store().UpsertProfile(domain.Profile{ID: "p1", Name: "direct", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "9.9.9.0/24"}}}); err != nil {
+		t.Fatal(err)
+	}
+	desired, _, _, err := svc.DesiredManaged(ctx)
+	if err != nil || len(desired) != 1 {
+		t.Fatalf("desired = %+v, %v", desired, err)
+	}
+	if err := svc.Store().AddOwned(desired[0]); err != nil {
+		t.Fatal(err)
+	}
+	theirs := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Iface: "utun3", Family: domain.FamilyV4, Owner: domain.OwnerVPN}}
+	if err := svc.Provider().AddRoute(ctx, theirs); err != nil {
+		t.Fatal(err)
+	}
+	st, err := svc.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Drift.Pending || st.Drift.Missing != 0 || len(st.Drift.Taken) != 1 || svc.LiveMissing(ctx) != 0 {
+		t.Fatalf("drift %+v", st.Drift)
+	}
+	for _, c := range svc.Doctor(ctx).Checks {
+		if c.Name == "drift" && (c.Status != domain.CheckWarn || !strings.Contains(c.Detail, "another program now routes 9.9.9.0/24")) {
+			t.Fatalf("check %+v", c)
+		}
+	}
+}

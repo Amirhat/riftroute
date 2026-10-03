@@ -46,8 +46,8 @@ function DashboardContent({ state }: { state: State }) {
         />
         <HeadlineCard
           label="Drift"
-          value={state.drift.pending ? (state.drift.reason ? 'Attention' : 'Pending') : state.drift.held?.length ? 'Held' : 'None'}
-          tone={state.drift.pending || state.drift.held?.length ? 'warning' : 'success'}
+          value={state.drift.pending ? (state.drift.reason ? 'Attention' : 'Pending') : state.drift.held?.length || state.drift.taken?.length ? 'Held' : 'None'}
+          tone={state.drift.pending || state.drift.held?.length || state.drift.taken?.length ? 'warning' : 'success'}
           sub={driftSub(state.drift)}
         />
       </div>
@@ -216,17 +216,20 @@ function DashboardSkeleton() {
 }
 
 // driftSub explains the drift card: why desired can't be computed, what an
-// apply would change (routes another program removed among the adds), or
-// what RiftRoute stopped putting back because another program keeps
-// removing it.
+// apply would change (routes another program removed among the adds), and
+// what RiftRoute leaves alone: routes another program keeps removing (held
+// for a while) or now routes itself (taken).
 export function driftSub(d: DriftStatus): string {
   if (d.reason) return d.reason
   const held = d.held ?? []
-  const heldText = held.length
-    ? `another program keeps removing ${held.length} route${held.length === 1 ? '' : 's'}; not put back until ${new Date(held[0].until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-    : ''
-  if (!d.pending) return heldText || 'desired = actual'
+  const taken = d.taken ?? []
+  const notes = [
+    held.length
+      ? `another program keeps removing ${held.length} route${held.length === 1 ? '' : 's'}; not put back until ${new Date(held[0].until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+      : '',
+    taken.length ? `${taken.length} destination${taken.length === 1 ? '' : 's'} now routed by another program; left alone` : '',
+  ].filter(Boolean)
+  if (!d.pending) return notes.join(' · ') || 'desired = actual'
   const removed = d.missing ? ` (${d.missing} removed by another program)` : ''
-  const change = `+${d.adds} to add${removed} · −${d.dels} to remove`
-  return heldText ? `${change} · ${heldText}` : change
+  return [`+${d.adds} to add${removed} · −${d.dels} to remove`, ...notes].join(' · ')
 }
