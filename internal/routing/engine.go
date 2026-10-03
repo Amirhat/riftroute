@@ -9,6 +9,7 @@ package routing
 import (
 	"fmt"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -19,9 +20,24 @@ import (
 // Model B (Linux policy routing) allocation: a dedicated table for include-mode
 // traffic, and a fixed priority band for the selecting rules (spec §4.3/§5.4).
 const (
-	ModelBTable      = "5252"
-	ModelBRulePrio   = 5252
-	ModelBMark       = "0x5252" // fwmark for per-app traffic steered into the table
+	ModelBTable    = "5252"
+	ModelBRulePrio = 5252
+	ModelBMark     = "0x5252" // fwmark for per-app traffic steered into the table
+	// TailscaleRulePrio is just before Model B's rules. On Linux, one rule
+	// there looks a Tailscale beside RiftRoute up first, all but its default
+	// (suppress_prefixlength 0): what it routes now — peers, subnets — stays
+	// its, before include rules (an app rule matches any destination) and
+	// the copies past its exit node. On macOS, a PF pass for a user's
+	// traffic to its networks, ahead of the user's route-to.
+	TailscaleRulePrio = ModelBRulePrio - 1
+	tailscaleTag      = "tailscale"
+	// BypassTable holds a copy of RiftRoute's main-table routes while a
+	// Tailscale exit node is on (Linux): its rule at 5270 sends everything
+	// to its table before main is looked up, so RiftRoute's routes are
+	// looked up first, at BypassRulePrio — after Tailscale's rules for its
+	// own packets (5210–5250), so its connection is never touched.
+	BypassTable      = "5253"
+	BypassRulePrio   = 5260
 	modelBProfileTag = "model-b"
 )
 
@@ -64,6 +80,18 @@ type DesiredInput struct {
 	DNSServers []netip.Addr
 	Anchors    []netip.Addr
 
+	// Tailscale are the networks a Tailscale beside RiftRoute routes (its
+	// ranges, the tailnet's subnets; tailscale.Detect): exclude destinations
+	// and tunnel routes inside them yield, and on macOS include rules are cut
+	// around them, so RiftRoute never takes them from it. TailscaleTable is
+	// its routing table on Linux ("52"), looked up before RiftRoute's rules
+	// (TailscaleRulePrio, BesideTailscale).
+	Tailscale      []netip.Prefix
+	TailscaleTable string
+	// TailscaleExitNode: its exit node is on (Linux: its table's default
+	// route), so RiftRoute's main-table routes are mirrored (BesideTailscale).
+	TailscaleExitNode bool
+
 	Platform      string // "darwin" | "linux" | "fake"
 	PolicyRouting bool   // whether Model B (include mode) is available
 	Now           time.Time
@@ -101,6 +129,10 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			// destinations are cut around them (aroundTunnels).
 			for fam, prefixes := range byFamily {
 				byFamily[fam] = aroundTunnels(prefixes, tunnels.nets)
+				if in.Platform == "darwin" {
+					// Linux has Tailscale's own table looked up first instead.
+					byFamily[fam] = aroundTunnels(byFamily[fam], in.Tailscale)
+				}
 			}
 			if in.Platform == "darwin" {
 				// macOS: PF route-to anchors — the Darwin analogue of Model B. No
@@ -137,7 +169,7 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 			skipped, families := 0, 0
 			var skipErr error
 			for fam, prefixes := range byFamily {
-				if prefixes = outsideTunnels(prefixes, tunnels.nets); len(prefixes) == 0 {
+				if prefixes = outsideTunnels(outsideTunnels(prefixes, tunnels.nets), in.Tailscale); len(prefixes) == 0 {
 					continue
 				}
 				families++
@@ -199,9 +231,60 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 		addRoute(seenRoute, &routes, rt, modelBProfileTag, in.Now)
 	}
 
+	routes, rules = BesideTailscale(routes, rules, in)
 	sort.SliceStable(routes, func(i, j int) bool { return RouteKey(routes[i].Route) < RouteKey(routes[j].Route) })
 	sort.SliceStable(rules, func(i, j int) bool { return RuleKey(rules[i].PolicyRule) < RuleKey(rules[j].PolicyRule) })
 	return routes, rules, nil
+}
+
+// BesideTailscale gives a desired set what a Tailscale beside it needs on
+// Linux. Its table is looked up first, all but its default, at
+// TailscaleRulePrio — one rule a family, whatever it routes, kept current
+// by the kernel. With its exit node on, every main-table route is also
+// copied into BypassTable, looked up before its capture. Whatever the set
+// held of these (an earlier apply's) is replaced: with Tailscale gone, or
+// its exit node off, they're dropped. It runs on every desired set, so no
+// copy is ever installed without the rule ahead of it.
+func BesideTailscale(routes []domain.ManagedRoute, rules []domain.ManagedRule, in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule) {
+	routes = slices.DeleteFunc(slices.Clone(routes), func(r domain.ManagedRoute) bool { return r.Table == BypassTable })
+	rules = slices.DeleteFunc(slices.Clone(rules), func(r domain.ManagedRule) bool {
+		return r.Table == BypassTable || r.Priority == TailscaleRulePrio && r.Table != "" // PF's pass has no table
+	})
+	if in.TailscaleTable == "" || in.Platform == "darwin" {
+		return routes, rules
+	}
+	fams := map[domain.Family]bool{}
+	for _, n := range in.Tailscale {
+		fams[famOf(n.Addr())] = true
+	}
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		if fams[fam] {
+			pr := domain.PolicyRule{Priority: TailscaleRulePrio, Selector: "from all suppress_prefixlength 0", Table: in.TailscaleTable, Family: fam, Proto: protoFor(in.Platform)}
+			rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: tailscaleTag, CreatedAt: in.Now})
+		}
+	}
+	if !in.TailscaleExitNode {
+		return routes, rules
+	}
+	families := map[domain.Family]bool{}
+	for _, r := range slices.Clone(routes) {
+		if r.Table != "" {
+			continue
+		}
+		// A plain copy: Tailscale's table is looked up first (the rule
+		// above), so what it routes stays its.
+		c := r
+		c.Table = BypassTable
+		routes = append(routes, c)
+		families[r.Family] = true
+	}
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		if families[fam] {
+			pr := domain.PolicyRule{Priority: BypassRulePrio, Selector: "from all", Table: BypassTable, Family: fam, Proto: protoFor(in.Platform)}
+			rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: tailscaleTag, CreatedAt: in.Now})
+		}
+	}
+	return routes, rules
 }
 
 // buildDarwinInclude emits macOS PF route-to rules for an include-mode profile:
@@ -263,6 +346,13 @@ func buildDarwinInclude(p domain.Profile, byFamily map[domain.Family][]netip.Pre
 			if pr, ok := mkRule("user "+r.Value, fam); ok {
 				add(pr)
 				emitted = true
+				// The user's traffic to what a Tailscale beside us routes
+				// passes first, without route-to: it stays Tailscale's.
+				for _, n := range in.Tailscale {
+					if famOf(n.Addr()) == fam {
+						add(domain.PolicyRule{Priority: TailscaleRulePrio, Selector: "to " + n.Masked().String() + " user " + r.Value, Family: fam, Proto: "riftroute"})
+					}
+				}
 			}
 		}
 		if !emitted {
@@ -693,10 +783,30 @@ func commandForRule(kind domain.OpKind, r domain.PolicyRule) []string {
 	if kind == domain.OpDelRule {
 		verb = "del"
 	}
-	args := []string{"ip", "rule", verb}
+	// Always the family, as the provider runs it: a v6 "from all …" rule
+	// copied without -6 would land on its v4 twin.
+	args := []string{"ip", ruleFamilyFlag(r), "rule", verb}
 	args = append(args, strings.Fields(r.Selector)...) // e.g. "to 10.0.0.0/8"
 	args = append(args, "lookup", r.Table, "priority", fmt.Sprint(r.Priority), "protocol", "riftroute")
 	return args
+}
+
+// ruleFamilyFlag is `ip`'s -4/-6 for a rule: its family, else its selector
+// address's, else v4.
+func ruleFamilyFlag(r domain.PolicyRule) string {
+	fam := r.Family
+	if fam == "" {
+		fam = domain.FamilyV4
+		for _, f := range strings.Fields(r.Selector) {
+			if p, err := netip.ParsePrefix(f); err == nil && p.Addr().Is6() {
+				fam = domain.FamilyV6
+			}
+		}
+	}
+	if fam == domain.FamilyV6 {
+		return "-6"
+	}
+	return "-4"
 }
 
 func humanForRoute(kind domain.OpKind, r domain.Route) string {

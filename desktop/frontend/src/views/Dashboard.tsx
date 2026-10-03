@@ -30,7 +30,12 @@ function DashboardContent({ state }: { state: State }) {
           label="VPN"
           value={state.vpn.active ? 'Active' : 'Inactive'}
           tone={state.vpn.active ? 'vpn' : 'muted'}
-          sub={state.vpn.active ? (state.vpn.interfaces ?? []).join(', ') : 'no tunnel detected'}
+          sub={
+            (state.vpn.active ? (state.vpn.interfaces ?? []).join(', ') : 'no tunnel detected') +
+            (state.tailscale
+              ? ` · Tailscale on ${state.tailscale.iface}${state.tailscale.exit_node ? ' (exit node)' : ''}`
+              : '')
+          }
         />
         <HeadlineCard
           label="Default route (v4)"

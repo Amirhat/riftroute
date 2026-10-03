@@ -44,6 +44,17 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 		add("dns", domain.CheckWarn, "no DNS resolvers detected", "check your network's DNS configuration")
 	}
 
+	// A Tailscale beside us: its networks are left to it.
+	if ifaces, err := s.prov.Interfaces(ctx); err == nil {
+		if ts, ok := s.tailscale(ctx, ifaces); ok {
+			detail := "Tailscale on " + ts.Iface + "; left to it: " + joinShort(ts.Networks)
+			if ts.ExitNode {
+				detail += "; its exit node is on (it's the VPN)"
+			}
+			add("tailscale", domain.CheckPass, detail, "")
+		}
+	}
+
 	// Ownership drift (desired vs actual) — same computation as State/dashboard.
 	if dr := s.computeDrift(ctx, s.actualManagedRoutes(ctx)); dr.Pending {
 		add("drift", domain.CheckWarn, "reconciliation pending (desired != actual)", "run `riftroute apply` to converge")
@@ -323,7 +334,7 @@ func (s *Service) Leaks(ctx context.Context) []domain.Leak {
 
 func findDefault(routes []domain.Route, def string) string {
 	for _, r := range routes {
-		if r.Table == "" && r.DstCIDR == def {
+		if r.Table == "" && !r.Scoped && r.DstCIDR == def {
 			gw := r.Gateway
 			if gw == "" {
 				gw = "on-link"

@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Beside Tailscale.** A Tailscale running on the machine is recognized
+  (its interface, what it routes, whether its exit node is on), shown on the
+  dashboard, in `status` and `doctor`, and left alone: include profiles —
+  their app rules too — no longer take the tailnet into the main VPN,
+  exclude profiles and tunnel routes leave its networks and MagicDNS to it,
+  and on Linux, with its exit node on, RiftRoute's routes still take effect
+  (they're looked up before Tailscale's). A tunnel route inside what
+  Tailscale routes is left to it, and the tunnel's card says so. RiftRoute
+  never runs or changes Tailscale (docs/tailscale.md).
+
 ### Fixed
 - **A tunnel connects beside a VPN whose interface has a wide netmask.** A
   tunnel whose server gave it an address in 10.0.0.0/8 was refused next to a

@@ -92,10 +92,11 @@ func protoArg(proto string) string {
 
 // AddRule installs a policy rule (Model B), proto-tagged for ownership. Falls
 // back to no proto tag on older iproute2 that lacks rule `protocol` support.
+// The family is always given: a rule without an address in its selector
+// ("from all …") is otherwise added as IPv4, and a v4 twin already there
+// would make the v6 one's "File exists" look like success.
 func (p *Provider) AddRule(ctx context.Context, mr domain.ManagedRule) error {
-	base := []string{"rule", "add"}
-	base = append(base, strings.Fields(mr.Selector)...)
-	base = append(base, "lookup", mr.Table, "priority", fmt.Sprint(mr.Priority))
+	base := ruleArgs("add", mr)
 
 	out, err := runCombined(ctx, "ip", append(append([]string{}, base...), "protocol", routeProtoNum)...)
 	if err != nil {
@@ -118,10 +119,7 @@ func (p *Provider) AddRule(ctx context.Context, mr domain.ManagedRule) error {
 
 // DelRule removes a policy rule (matched by selector + table + priority).
 func (p *Provider) DelRule(ctx context.Context, mr domain.ManagedRule) error {
-	args := []string{"rule", "del"}
-	args = append(args, strings.Fields(mr.Selector)...)
-	args = append(args, "lookup", mr.Table, "priority", fmt.Sprint(mr.Priority))
-	out, err := runCombined(ctx, "ip", args...)
+	out, err := runCombined(ctx, "ip", ruleArgs("del", mr)...) // as AddRule: never the other family's twin
 	if err != nil {
 		if strings.Contains(out, "No such") || strings.Contains(out, "Cannot find") {
 			return nil
@@ -148,6 +146,7 @@ func (p *Provider) FlushOwned(ctx context.Context) error {
 		// actually-owned routes individually; this is the belt-and-suspenders sweep.
 		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum)
 		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.ModelBTable)
+		_, _ = runCombined(ctx, "ip", fam, "route", "flush", "proto", routeProtoNum, "table", routing.BypassTable)
 		// Delete proto-tagged rules enumerated from `ip -j rule show`.
 		if out, e := runCombined(ctx, "ip", "-j", fam, "rule", "show"); e == nil {
 			if rules, perr := parseRulesJSON([]byte(out), famOf(fam)); perr == nil {
