@@ -113,7 +113,11 @@ User-Agent is just `riftroute`. The server keeps no access log.
 - **Idle gate:** the daemon takes its apply lock only if nothing is being
   applied, nothing awaits confirmation, and no change started in the last 10
   minutes — and keeps it from the swap until it exits, so no change can
-  start in between. User rollbacks wait for the same quiet moment.
+  start in between. Auto-apply's own reconciles (a network change, a name's
+  addresses moving) don't restart those 10 minutes — only their ~30 s guard
+  window holds the gate — so a wildcard rule that keeps learning addresses
+  can't put an update off forever. User rollbacks wait for the same quiet
+  moment.
 - **Swap:** back up the database, keep the current binary as `riftrouted.prev`
   (and on macOS the installed openvpn as `riftroute-openvpn.prev`, recording
   whether the update replaces it, adds the first one, or — a release without
