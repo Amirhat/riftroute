@@ -26,6 +26,8 @@ type snapshot struct {
 	vpnOn     bool
 	defaultV4 string // "gw|iface|owner"
 	defaultV6 string
+	physV4    string // the physical defaults' next hops (defaultKeys)
+	physV6    string
 	dns       string
 	ifaces    string
 }
@@ -88,6 +90,12 @@ func (p *Poller) PollOnce(ctx context.Context) []Event {
 	if prev.defaultV6 != cur.defaultV6 {
 		add(EventDefaultRouteChanged, "", "v6 default: "+cur.defaultV6)
 	}
+	if prev.physV4 != cur.physV4 {
+		add(EventPhysicalGatewayChanged, "", "v4 physical gateway: "+cur.physV4)
+	}
+	if prev.physV6 != cur.physV6 {
+		add(EventPhysicalGatewayChanged, "", "v6 physical gateway: "+cur.physV6)
+	}
 	if prev.dns != cur.dns {
 		add(EventDNSChanged, "", cur.dns)
 	}
@@ -123,8 +131,10 @@ func (p *Poller) capture(ctx context.Context, prev *snapshot) *snapshot {
 	} else if prev != nil {
 		s.vpnOn, s.vpnUp, s.ifaces = prev.vpnOn, prev.vpnUp, prev.ifaces
 	}
-	s.defaultV4 = defaultKey(ctx, p.prov, domain.FamilyV4, prevOr(prev, func(x *snapshot) string { return x.defaultV4 }))
-	s.defaultV6 = defaultKey(ctx, p.prov, domain.FamilyV6, prevOr(prev, func(x *snapshot) string { return x.defaultV6 }))
+	s.defaultV4, s.physV4 = defaultKeys(ctx, p.prov, domain.FamilyV4,
+		prevOr(prev, func(x *snapshot) string { return x.defaultV4 }), prevOr(prev, func(x *snapshot) string { return x.physV4 }))
+	s.defaultV6, s.physV6 = defaultKeys(ctx, p.prov, domain.FamilyV6,
+		prevOr(prev, func(x *snapshot) string { return x.defaultV6 }), prevOr(prev, func(x *snapshot) string { return x.physV6 }))
 	if dns, err := p.prov.DNSConfig(ctx); err == nil {
 		s.dns = strings.Join(dns.Servers, ",")
 	} else if prev != nil {
@@ -140,22 +150,40 @@ func prevOr(prev *snapshot, get func(*snapshot) string) string {
 	return get(prev)
 }
 
-// defaultKey returns "gw|iface|owner" for the default route in fam. On a provider
-// read error it returns prevVal (carry-forward), NOT "" — so a transient failure
-// is not mistaken for "the default route disappeared".
-func defaultKey(ctx context.Context, prov provider.RouteProvider, fam domain.Family, prevVal string) string {
-	def := "0.0.0.0/0"
-	if fam == domain.FamilyV6 {
-		def = "::/0"
-	}
+// defaultKeys returns, for fam, "gw|iface|owner" for the default route (the
+// first the table lists), and the physical defaults' next hops ("gw|iface",
+// sorted). With a VPN's default winning, the physical one can change — a new
+// Wi-Fi network with the same addressing, Ethernet plugged in beside it —
+// while the winning one doesn't, and the exclude routes' next hop must
+// follow. On a provider read error both carry forward (prevDef, prevPhys),
+// NOT "" — so a transient failure is not mistaken for "the default route
+// disappeared".
+func defaultKeys(ctx context.Context, prov provider.RouteProvider, fam domain.Family, prevDef, prevPhys string) (def, phys string) {
 	routes, err := prov.ListRoutes(ctx, fam)
 	if err != nil {
-		return prevVal // read failed → keep prior value, don't fire a false change
+		return prevDef, prevPhys // read failed → keep prior values, don't fire a false change
 	}
+	return defaultKeysFrom(routes, fam)
+}
+
+// defaultKeysFrom is defaultKeys over a table read.
+func defaultKeysFrom(routes []domain.Route, fam domain.Family) (def, phys string) {
+	want := "0.0.0.0/0"
+	if fam == domain.FamilyV6 {
+		want = "::/0"
+	}
+	var hops []string
 	for _, r := range routes {
-		if r.DstCIDR == def {
-			return r.Gateway + "|" + r.Iface + "|" + string(r.Owner)
+		if r.DstCIDR != want || r.Table != "" {
+			continue
+		}
+		if def == "" {
+			def = r.Gateway + "|" + r.Iface + "|" + string(r.Owner)
+		}
+		if r.Gateway != "" && r.Owner != domain.OwnerVPN && r.Owner != domain.OwnerRiftRoute {
+			hops = append(hops, r.Gateway+"|"+r.Iface)
 		}
 	}
-	return ""
+	sort.Strings(hops)
+	return def, strings.Join(hops, ",")
 }

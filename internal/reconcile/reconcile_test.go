@@ -104,3 +104,58 @@ func TestDisabledAutoApplyNoop(t *testing.T) {
 		t.Fatal("disabled auto-apply must not change routes")
 	}
 }
+
+// With auto-apply on, a route RiftRoute installed that another program
+// removed is put back by the periodic check — no network event comes for it.
+// With auto-apply off, it isn't: drift shows it.
+func TestRunPutsBackARemovedRoute(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		prov := fake.New()
+		st, err := store.Open(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		if err := st.UpsertProfile(domain.Profile{
+			ID: "p1", Name: "direct", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+			Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "9.9.9.0/24"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		proto := safety.NewProtocol(prov, st, safety.NewFakeClock(time.Unix(0, 0)), func() safety.Prober { return safety.NewFakeProber() }, "fake", nil)
+		svc := core.New(prov, st, "test")
+		ctx, cancel := context.WithCancel(context.Background())
+		if _, err := reconcile.New(svc, proto, nil, 0, nil).Reconcile(ctx); err != nil || prov.CountManaged() != 1 {
+			t.Fatalf("install: %v, %d managed", err, prov.CountManaged())
+		}
+		rs, _ := prov.ListRoutes(ctx, domain.FamilyV4)
+		for _, r := range rs {
+			if r.DstCIDR == "9.9.9.0/24" {
+				_ = prov.DelRoute(ctx, domain.ManagedRoute{Route: r}) // another program
+			}
+		}
+		if prov.CountManaged() != 0 || svc.LiveMissing(ctx) != 1 {
+			t.Fatalf("removed: %d managed, %d missing", prov.CountManaged(), svc.LiveMissing(ctx))
+		}
+
+		rec := reconcile.New(svc, proto, slog.New(slog.NewTextHandler(io.Discard, nil)), 0, func() bool { return on })
+		rec.SetLiveCheck(20 * time.Millisecond)
+		done := make(chan struct{}, 8)
+		rec.SetTestHook(func(safety.Result, error) { done <- struct{}{} })
+		go rec.Run(ctx, netmon.NewFakeMonitor().Events())
+		select {
+		case <-done:
+			if !on {
+				t.Fatal("put back with auto-apply off")
+			}
+			if prov.CountManaged() != 1 || svc.LiveMissing(ctx) != 0 {
+				t.Fatalf("not put back: %d managed", prov.CountManaged())
+			}
+		case <-time.After(500 * time.Millisecond):
+			if on {
+				t.Fatal("the periodic check didn't put the route back")
+			}
+		}
+		cancel()
+	}
+}
