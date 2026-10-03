@@ -380,7 +380,8 @@ func (p *Protocol) LendQuiesce() {
 }
 
 // Busy reports whether a change is being applied or is still on probation
-// (awaiting confirmation, watchdog armed), and when the last one started.
+// (awaiting confirmation, watchdog armed), and when the last one that isn't
+// Options.Background started.
 // The updater waits for quiet before replacing the daemon.
 func (p *Protocol) Busy() (busy bool, lastTx time.Time) {
 	if !p.applyMu.TryLock() {
