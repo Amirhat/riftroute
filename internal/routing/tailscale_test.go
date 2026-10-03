@@ -203,3 +203,16 @@ func TestTunnelRoutesInsideTailscaleAreLeftToIt(t *testing.T) {
 		t.Errorf("tunnel routes %v", got)
 	}
 }
+
+// The plan preview's command for a rule names its family, as the provider
+// runs it: a v6 "from all …" line copied without -6 lands on its v4 twin.
+func TestRuleCommandCarriesTheFamily(t *testing.T) {
+	v6 := domain.PolicyRule{Priority: TailscaleRulePrio, Selector: "from all suppress_prefixlength 0", Table: "52", Family: domain.FamilyV6}
+	if got := strings.Join(commandForRule(domain.OpAddRule, v6), " "); !strings.HasPrefix(got, "ip -6 rule add from all suppress_prefixlength 0 lookup 52") {
+		t.Fatalf("v6: %s", got)
+	}
+	old := domain.PolicyRule{Priority: 5252, Selector: "to fd00::/8", Table: "5252"} // recorded without a family
+	if got := strings.Join(commandForRule(domain.OpDelRule, old), " "); !strings.HasPrefix(got, "ip -6 rule del to fd00::/8") {
+		t.Fatalf("from the selector: %s", got)
+	}
+}

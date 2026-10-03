@@ -783,10 +783,30 @@ func commandForRule(kind domain.OpKind, r domain.PolicyRule) []string {
 	if kind == domain.OpDelRule {
 		verb = "del"
 	}
-	args := []string{"ip", "rule", verb}
+	// Always the family, as the provider runs it: a v6 "from all …" rule
+	// copied without -6 would land on its v4 twin.
+	args := []string{"ip", ruleFamilyFlag(r), "rule", verb}
 	args = append(args, strings.Fields(r.Selector)...) // e.g. "to 10.0.0.0/8"
 	args = append(args, "lookup", r.Table, "priority", fmt.Sprint(r.Priority), "protocol", "riftroute")
 	return args
+}
+
+// ruleFamilyFlag is `ip`'s -4/-6 for a rule: its family, else its selector
+// address's, else v4.
+func ruleFamilyFlag(r domain.PolicyRule) string {
+	fam := r.Family
+	if fam == "" {
+		fam = domain.FamilyV4
+		for _, f := range strings.Fields(r.Selector) {
+			if p, err := netip.ParsePrefix(f); err == nil && p.Addr().Is6() {
+				fam = domain.FamilyV6
+			}
+		}
+	}
+	if fam == domain.FamilyV6 {
+		return "-6"
+	}
+	return "-4"
 }
 
 func humanForRoute(kind domain.OpKind, r domain.Route) string {
