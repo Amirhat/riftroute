@@ -72,6 +72,7 @@ func run() error {
 		channel      string
 		fakeNoVPN    bool
 		telemetryURL string
+		fakeTS       string
 	)
 	flag.StringVar(&socketPath, "socket", "", "Unix domain socket path (default: platform-specific)")
 	flag.StringVar(&dbPath, "db", "", "SQLite database path (default: platform-specific)")
@@ -83,6 +84,7 @@ func run() error {
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.BoolVar(&selfTest, "selftest", false, "check this binary against a database copy (-db) and exit (used by the updater)")
 	flag.StringVar(&channel, "update-channel", "stable", "update channel")
+	flag.StringVar(&fakeTS, "fake-tailscale", "", "with -provider fake: a Tailscale beside it, as on Linux: on, or exit (its exit node on)")
 	flag.StringVar(&telemetryURL, "telemetry-url", "", "where telemetry reports go (default: the RiftRoute server; set, reports are sent under -provider fake too)")
 	flag.BoolVar(&fakeNoVPN, "fake-no-openvpn", false, "with -provider fake: act as if openvpn and strongSwan weren't installed (shows the install help)")
 	flag.IntVar(&allowUIDFlag, "allow-uid", -1, "uid permitted to call mutating endpoints (default: current user; the installer sets this to the desktop user so an unprivileged GUI/CLI can control a root daemon)")
@@ -206,6 +208,9 @@ func run() error {
 	var ks killswitch.Manager = killswitch.New()
 	var sdns splitdns.Manager = splitdns.New()
 	if fp, ok := prov.(*fake.Provider); ok {
+		if fakeTS != "" {
+			fp.SetTailscale(true, fakeTS == "exit")
+		}
 		srv.SetDebugVPN(fp.SetVPN)
 		ks = &killswitch.Fake{}        // never touch a real firewall under -provider fake
 		sdns = &splitdns.FakeManager{} // never touch real system DNS under -provider fake

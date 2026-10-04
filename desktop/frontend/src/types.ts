@@ -132,6 +132,8 @@ export interface State {
   update?: UpdateStatus
   // Telemetry is on and the user hasn't been told yet: show the notice.
   telemetry_notice?: boolean
+  // A Tailscale running beside RiftRoute, whose networks are left to it.
+  tailscale?: { iface: string; exit_node: boolean; networks: string[] }
   // VPN connections RiftRoute runs itself; absent when there are none.
   tunnels?: TunnelStatus[]
   generated_at: string

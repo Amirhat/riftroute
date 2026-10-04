@@ -52,6 +52,13 @@ func renderStatus(w io.Writer, st domain.State) {
 	} else {
 		fmt.Fprintln(w, "  VPN:           inactive")
 	}
+	if ts := st.Tailscale; ts != nil {
+		exit := "exit node off"
+		if ts.ExitNode {
+			exit = "exit node on"
+		}
+		fmt.Fprintf(w, "  Tailscale:     on %s — %s; left to it: %s\n", ts.Iface, exit, strings.Join(ts.Networks, ", "))
+	}
 
 	fmt.Fprintln(w, "  Default route:")
 	for _, d := range st.Defaults {

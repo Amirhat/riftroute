@@ -30,6 +30,9 @@ type snapshot struct {
 	physV6    string
 	dns       string
 	ifaces    string
+	// tsExit is Tailscale's default routes on Linux (its exit node), kept in
+	// its own table: turned on or off, nothing in the main table changes.
+	tsExit string
 }
 
 // NewPoller builds a poller over a provider with the given poll interval.
@@ -102,6 +105,9 @@ func (p *Poller) PollOnce(ctx context.Context) []Event {
 	if prev.ifaces != cur.ifaces {
 		add(EventLinkChanged, "", "interface set changed")
 	}
+	if prev.tsExit != cur.tsExit {
+		add(EventDefaultRouteChanged, "", "Tailscale's exit node: "+orNone(cur.tsExit))
+	}
 	return events
 }
 
@@ -139,6 +145,41 @@ func (p *Poller) capture(ctx context.Context, prev *snapshot) *snapshot {
 		s.dns = strings.Join(dns.Servers, ",")
 	} else if prev != nil {
 		s.dns = prev.dns
+	}
+	s.tsExit = p.tailscaleExit(ctx, s.ifaces, prevOr(prev, func(x *snapshot) string { return x.tsExit }))
+	return s
+}
+
+// tableLister reads a routing table beside main (Linux: Tailscale's).
+type tableLister interface {
+	ListTable(ctx context.Context, family domain.Family, table string) ([]domain.Route, error)
+}
+
+// tailscaleExit is Tailscale's default routes in its table ("" without
+// them, or without Tailscale); prevVal on a read error.
+func (p *Poller) tailscaleExit(ctx context.Context, ifaces, prevVal string) string {
+	tl, ok := p.prov.(tableLister)
+	if !ok || !strings.Contains(ifaces, "tailscale") {
+		return ""
+	}
+	var out []string
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, err := tl.ListTable(ctx, fam, "52")
+		if err != nil {
+			return prevVal
+		}
+		for _, r := range rs {
+			if r.DstCIDR == "0.0.0.0/0" || r.DstCIDR == "::/0" {
+				out = append(out, r.DstCIDR+"|"+r.Iface)
+			}
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "off"
 	}
 	return s
 }

@@ -6,7 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Beside Tailscale.** A Tailscale running on the machine is recognized
+  (its interface, what it routes, whether its exit node is on), shown on the
+  dashboard, in `status` and `doctor`, and left alone: include profiles —
+  their app rules too — no longer take the tailnet into the main VPN,
+  exclude profiles and tunnel routes leave its networks and MagicDNS to it,
+  and on Linux, with its exit node on, RiftRoute's routes still take effect
+  (they're looked up before Tailscale's). A tunnel route inside what
+  Tailscale routes is left to it, and the tunnel's card says so. RiftRoute
+  never runs or changes Tailscale (docs/tailscale.md).
+
 ### Fixed
+- **A tunnel connects beside a VPN whose interface has a wide netmask.** A
+  tunnel whose server gave it an address in 10.0.0.0/8 was refused next to a
+  main VPN run by Apple's IKEv2 client (Windscribe's, for one): that VPN's
+  `ipsec0` holds its address with a /8 netmask, so the tunnel's address
+  "overlaps 10.0.0.0/8 on ipsec0". macOS routes only that one address to such
+  an interface, and nothing clashed. On another VPN's interface, what counts
+  now is its address and what the kernel routes into it inside the netmask
+  (all of the netmask's network, when that's routed there). A LAN's netmask
+  always counts, and so does any netmask when the routes can't be read.
+- **An update installs while a wildcard rule keeps learning addresses.** A
+  downloaded update waits for 10 minutes without a change before it restarts
+  the daemon, and auto-apply's own reconciles counted as changes — a wildcard
+  rule learning a busy name's addresses every minute or two, a network
+  change. With such a rule the wait never ended: the daemon stayed on the old
+  release ("installing at a quiet moment"), "Install now" included. Those
+  reconciles no longer restart the 10 minutes; only their ~30 s guard window
+  holds an update off. A change you make, and a tunnel you connect or
+  disconnect, still do.
 - **A route another program removes is put back.** When a VPN client (or
   anything else) deleted a route RiftRoute had installed without changing
   the default route, nothing noticed: drift compared against RiftRoute's own

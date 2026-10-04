@@ -115,6 +115,12 @@ type Options struct {
 	// start expects (a block-mode tunnel's reject routes kept for an update,
 	// withdrawn for a rollback).
 	Lendable bool
+	// Background marks an apply nobody asked for — auto-apply following the
+	// network or a name's addresses. It keeps the daemon busy while it's on
+	// probation like any other, but it isn't the activity TryQuiesce's quiet
+	// window waits out: a wildcard rule learning addresses every minute or
+	// two would otherwise keep a staged update from ever installing.
+	Background bool
 }
 
 // UseGateway points the guardrails and the watchdog at physGW, the physical
@@ -317,7 +323,7 @@ type Protocol struct {
 	pending  map[string]*pendingTx
 	resolved map[string]domain.TxResult
 	idseq    int
-	lastTx   time.Time // start of the most recent transaction (txmu)
+	lastTx   time.Time // start of the most recent transaction that isn't Options.Background (txmu)
 
 	panicking atomic.Int32 // panics in progress: every apply is refused
 
@@ -333,8 +339,9 @@ type Protocol struct {
 }
 
 // TryQuiesce takes the apply lock if the daemon is quiet — nothing being
-// applied, nothing awaiting confirmation, no change started within quiet —
-// and keeps it until release is called (the updater holds it from the swap
+// applied, nothing awaiting confirmation, no change someone made (one that
+// isn't Options.Background) started within quiet — and keeps it until
+// release is called (the updater holds it from the swap
 // until the process exits, so no change can start in between). When it isn't
 // quiet it says why and holds nothing.
 func (p *Protocol) TryQuiesce(quiet time.Duration) (release func(), ok bool, why string) {
@@ -375,7 +382,8 @@ func (p *Protocol) LendQuiesce() {
 }
 
 // Busy reports whether a change is being applied or is still on probation
-// (awaiting confirmation, watchdog armed), and when the last one started.
+// (awaiting confirmation, watchdog armed), and when the last one that isn't
+// Options.Background started.
 // The updater waits for quiet before replacing the daemon.
 func (p *Protocol) Busy() (busy bool, lastTx time.Time) {
 	if !p.applyMu.TryLock() {
@@ -689,9 +697,11 @@ func (p *Protocol) executePlan(ctx context.Context, action string, plan domain.P
 	// replays the inverse — the only crash-safe recovery on macOS, where kernel
 	// routes carry no owner tag to reattribute them.
 	txID := p.nextTxID()
-	p.txmu.Lock()
-	p.lastTx = p.clock.Now()
-	p.txmu.Unlock()
+	if !opts.Background {
+		p.txmu.Lock()
+		p.lastTx = p.clock.Now()
+		p.txmu.Unlock()
+	}
 	if !ownership {
 		txID = routeOpTxPrefix + strings.TrimPrefix(txID, "tx-")
 	}

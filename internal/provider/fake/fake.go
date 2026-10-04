@@ -26,7 +26,8 @@ type Provider struct {
 	physGW     map[domain.Family]netip.Addr
 	physIface  string
 	caps       domain.Capabilities
-	managedKey map[string]bool // routeKey -> owned, for FlushOwned/ownership
+	managedKey map[string]bool           // routeKey -> owned, for FlushOwned/ownership
+	tables     map[string][]domain.Route // other routing tables (Linux's Tailscale table)
 
 	// failure injection (tests): a CIDR present here makes the matching op error,
 	// to exercise mid-apply rollback (spec §2.5).
@@ -412,6 +413,48 @@ func (p *Provider) SetTunnelIface(name, addr string, up bool) {
 	}
 	if up {
 		p.ifaces = append(p.ifaces, domain.Iface{Name: name, Up: true, Kind: domain.IfaceKindUtun, Addrs: []string{addr + "/24"}, IsVPN: true})
+	}
+}
+
+// ListTable lists another routing table (SetTailscale fills Tailscale's).
+func (p *Provider) ListTable(_ context.Context, family domain.Family, table string) ([]domain.Route, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []domain.Route
+	for _, r := range p.tables[table] {
+		if r.Family == family {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// SetTailscale has a Tailscale beside it, as on Linux (tailscale0, its routes
+// in table 52: a peer, MagicDNS, a tailnet subnet, and with exitNode its
+// default), or none (up false). For tests and -provider fake.
+func (p *Provider) SetTailscale(up, exitNode bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range p.ifaces {
+		if p.ifaces[i].Name == "tailscale0" {
+			p.ifaces = append(p.ifaces[:i], p.ifaces[i+1:]...)
+			break
+		}
+	}
+	if p.tables == nil {
+		p.tables = map[string][]domain.Route{}
+	}
+	delete(p.tables, "52")
+	if !up {
+		return
+	}
+	p.ifaces = append(p.ifaces, domain.Iface{Name: "tailscale0", Up: true, Kind: domain.IfaceKindOther, Addrs: []string{"100.101.2.3/32"}, MTU: 1280})
+	rt := func(dst string) domain.Route {
+		return domain.Route{DstCIDR: dst, Iface: "tailscale0", Family: domain.FamilyV4, Table: "52", Owner: domain.OwnerVPN}
+	}
+	p.tables["52"] = []domain.Route{rt("100.88.0.4/32"), rt("100.100.100.100/32"), rt("10.20.0.0/16")}
+	if exitNode {
+		p.tables["52"] = append(p.tables["52"], rt("0.0.0.0/0"))
 	}
 }
 

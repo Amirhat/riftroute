@@ -25,6 +25,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/safety"
 	"github.com/Amirhat/riftroute/internal/store"
+	"github.com/Amirhat/riftroute/internal/tailscale"
 )
 
 func pid() int { return os.Getpid() }
@@ -183,16 +184,38 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 		in.GatewayV4, in.PhysIfaceV4 = gw4, if4
 	}
 	in.GatewayV6, in.PhysIfaceV6, _ = s.prov.DefaultGateway(ctx, domain.FamilyV6)
+	ifaces, ierr := s.prov.Interfaces(ctx)
+	ts, hasTS := s.tailscale(ctx, ifaces)
+	if hasTS {
+		// Never take what a Tailscale beside us routes (docs/tailscale.md).
+		in.Tailscale = tailscale.Networks(ts)
+		if _, ok := s.prov.(tableLister); ok {
+			in.TailscaleTable, in.TailscaleExitNode = tailscale.LinuxTable, ts.ExitNode
+		}
+	}
 	if len(tunnels) > 0 {
 		if owned == nil {
 			owned = s.actualManagedRoutes(ctx)
 		}
-		if ifaces, err := s.prov.Interfaces(ctx); err == nil {
+		if ierr == nil {
 			in.PhysNetV4 = ifaceNet(ifaces, in.PhysIfaceV4, in.GatewayV4)
 			in.PhysNetV6 = ifaceNet(ifaces, in.PhysIfaceV6, in.GatewayV6.WithZone(""))
 		}
 		in.Occupied = s.occupied(ctx, owned)
 		in.DNSServers = s.systemResolvers(ctx)
+		if hasTS {
+			// Its networks are someone else's routes (on Linux they're in
+			// its own table, which the main table's reading doesn't show),
+			// and MagicDNS is a resolver: tunnel routes keep them out.
+			for _, n := range in.Tailscale {
+				if _, ok := in.Occupied[n.Masked().String()]; !ok {
+					in.Occupied[n.Masked().String()] = ts.Iface + " (Tailscale)"
+				}
+			}
+			if !slices.Contains(in.DNSServers, tailscale.MagicDNS) {
+				in.DNSServers = append(in.DNSServers, tailscale.MagicDNS)
+			}
+		}
 		for _, a := range safety.DefaultAnchors(in.GatewayV4) {
 			if addr, err := netip.ParseAddr(a); err == nil {
 				in.Anchors = append(in.Anchors, addr)
@@ -200,6 +223,45 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 		}
 	}
 	return in
+}
+
+func tsStatus(ts domain.TailscaleStatus, ok bool) *domain.TailscaleStatus {
+	if !ok {
+		return nil
+	}
+	return &ts
+}
+
+// tableLister reads a routing table beside main (Linux: Tailscale's).
+type tableLister interface {
+	ListTable(ctx context.Context, family domain.Family, table string) ([]domain.Route, error)
+}
+
+// tailscale finds a Tailscale beside RiftRoute among ifaces, and what it
+// routes (the main table, and Linux's table 52 — read only when its
+// interface is there).
+func (s *Service) tailscale(ctx context.Context, ifaces []domain.Iface) (domain.TailscaleStatus, bool) {
+	var resolvers []netip.Addr
+	if cfg, err := s.prov.DNSConfig(ctx); err == nil {
+		for _, v := range cfg.Servers {
+			if a, err := netip.ParseAddr(v); err == nil {
+				resolvers = append(resolvers, a.Unmap())
+			}
+		}
+	}
+	if _, _, ok := tailscale.Find(ifaces, nil, resolvers); !ok {
+		return domain.TailscaleStatus{}, false
+	}
+	var routes []domain.Route
+	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		rs, _ := s.prov.ListRoutes(ctx, fam)
+		routes = append(routes, rs...)
+		if tl, ok := s.prov.(tableLister); ok {
+			t, _ := tl.ListTable(ctx, fam, tailscale.LinuxTable)
+			routes = append(routes, t...)
+		}
+	}
+	return tailscale.Detect(ifaces, routes, resolvers)
 }
 
 // ifaceNet is the network of interface name's that holds gw (the LAN the
@@ -484,7 +546,12 @@ func (s *Service) tunnelsOnly(ctx context.Context, owned []domain.ManagedRoute) 
 	rules := prev.putBackRules(s.actualManagedRules(ctx))
 	tp := routing.PlanTunnels(in)
 	routes := tp.Beside(others)
-	return routes, tp.RulesBeside(rules), in.GatewayV4, yieldedTo(tp, others, rules, routes).attributed(dest)
+	beside := tp.RulesBeside(rules)
+	y := yieldedTo(tp, others, rules, routes).attributed(dest)
+	// Tailscale's lookup rule, and its exit node's copies of the tunnels'
+	// routes, with the tunnels' routes.
+	routes, beside = routing.BesideTailscale(routes, beside, in)
+	return routes, beside, in.GatewayV4, y
 }
 
 // DesiredForApply is DesiredManaged for a full apply. It also returns what
@@ -864,7 +931,7 @@ func (s *Service) resolveVPN(ctx context.Context, fam domain.Family) (netip.Addr
 	}
 	routes, _ := s.prov.ListRoutes(ctx, fam)
 	for _, r := range routes {
-		if r.Table == "" && r.DstCIDR == def && vpn[r.Iface] {
+		if r.Table == "" && !r.Scoped && r.DstCIDR == def && vpn[r.Iface] {
 			gw, _ := netip.ParseAddr(r.Gateway) // zero if on-link
 			return gw, r.Iface
 		}
@@ -878,11 +945,18 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 	if err != nil {
 		return s.degraded(err), nil
 	}
+	ts, hasTS := s.tailscale(ctx, ifaces)
 	vpnByIface := map[string]bool{}
 	var vpnUp []string
 	for _, ifc := range ifaces {
-		vpnByIface[ifc.Name] = ifc.IsVPN
-		if ifc.IsVPN && ifc.Up {
+		isVPN := ifc.IsVPN
+		if hasTS && ifc.Name == ts.Iface {
+			// Tailscale is the VPN only while its exit node is on; else it's
+			// the tailnet beside whatever VPN there is (a utun on macOS).
+			isVPN = ts.ExitNode
+		}
+		vpnByIface[ifc.Name] = isVPN
+		if isVPN && ifc.Up {
 			vpnUp = append(vpnUp, ifc.Name)
 		}
 	}
@@ -936,6 +1010,7 @@ func (s *Service) State(ctx context.Context) (domain.State, error) {
 		Update:            s.updateSnapshot(),
 		KillSwitchNotice:  s.setting(domain.SettingKillSwitchNotice),
 		TelemetryNotice:   s.telemetryNotice != nil && s.telemetryNotice(),
+		Tailscale:         tsStatus(ts, hasTS),
 		Tunnels:           tunnels,
 		GeneratedAt:       s.now(),
 	}, nil
@@ -1253,7 +1328,7 @@ func (s *Service) degraded(err error) domain.State {
 
 func defaultFor(routes []domain.Route, fam domain.Family, defCIDR string, vpnByIface map[string]bool) domain.DefaultRoute {
 	for _, r := range routes {
-		if r.Table == "" && r.DstCIDR == defCIDR {
+		if r.Table == "" && !r.Scoped && r.DstCIDR == defCIDR {
 			return domain.DefaultRoute{
 				Family: fam, Present: true, Gateway: r.Gateway, Iface: r.Iface,
 				Owner: r.Owner, ViaVPN: vpnByIface[r.Iface],

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/pfconf"
+	"github.com/Amirhat/riftroute/internal/routing"
 )
 
 // PF policy routing (route-to) on macOS — the Darwin analogue of Linux Model B.
@@ -82,7 +83,7 @@ func (p *Provider) ListRules(ctx context.Context, family domain.Family) ([]domai
 // proceeding on a bad read would rewrite the anchor from an empty base and
 // silently drop every other owned rule.
 func (p *Provider) AddRule(ctx context.Context, mr domain.ManagedRule) error {
-	if strings.TrimSpace(mr.RouteToIface) == "" {
+	if strings.TrimSpace(mr.RouteToIface) == "" && mr.Priority != routing.TailscaleRulePrio {
 		return fmt.Errorf("macos: policy rule %q has no route-to interface", mr.Selector)
 	}
 	pfMu.Lock()

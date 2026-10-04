@@ -97,7 +97,7 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 
 - **Go 1.25** — `go.mod` pins the toolchain to 1.25.14 (an older Go downloads
   it on its own), so builds never use a Go with known security fixes missing.
-- **Node 20+** and **npm** (for the GUI frontend).
+- **Node 22.13+** and **npm** (for the GUI frontend; Vite 8 and Vitest 5 need it).
 - **Wails v2.12**: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`
 - **macOS**: Xcode Command Line Tools. **Linux**: `libgtk-3-dev`,
   `libwebkit2gtk-4.1-dev` (build the GUI with `-tags webkit2_41`); the tray also

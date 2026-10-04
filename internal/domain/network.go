@@ -51,6 +51,10 @@ type Route struct {
 	// real route for the same destination replaces it, so it never "occupies"
 	// a destination.
 	Cloned bool `json:"cloned,omitempty"`
+	// Scoped marks an interface-scoped route (macOS RTF_IFSCOPE): only
+	// traffic bound to its interface uses it. macOS keeps one default per
+	// interface this way (the LAN's, Tailscale's) beside the one that wins.
+	Scoped bool `json:"scoped,omitempty"`
 	// Reject marks a route that refuses its destination: the sender gets
 	// "no route to host" (macOS RTF_REJECT via lo0, Linux type unreachable).
 	// It has no gateway and no interface. RiftRoute installs one for each
