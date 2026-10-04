@@ -68,6 +68,11 @@ func renderPFRule(r domain.PolicyRule) string {
 	} else if strings.HasPrefix(sel, "user ") {
 		sel = "from any to any " + sel
 	}
+	if target == "" {
+		// A pass without route-to (routing.TailscaleRulePrio): a user's
+		// traffic to what Tailscale routes, ahead of the user's route-to.
+		return fmt.Sprintf("pass out quick %s %s label %q", af, sel, pfOwnerLabel)
+	}
 	return fmt.Sprintf("pass out quick route-to %s %s %s label %q", target, af, sel, pfOwnerLabel)
 }
 
@@ -119,7 +124,10 @@ func parseAnchorRules(out string) []domain.PolicyRule {
 func parsePFRuleText(line string) (domain.PolicyRule, bool) {
 	m := reRouteTo.FindStringSubmatch(line)
 	if m == nil {
-		return domain.PolicyRule{}, false
+		if strings.Contains(line, "route-to") {
+			return domain.PolicyRule{}, false // a route-to we can't read: not a pass
+		}
+		return parsePFPassText(line)
 	}
 	rawTarget := m[1] // parenthesized form (iface [gw])
 	if rawTarget == "" {
@@ -169,6 +177,36 @@ func parsePFRuleText(line string) (domain.PolicyRule, bool) {
 		}
 	}
 	return domain.PolicyRule{}, false
+}
+
+// parsePFPassText recovers a pass without route-to: "to <net> user <uid>"
+// (routing.TailscaleRulePrio).
+func parsePFPassText(line string) (domain.PolicyRule, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(line), "pass ") {
+		return domain.PolicyRule{}, false
+	}
+	pr := domain.PolicyRule{Priority: routing.TailscaleRulePrio, Proto: "riftroute", Family: domain.FamilyV4}
+	if strings.Contains(line, " inet6 ") {
+		pr.Family = domain.FamilyV6
+	}
+	var to, user string
+	fields := strings.Fields(line)
+	for i, f := range fields {
+		switch {
+		case f == "to" && i+1 < len(fields) && fields[i+1] != "any" && to == "":
+			to = normalizePFDst(fields[i+1])
+		case f == "user" && i+1 < len(fields):
+			user = fields[i+1]
+			if user == "=" && i+2 < len(fields) {
+				user = fields[i+2]
+			}
+		}
+	}
+	if to == "" || user == "" {
+		return domain.PolicyRule{}, false
+	}
+	pr.Selector = "to " + to + " user " + user
+	return pr, true
 }
 
 // normalizePFDst re-appends the full-length prefix pfctl strips from host

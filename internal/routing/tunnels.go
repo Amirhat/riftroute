@@ -144,6 +144,11 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			if c, ok := taken[prefixKey(pfx)]; why == "" && ok {
 				why = c.reason(t.Name)
 			}
+			for _, n := range in.Tailscale {
+				if why == "" && n.Addr().Is4() == pfx.Addr().Is4() && n.Bits() <= pfx.Bits() && n.Contains(pfx.Addr()) {
+					why = fmt.Sprintf("it's inside %s, which Tailscale routes — left to it", n)
+				}
+			}
 			parts := []netip.Prefix{pfx}
 			if keep := keepOut(pfx, t, ts, held, in, false); why == "" && len(keep) > 0 {
 				// What it holds that mustn't go into the tunnel is kept out

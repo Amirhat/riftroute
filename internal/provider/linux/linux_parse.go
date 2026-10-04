@@ -7,6 +7,8 @@ package linux
 
 import (
 	"encoding/json"
+	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 
@@ -40,6 +42,9 @@ type ipRule struct {
 	Protocol string `json:"protocol"`
 	IifName  string `json:"iif"`
 	OifName  string `json:"oif"`
+	// SuppressPrefixLen: "lookup … suppress_prefixlength N" (the rule
+	// keeping a Tailscale beside us first, ignoring its default).
+	SuppressPrefixLen *int `json:"suppress_prefixlen"`
 }
 
 // withLen reconstructs "addr/len" from a possibly length-less address plus a
@@ -180,7 +185,35 @@ func ruleSelector(r ipRule) string {
 	if r.OifName != "" {
 		parts = append(parts, "oif "+r.OifName)
 	}
+	if r.SuppressPrefixLen != nil {
+		parts = append(parts, fmt.Sprintf("suppress_prefixlength %d", *r.SuppressPrefixLen))
+	}
 	return strings.Join(parts, " ")
+}
+
+// ruleArgs is `ip`'s argv to add or delete a rule (verb), always with its
+// family: a selector without an address ("from all …") is otherwise taken
+// as IPv4, and a v4 twin there would make the v6 rule's "File exists" look
+// like success, or its delete remove the twin. A rule recorded without a
+// family takes it from its selector's address.
+func ruleArgs(verb string, mr domain.ManagedRule) []string {
+	fam := mr.Family
+	if fam == "" {
+		fam = domain.FamilyV4
+		for _, f := range strings.Fields(mr.Selector) {
+			if p, err := netip.ParsePrefix(f); err == nil && p.Addr().Is6() {
+				fam = domain.FamilyV6
+			} else if a, err := netip.ParseAddr(f); err == nil && a.Is6() {
+				fam = domain.FamilyV6
+			}
+		}
+	}
+	flag := "-4"
+	if fam == domain.FamilyV6 {
+		flag = "-6"
+	}
+	args := append([]string{flag, "rule", verb}, strings.Fields(mr.Selector)...)
+	return append(args, "lookup", mr.Table, "priority", strconv.Itoa(mr.Priority))
 }
 
 // parseRouteGetJSON parses `ip -j route get <ip>` into a kernel RouteDecision.

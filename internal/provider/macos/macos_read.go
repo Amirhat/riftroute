@@ -92,6 +92,7 @@ func (p *Provider) ListRoutes(_ context.Context, family domain.Family) ([]domain
 			Family:  family,
 			Owner:   owner,
 			Cloned:  rm.Flags&unix.RTF_WASCLONED != 0,
+			Scoped:  rm.Flags&unix.RTF_IFSCOPE != 0,
 			Reject:  reject,
 		})
 	}

@@ -29,10 +29,19 @@ func (p *Provider) ListRoutes(ctx context.Context, family domain.Family) ([]doma
 		return nil, err
 	}
 	// Best-effort: an absent/empty dedicated table is normal (exclude-only use).
-	if extra, err := p.listTable(ctx, family, routing.ModelBTable); err == nil {
-		routes = append(routes, extra...)
+	// So is the copy made for a Tailscale exit node (routing.BypassTable).
+	for _, t := range []string{routing.ModelBTable, routing.BypassTable} {
+		if extra, err := p.listTable(ctx, family, t); err == nil {
+			routes = append(routes, extra...)
+		}
 	}
 	return routes, nil
+}
+
+// ListTable lists another routing table (Tailscale's, 52), its routes
+// stamped with it.
+func (p *Provider) ListTable(ctx context.Context, family domain.Family, table string) ([]domain.Route, error) {
+	return p.listTable(ctx, family, table)
 }
 
 // listTable lists one routing table ("" = main); non-main routes are stamped
