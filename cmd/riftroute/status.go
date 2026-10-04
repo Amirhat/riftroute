@@ -111,10 +111,20 @@ func renderStatus(w io.Writer, st domain.State) {
 	}
 	fmt.Fprintf(w, "  Profiles:      %d enabled / %d total\n", enabled, len(st.Profiles))
 
-	if st.Drift.Pending {
+	switch {
+	case st.Drift.Pending && st.Drift.Missing > 0:
+		fmt.Fprintf(w, "  Drift:         PENDING (+%d -%d; %d removed by another program) — run `riftroute diff`\n", st.Drift.Adds, st.Drift.Dels, st.Drift.Missing)
+	case st.Drift.Pending:
 		fmt.Fprintf(w, "  Drift:         PENDING (+%d -%d) — run `riftroute diff`\n", st.Drift.Adds, st.Drift.Dels)
-	} else {
+	default:
 		fmt.Fprintln(w, "  Drift:         none")
+	}
+	if n := len(st.Drift.Taken); n > 0 {
+		fmt.Fprintf(w, "  Taken:         another program routes %d of RiftRoute's destinations; left alone — see `riftroute doctor`\n", n)
+	}
+	if n := len(st.Drift.Held); n > 0 {
+		fmt.Fprintf(w, "  Held:          another program keeps removing %d route(s); not put back until %s — see `riftroute doctor`\n",
+			n, st.Drift.Held[0].Until.Local().Format("15:04"))
 	}
 	fmt.Fprintf(w, "  Managed:       %d route(s), %d rule(s)\n", st.ManagedRouteCount, st.ManagedRuleCount)
 	renderPreferences(w, st.Preferences)

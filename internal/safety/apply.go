@@ -334,6 +334,8 @@ type Protocol struct {
 	lentMu         sync.Mutex
 
 	onSettled atomic.Pointer[func()] // see SetOnSettled
+
+	live liveRepair // routes another program removed (live.go)
 }
 
 // TryQuiesce takes the apply lock if the daemon is quiet — nothing being
@@ -415,7 +417,7 @@ func NewProtocol(prov provider.RouteProvider, st Store, clock Clock, newProber f
 // Plan builds the reconcile plan + diff for desired state without applying — the
 // dry-run preview (spec §2.2 step 4).
 func (p *Protocol) Plan(ctx context.Context, desiredRoutes []domain.ManagedRoute, desiredRules []domain.ManagedRule) (domain.Plan, domain.Diff) {
-	actual := p.installed(ctx, p.actualManaged(ctx), desiredRoutes)
+	actual := p.installed(ctx, p.actualManaged(ctx), desiredRoutes, false, false)
 	plan := routing.Reconcile(desiredRoutes, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	return plan, diffFromPlan(plan)
 }
@@ -525,7 +527,7 @@ func (p *Protocol) applyBuilt(ctx context.Context, build Build, opts Options, be
 // if set, builds and applies afresh once they're settled.
 func (p *Protocol) apply(ctx context.Context, owned, desired []domain.ManagedRoute, desiredRules []domain.ManagedRule, opts Options, beside []*pendingTx, again func() (Result, error)) (Result, error) {
 	progress.Report(ctx, domain.StepChecking, 0, 0)
-	actual := p.installed(ctx, owned, desired)
+	actual := p.installed(ctx, owned, desired, !opts.DryRun, opts.VetChangesOnly)
 	plan := routing.Reconcile(desired, actual, desiredRules, p.actualManagedRules(ctx), p.platform)
 	diff := diffFromPlan(plan)
 
@@ -1181,15 +1183,6 @@ func (p *Protocol) actualManaged(ctx context.Context) []domain.ManagedRoute {
 		}
 	}
 	return providerManaged(ctx, p.prov)
-}
-
-// installed is the "actual" side of a reconcile: the owned routes, less the
-// tunnel routes desired still wants that the kernel dropped with their
-// interface — so the plan puts those back (routing.VerifyTunnelRoutes).
-func (p *Protocol) installed(ctx context.Context, owned, desired []domain.ManagedRoute) []domain.ManagedRoute {
-	return routing.VerifyTunnelRoutes(owned, desired, func(fam domain.Family) ([]domain.Route, error) {
-		return p.prov.ListRoutes(ctx, fam)
-	})
 }
 
 // actualManagedRules returns the policy rules RiftRoute owns. Rules are

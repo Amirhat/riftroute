@@ -56,9 +56,26 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 	}
 
 	// Ownership drift (desired vs actual) — same computation as State/dashboard.
-	if dr := s.computeDrift(ctx, s.actualManagedRoutes(ctx)); dr.Pending {
+	dr := s.computeDrift(ctx, s.actualManagedRoutes(ctx))
+	switch {
+	case len(dr.Held) > 0:
+		them := "them"
+		if len(dr.Held) == 1 {
+			them = "it"
+		}
+		add("drift", domain.CheckWarn, fmt.Sprintf("another program keeps removing %s; RiftRoute stopped putting %s back until %s",
+			heldText(dr.Held), them, dr.Held[0].Until.Local().Format("15:04")),
+			"a VPN client's own routing or kill switch is the usual cause: let these destinations through in its split-tunnel settings")
+	case len(dr.Taken) > 0:
+		add("drift", domain.CheckWarn, fmt.Sprintf("another program now routes %s, which RiftRoute routes too; RiftRoute leaves its route alone and puts its own back once it's gone",
+			destText(dr.Taken)),
+			"a VPN client pushing these destinations is the usual cause: let them through in its split-tunnel settings, or drop them from RiftRoute's profile")
+	case dr.Missing > 0:
+		add("drift", domain.CheckWarn, fmt.Sprintf("%d route(s) RiftRoute installed are gone from the kernel (another program removed them)", dr.Missing),
+			"auto-apply puts them back; with it off, run `riftroute apply`")
+	case dr.Pending:
 		add("drift", domain.CheckWarn, "reconciliation pending (desired != actual)", "run `riftroute apply` to converge")
-	} else {
+	default:
 		add("drift", domain.CheckPass, "desired routing matches actual", "")
 	}
 
@@ -170,7 +187,7 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 // tunnelRoutesInstalled returns each tunnel's routes as a tunnel apply would
 // install them now (by tunnel name), and the kernel's table to check them
 // against.
-func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, routing.Installed) {
+func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, *routing.Installed) {
 	expected := map[string][]domain.ManagedRoute{}
 	if desired, _, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
 		for _, d := range desired {
@@ -192,7 +209,7 @@ func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domai
 // table (an apply refused or still retrying, routes gone with a re-created
 // tun) or left out on this network are reported; the count is what really
 // goes through it.
-func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute, installed routing.Installed) (domain.CheckStatus, string, string) {
+func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute, installed *routing.Installed) (domain.CheckStatus, string, string) {
 	if t.Iface == "" {
 		return domain.CheckFail, "connected, but RiftRoute found no interface for it — none of its routes are installed",
 			"reconnect it: `riftroute tunnel down " + t.Name + "`, then `riftroute tunnel up " + t.Name + "`"
@@ -232,6 +249,28 @@ func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute,
 
 // narrowedText says what's kept out of a tunnel's routes on this network
 // ("" for nothing).
+// heldText names the held routes' destinations, a few of them.
+func heldText(hs []domain.HeldRoute) string {
+	rs := make([]domain.Route, len(hs))
+	for i, h := range hs {
+		rs[i] = h.Route
+	}
+	return destText(rs)
+}
+
+// destText names routes' destinations, a few of them.
+func destText(rs []domain.Route) string {
+	var dst []string
+	for i, r := range rs {
+		if i == 3 {
+			dst = append(dst, fmt.Sprintf("and %d more", len(rs)-3))
+			break
+		}
+		dst = append(dst, r.DstCIDR)
+	}
+	return strings.Join(dst, ", ")
+}
+
 func narrowedText(ns []domain.TunnelNarrowed) string {
 	var out []string
 	for _, n := range ns {
@@ -249,7 +288,7 @@ func narrowedText(ns []domain.TunnelNarrowed) string {
 
 // blockingDetail says how many of a down tunnel's destinations its reject
 // routes refuse, and which aren't refused yet.
-func blockingDetail(expected []domain.ManagedRoute, installed routing.Installed) string {
+func blockingDetail(expected []domain.ManagedRoute, installed *routing.Installed) string {
 	refused := 0
 	var missing []string
 	for _, r := range expected {

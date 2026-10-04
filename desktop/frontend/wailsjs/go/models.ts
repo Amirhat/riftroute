@@ -659,11 +659,47 @@ export namespace domain {
 		    return a;
 		}
 	}
+	export class HeldRoute {
+	    route: Route;
+	    // Go type: time
+	    until: any;
+	
+	    static createFrom(source: any = {}) {
+	        return new HeldRoute(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.route = this.convertValues(source["route"], Route);
+	        this.until = this.convertValues(source["until"], null);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class DriftStatus {
 	    pending: boolean;
 	    adds: number;
 	    dels: number;
 	    reason?: string;
+	    missing?: number;
+	    held?: HeldRoute[];
+	    taken?: Route[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DriftStatus(source);
@@ -675,7 +711,28 @@ export namespace domain {
 	        this.adds = source["adds"];
 	        this.dels = source["dels"];
 	        this.reason = source["reason"];
+	        this.missing = source["missing"];
+	        this.held = this.convertValues(source["held"], HeldRoute);
+	        this.taken = this.convertValues(source["taken"], Route);
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class Flow {
 	    proto: string;
@@ -756,6 +813,7 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
 	export class Iface {
 	    name: string;
 	    up: boolean;

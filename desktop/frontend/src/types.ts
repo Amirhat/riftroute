@@ -100,6 +100,14 @@ export interface DriftStatus {
   adds: number
   dels: number
   reason?: string // set when desired state can't be computed (attention needed)
+  missing?: number // routes another program removed; in adds: an apply puts them back
+  held?: HeldRoute[] // routes another program keeps removing; not put back for now
+  taken?: Route[] // destinations another program's route now holds; left alone
+}
+
+export interface HeldRoute {
+  route: Route
+  until: string
 }
 
 export interface State {

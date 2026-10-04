@@ -164,6 +164,16 @@ func (p *Provider) DefaultGateway(ctx context.Context, family domain.Family) (ne
 		gw, ifn, err := p.defaultViaRouteGet(ctx, true)
 		return gw, ifn, err
 	}
+	// The winning default's next hop, when it's physical: the system's
+	// primary service, which interface order below can't tell when Wi-Fi and
+	// Ethernet are both up.
+	winGW, winIf, winErr := p.defaultViaRouteGet(ctx, false)
+	if a, ifn, ok := physicalWinner(winGW, winIf, winErr, func(n string) bool {
+		kind, isVPN := classifyIface(n)
+		return kind == domain.IfaceKindPhysical && !isVPN
+	}); ok {
+		return a, ifn, nil
+	}
 	phys := p.primaryPhysicalIface()
 	if phys != "" {
 		if out, err := run(ctx, "ipconfig", "getoption", phys, "router"); err == nil {
@@ -188,7 +198,7 @@ func (p *Provider) DefaultGateway(ctx context.Context, family domain.Family) (ne
 			return a, ifn, nil
 		}
 	}
-	return p.defaultViaRouteGet(ctx, false)
+	return winGW, winIf, winErr
 }
 
 // LookupRoute asks the kernel where traffic to dst goes via `route -n get`.

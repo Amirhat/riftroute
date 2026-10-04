@@ -25,17 +25,32 @@ type Reconciler struct {
 	debounce time.Duration
 	enabled  func() bool
 
+	// liveEvery: how often Run looks for routes RiftRoute installed that
+	// another program removed (0: never).
+	liveEvery time.Duration
+
 	// onReconcile is an optional test hook fired after each reconcile.
 	onReconcile func(safety.Result, error)
 }
+
+// LiveCheckInterval is how often, with auto-apply on, the reconciler looks
+// for routes RiftRoute installed that another program removed — a VPN client
+// tidying the table changes no default route or interface, so no network
+// event comes. Finding some, it reconciles, which puts them back
+// (routing.VerifyRoutes); one that keeps being removed is held instead
+// (safety's live repair).
+const LiveCheckInterval = 30 * time.Second
 
 // New builds a Reconciler. enabled gates auto-apply (nil = always on).
 func New(svc *core.Service, proto *safety.Protocol, log *slog.Logger, debounce time.Duration, enabled func() bool) *Reconciler {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Reconciler{svc: svc, proto: proto, log: log, debounce: debounce, enabled: enabled}
+	return &Reconciler{svc: svc, proto: proto, log: log, debounce: debounce, enabled: enabled, liveEvery: LiveCheckInterval}
 }
+
+// SetLiveCheck sets how often Run looks for removed routes (0: never).
+func (r *Reconciler) SetLiveCheck(every time.Duration) { r.liveEvery = every }
 
 // SetTestHook installs a callback fired after each reconcile (tests only).
 func (r *Reconciler) SetTestHook(fn func(safety.Result, error)) { r.onReconcile = fn }
@@ -134,6 +149,12 @@ func options() safety.Options {
 func (r *Reconciler) Run(ctx context.Context, events <-chan netmon.Event) {
 	var timerC <-chan time.Time
 	var timer *time.Timer
+	var liveC <-chan time.Time
+	if r.liveEvery > 0 {
+		t := time.NewTicker(r.liveEvery)
+		defer t.Stop()
+		liveC = t.C
+	}
 
 	do := func() {
 		if _, err := r.Reconcile(ctx); err != nil {
@@ -165,6 +186,14 @@ func (r *Reconciler) Run(ctx context.Context, events <-chan netmon.Event) {
 		case <-timerC:
 			timerC = nil
 			do()
+		case <-liveC:
+			if r.enabled != nil && !r.enabled() {
+				continue // with auto-apply off, drift shows them; an apply puts them back
+			}
+			if n := r.svc.LiveMissing(ctx); n > 0 {
+				r.log.Info("routes RiftRoute installed are gone from the kernel; putting them back", "count", n)
+				do()
+			}
 		}
 	}
 }

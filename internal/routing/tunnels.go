@@ -658,61 +658,104 @@ func exceptText(except []domain.TunnelExcept) string {
 	return strings.Join(out, ", ")
 }
 
-// VerifyTunnelRoutes returns owned as the kernel really holds it: a tunnel
-// route desired still wants but the kernel no longer has is dropped, so a
-// reconcile against the result puts it back. A tunnel's routes vanish with its
-// interface, and when openvpn re-creates its tun under the same name, desired
-// and the ownership map still agree — nothing else would re-add them, and
-// drift would read "in sync". Missing routes desired no longer wants stay, so
-// the plan's (idempotent) delete clears their records.
+// Verified is what VerifyRoutes found.
+type Verified struct {
+	// Kept is owned as the kernel really holds it: the plan's "actual".
+	Kept []domain.ManagedRoute
+	// Missing are routes desired still wants that the kernel no longer has
+	// (not in Kept): a reconcile puts them back.
+	Missing []domain.ManagedRoute
+	// Taken are wanted routes the kernel doesn't have because another route
+	// holds their destination and leaves them no place (Installed.Outranked)
+	// — another program's. They stay in Kept: RiftRoute never replaces a
+	// route it didn't make, and adding beside it only meets "File exists".
+	// Once that route goes, they're Missing. A route that would lose to
+	// RiftRoute's (a higher metric on Linux) doesn't take it: that's Missing.
+	Taken []domain.ManagedRoute
+}
+
+// VerifyRoutes checks owned against the kernel: a route desired still wants
+// that the kernel doesn't have is Missing, left out of Kept, so a reconcile
+// against Kept puts it back. A tunnel's routes vanish with its interface
+// (openvpn re-creates its tun under the same name), and another program — a
+// VPN client tidying the table — can delete any of RiftRoute's. Desired and
+// the ownership map still agree, so nothing else would re-add them, and
+// drift would read "in sync". Missing routes desired no longer wants stay,
+// so the plan's (idempotent) delete clears their records.
 //
-// read returns one family's kernel table. It runs once per family holding an
-// owned tunnel route; a failed read changes nothing.
-func VerifyTunnelRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error)) []domain.ManagedRoute {
+// held are RouteKeys to keep regardless: another program keeps removing
+// them, and putting them back would only fight it (the Apply Protocol's live
+// repair holds them for a while). A tunnel's routes are never held: its
+// routes, its pins and block mode's reject routes keep its promise, and are
+// put back every time. only, when set, limits the check to the routes it
+// accepts (a tunnel's apply carries the others over as recorded). read
+// returns one family's kernel table. It runs once per family holding a
+// wanted route; a failed read changes nothing.
+func VerifyRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error), held map[string]bool, only func(domain.ManagedRoute) bool) Verified {
 	wanted := indexRoutes(desired)
-	kernel := map[domain.Family]Installed{}
-	missing := func(o domain.ManagedRoute) bool {
-		if _, ok := wanted[RouteKey(o.Route)]; !ok || !strings.HasPrefix(o.ProfileID, TunnelProfilePrefix) {
-			return false
-		}
-		in, read1 := kernel[o.Family]
-		if !read1 {
-			rs, err := read(o.Family)
-			if err == nil {
-				in = IndexInstalled(rs)
-			}
-			kernel[o.Family] = in // nil after a failed read: trust the records
-		}
-		return in != nil && !in.Has(o.Route)
-	}
-	out := owned[:0:0]
+	kernel := map[domain.Family]*Installed{}
+	var v Verified
 	for _, o := range owned {
-		if !missing(o) {
-			out = append(out, o)
+		var in *Installed
+		if _, ok := wanted[RouteKey(o.Route)]; ok && (only == nil || only(o)) {
+			var read1 bool
+			if in, read1 = kernel[o.Family]; !read1 {
+				if rs, err := read(o.Family); err == nil {
+					in = IndexInstalled(rs)
+				}
+				kernel[o.Family] = in // nil after a failed read: trust the records
+			}
 		}
+		switch {
+		case in == nil || in.Has(o.Route):
+		case in.Outranked(o.Route):
+			v.Taken = append(v.Taken, o)
+		case held[RouteKey(o.Route)] && !IsTunnelRoute(o):
+		default:
+			v.Missing = append(v.Missing, o)
+			continue
+		}
+		v.Kept = append(v.Kept, o)
 	}
-	return out
+	return v
+}
+
+// IsTunnelRoute says whether a route is one of a tunnel's (its routes, its
+// server pins, a tunnel-mode profile's).
+func IsTunnelRoute(o domain.ManagedRoute) bool {
+	return strings.HasPrefix(o.ProfileID, TunnelProfilePrefix)
 }
 
 // Installed indexes a kernel table read, to tell which routes are really
 // there.
-type Installed map[string]bool
+type Installed struct {
+	routes map[string]bool
+	// lowest is, per destination, the lowest metric among the routes to it
+	// (scoped ones aside: Outranked).
+	lowest map[string]int
+}
 
 // IndexInstalled indexes kernel routes. Clone entries don't count: they are
 // the kernel's cache, not routes anyone added.
-func IndexInstalled(kernel []domain.Route) Installed {
-	in := Installed{}
+func IndexInstalled(kernel []domain.Route) *Installed {
+	in := &Installed{routes: map[string]bool{}, lowest: map[string]int{}}
 	for _, k := range kernel {
 		if k.Cloned {
 			continue
 		}
+		dst := maskedDstKey(k)
+		if !k.Scoped { // macOS's per-interface routes carry only traffic bound to their interface
+			if m, ok := in.lowest[dst]; !ok || k.Metric < m {
+				in.lowest[dst] = k.Metric
+			}
+		}
 		if k.Reject {
-			in[maskedDstKey(k)+"|reject"] = true
+			in.routes[dst+"|reject"] = true
 			continue
 		}
-		in[maskedDstKey(k)+"|dev "+k.Iface] = true
+		in.routes[dst+"|dev "+k.Iface] = true
 		if k.Gateway != "" {
-			in[maskedDstKey(k)+"|via "+gatewayKey(k.Gateway)] = true
+			in.routes[dst+"|via "+gatewayKey(k.Gateway)] = true
 		}
 	}
 	return in
@@ -721,14 +764,40 @@ func IndexInstalled(kernel []domain.Route) Installed {
 // Has reports whether the kernel holds r: its destination through its
 // gateway — or, for an on-link route, on its interface; refused, for a
 // reject route.
-func (in Installed) Has(r domain.Route) bool {
+func (in *Installed) Has(r domain.Route) bool {
 	if r.Reject {
-		return in[maskedDstKey(r)+"|reject"]
+		return in.routes[maskedDstKey(r)+"|reject"]
 	}
 	if r.Gateway != "" {
-		return in[maskedDstKey(r)+"|via "+gatewayKey(r.Gateway)]
+		return in.routes[maskedDstKey(r)+"|via "+gatewayKey(r.Gateway)]
 	}
-	return in[maskedDstKey(r)+"|dev "+r.Iface]
+	return in.routes[maskedDstKey(r)+"|dev "+r.Iface]
+}
+
+// Outranked reports whether the kernel holds a route to r's destination
+// (same family, table and masked prefix) that leaves r no place: one whose
+// metric is no higher than r's. Linux keeps routes to one destination side
+// by side when their metrics differ, the lowest winning, and answers "File
+// exists" only to one of the same metric; a higher-metric route (a
+// NetworkManager or DHCP fallback) loses to r, and r goes in beside it.
+// Elsewhere there's one route per destination, and no metrics: any counts.
+// Call it for a route the kernel doesn't hold (Has): every route to its
+// destination is then someone else's.
+func (in *Installed) Outranked(r domain.Route) bool {
+	lowest, ok := in.lowest[maskedDstKey(r)]
+	return ok && lowest <= effectiveMetric(r)
+}
+
+// effectiveMetric is the metric the kernel gives r: its own, else Linux's
+// default for the family (IPv6 routes added without one get 1024).
+func effectiveMetric(r domain.Route) int {
+	switch {
+	case r.Metric > 0:
+		return r.Metric
+	case r.Family == domain.FamilyV6:
+		return 1024
+	}
+	return 0
 }
 
 // SameGateway reports whether two spellings name the same gateway (see

@@ -60,6 +60,23 @@ type DriftStatus struct {
 	// installed rules keep fail-safing (include traffic blackholes rather than
 	// leaking to the physical path).
 	Reason string `json:"reason,omitempty"`
+	// Missing: routes RiftRoute installed that the kernel no longer holds —
+	// another program removed them. They're in Adds: an apply puts them back.
+	Missing int `json:"missing,omitempty"`
+	// Held: routes another program keeps removing, which RiftRoute stopped
+	// putting back for now (not in Adds).
+	Held []HeldRoute `json:"held,omitempty"`
+	// Taken: routes whose destination another program's route now holds.
+	// RiftRoute never replaces a route it didn't make; once that one goes,
+	// they're put back (not in Adds).
+	Taken []Route `json:"taken,omitempty"`
+}
+
+// HeldRoute is a route RiftRoute stopped putting back until Until: another
+// program removed it again and again.
+type HeldRoute struct {
+	Route Route     `json:"route"`
+	Until time.Time `json:"until"`
 }
 
 // State is the aggregate returned by GET /state — the single source the UI and

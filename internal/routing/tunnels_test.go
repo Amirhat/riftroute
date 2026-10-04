@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"errors"
 	"net/netip"
 	"slices"
 	"strings"
@@ -305,5 +306,99 @@ func TestTunnelsNeverCarryEachOthersServer(t *testing.T) {
 	in.Tunnels[1].Bypass = in.Tunnels[1].Servers
 	if bs := PlanTunnels(in).Narrowed["a"]; len(bs) != 0 {
 		t.Errorf("a pinned server still kept out: %+v", bs)
+	}
+}
+
+// VerifyRoutes leaves out what desired still wants and the kernel no longer
+// holds — any route, not only a tunnel's — so a reconcile puts it back. It
+// keeps what's held (never a tunnel's), what desired no longer wants (so the
+// plan's delete clears it), what another route's destination now covers
+// (Taken), and everything when the table can't be read; only limits it.
+func TestVerifyRoutes(t *testing.T) {
+	excl := domain.ManagedRoute{Route: domain.Route{DstCIDR: "9.9.9.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
+	tun := domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.20.0.0/16", Iface: "utun6", Family: domain.FamilyV4}, ProfileID: TunnelProfilePrefix + "lab"}
+	block := domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.30.0.0/16", Reject: true, Family: domain.FamilyV4}, ProfileID: TunnelProfilePrefix + "office"}
+	stale := domain.ManagedRoute{Route: domain.Route{DstCIDR: "8.8.8.8/32", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}, ProfileID: "p1"}
+	owned := []domain.ManagedRoute{excl, tun, block, stale}
+	desired := []domain.ManagedRoute{excl, tun, block} // stale: no longer wanted
+	empty := func(domain.Family) ([]domain.Route, error) { return nil, nil }
+	keys := func(ms []domain.ManagedRoute) string {
+		var out []string
+		for _, m := range ms {
+			out = append(out, m.DstCIDR)
+		}
+		return strings.Join(out, ",")
+	}
+
+	v := VerifyRoutes(owned, desired, empty, nil, nil)
+	if keys(v.Missing) != "9.9.9.0/24,10.20.0.0/16,10.30.0.0/16" || keys(v.Kept) != "8.8.8.8/32" {
+		t.Fatalf("kept %s, missing %s", keys(v.Kept), keys(v.Missing))
+	}
+	allHeld := map[string]bool{RouteKey(excl.Route): true, RouteKey(tun.Route): true, RouteKey(block.Route): true}
+	if v = VerifyRoutes(owned, desired, empty, allHeld, nil); keys(v.Missing) != "10.20.0.0/16,10.30.0.0/16" {
+		t.Fatalf("held: missing %s, want the tunnel's never held", keys(v.Missing))
+	}
+	if v = VerifyRoutes(owned, desired, empty, nil, IsTunnelRoute); keys(v.Missing) != "10.20.0.0/16,10.30.0.0/16" {
+		t.Fatalf("tunnels only: missing %s", keys(v.Missing))
+	}
+	there := func(domain.Family) ([]domain.Route, error) {
+		return []domain.Route{excl.Route, tun.Route, block.Route}, nil
+	}
+	if v = VerifyRoutes(owned, desired, there, nil, nil); len(v.Missing) != 0 || len(v.Kept) != 4 {
+		t.Fatalf("all there: kept %s, missing %s", keys(v.Kept), keys(v.Missing))
+	}
+	other := func(domain.Family) ([]domain.Route, error) { // another program's route to our destination
+		return []domain.Route{{DstCIDR: "9.9.9.0/24", Iface: "utun3", Family: domain.FamilyV4}, tun.Route, block.Route}, nil
+	}
+	if v = VerifyRoutes(owned, desired, other, nil, nil); len(v.Missing) != 0 || keys(v.Taken) != "9.9.9.0/24" || len(v.Kept) != 4 {
+		t.Fatalf("taken: kept %s, missing %s, taken %s", keys(v.Kept), keys(v.Missing), keys(v.Taken))
+	}
+	fallback := func(domain.Family) ([]domain.Route, error) { // lower-priority routes: ours go in beside them and win
+		return []domain.Route{
+			{DstCIDR: "9.9.9.0/24", Iface: "utun3", Metric: 500, Family: domain.FamilyV4},
+			{DstCIDR: "10.30.0.0/16", Iface: "dum0", Metric: 500, Family: domain.FamilyV4},
+			tun.Route,
+		}, nil
+	}
+	if v = VerifyRoutes(owned, desired, fallback, nil, nil); keys(v.Missing) != "9.9.9.0/24,10.30.0.0/16" || len(v.Taken) != 0 {
+		t.Fatalf("beside higher-metric routes: missing %s, taken %s", keys(v.Missing), keys(v.Taken))
+	}
+	failed := func(domain.Family) ([]domain.Route, error) { return nil, errors.New("read failed") }
+	if v = VerifyRoutes(owned, desired, failed, nil, nil); len(v.Missing) != 0 || len(v.Kept) != 4 {
+		t.Fatal("a failed read changed the records")
+	}
+}
+
+// Outranked: another route to the destination leaves ours no place only when
+// its metric is no higher than ours. Linux keeps a higher-metric route (a
+// NetworkManager or DHCP fallback) beside ours, and ours wins; an IPv6 route
+// added without a metric gets 1024; macOS's scoped routes carry only traffic
+// bound to their interface.
+func TestInstalledOutranked(t *testing.T) {
+	v4 := domain.Route{DstCIDR: "198.51.100.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}
+	v6 := domain.Route{DstCIDR: "2001:db8::/32", Gateway: "fe80::1", Iface: "en0", Family: domain.FamilyV6}
+	block := domain.Route{DstCIDR: "10.30.0.0/16", Reject: true, Family: domain.FamilyV4}
+	other := func(r domain.Route, metric int, scoped bool) *Installed {
+		return IndexInstalled([]domain.Route{{DstCIDR: r.DstCIDR, Iface: "dum0", Metric: metric, Scoped: scoped, Family: r.Family}})
+	}
+	for _, tc := range []struct {
+		name string
+		ours domain.Route
+		in   *Installed
+		want bool
+	}{
+		{"same metric: File exists", v4, other(v4, 0, false), true},
+		{"a fallback (metric 500) loses to ours", v4, other(v4, 500, false), false},
+		{"block mode's reject beside a fallback", block, other(block, 500, false), false},
+		{"block mode's reject, replaced", block, other(block, 0, false), true},
+		{"v6 at the default 1024", v6, other(v6, 1024, false), true},
+		{"v6, no metric listed (macOS)", v6, other(v6, 0, false), true},
+		{"v6 beside metric 2000", v6, other(v6, 2000, false), false},
+		{"a scoped route", v4, other(v4, 0, true), false},
+		{"nothing there", v4, IndexInstalled(nil), false},
+	} {
+		if got := tc.in.Outranked(tc.ours); got != tc.want {
+			t.Errorf("%s: Outranked = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
