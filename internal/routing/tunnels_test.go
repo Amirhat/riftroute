@@ -353,8 +353,52 @@ func TestVerifyRoutes(t *testing.T) {
 	if v = VerifyRoutes(owned, desired, other, nil, nil); len(v.Missing) != 0 || keys(v.Taken) != "9.9.9.0/24" || len(v.Kept) != 4 {
 		t.Fatalf("taken: kept %s, missing %s, taken %s", keys(v.Kept), keys(v.Missing), keys(v.Taken))
 	}
+	fallback := func(domain.Family) ([]domain.Route, error) { // lower-priority routes: ours go in beside them and win
+		return []domain.Route{
+			{DstCIDR: "9.9.9.0/24", Iface: "utun3", Metric: 500, Family: domain.FamilyV4},
+			{DstCIDR: "10.30.0.0/16", Iface: "dum0", Metric: 500, Family: domain.FamilyV4},
+			tun.Route,
+		}, nil
+	}
+	if v = VerifyRoutes(owned, desired, fallback, nil, nil); keys(v.Missing) != "9.9.9.0/24,10.30.0.0/16" || len(v.Taken) != 0 {
+		t.Fatalf("beside higher-metric routes: missing %s, taken %s", keys(v.Missing), keys(v.Taken))
+	}
 	failed := func(domain.Family) ([]domain.Route, error) { return nil, errors.New("read failed") }
 	if v = VerifyRoutes(owned, desired, failed, nil, nil); len(v.Missing) != 0 || len(v.Kept) != 4 {
 		t.Fatal("a failed read changed the records")
+	}
+}
+
+// Outranked: another route to the destination leaves ours no place only when
+// its metric is no higher than ours. Linux keeps a higher-metric route (a
+// NetworkManager or DHCP fallback) beside ours, and ours wins; an IPv6 route
+// added without a metric gets 1024; macOS's scoped routes carry only traffic
+// bound to their interface.
+func TestInstalledOutranked(t *testing.T) {
+	v4 := domain.Route{DstCIDR: "198.51.100.0/24", Gateway: "192.168.1.1", Iface: "en0", Family: domain.FamilyV4}
+	v6 := domain.Route{DstCIDR: "2001:db8::/32", Gateway: "fe80::1", Iface: "en0", Family: domain.FamilyV6}
+	block := domain.Route{DstCIDR: "10.30.0.0/16", Reject: true, Family: domain.FamilyV4}
+	other := func(r domain.Route, metric int, scoped bool) *Installed {
+		return IndexInstalled([]domain.Route{{DstCIDR: r.DstCIDR, Iface: "dum0", Metric: metric, Scoped: scoped, Family: r.Family}})
+	}
+	for _, tc := range []struct {
+		name string
+		ours domain.Route
+		in   *Installed
+		want bool
+	}{
+		{"same metric: File exists", v4, other(v4, 0, false), true},
+		{"a fallback (metric 500) loses to ours", v4, other(v4, 500, false), false},
+		{"block mode's reject beside a fallback", block, other(block, 500, false), false},
+		{"block mode's reject, replaced", block, other(block, 0, false), true},
+		{"v6 at the default 1024", v6, other(v6, 1024, false), true},
+		{"v6, no metric listed (macOS)", v6, other(v6, 0, false), true},
+		{"v6 beside metric 2000", v6, other(v6, 2000, false), false},
+		{"a scoped route", v4, other(v4, 0, true), false},
+		{"nothing there", v4, IndexInstalled(nil), false},
+	} {
+		if got := tc.in.Outranked(tc.ours); got != tc.want {
+			t.Errorf("%s: Outranked = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

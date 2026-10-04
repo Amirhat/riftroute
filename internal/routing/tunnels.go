@@ -666,9 +666,11 @@ type Verified struct {
 	// (not in Kept): a reconcile puts them back.
 	Missing []domain.ManagedRoute
 	// Taken are wanted routes the kernel doesn't have because another route
-	// holds their destination — another program's. They stay in Kept:
-	// RiftRoute never replaces a route it didn't make, and adding beside it
-	// only meets "File exists". Once that route goes, they're Missing.
+	// holds their destination and leaves them no place (Installed.Outranked)
+	// — another program's. They stay in Kept: RiftRoute never replaces a
+	// route it didn't make, and adding beside it only meets "File exists".
+	// Once that route goes, they're Missing. A route that would lose to
+	// RiftRoute's (a higher metric on Linux) doesn't take it: that's Missing.
 	Taken []domain.ManagedRoute
 }
 
@@ -691,10 +693,10 @@ type Verified struct {
 // wanted route; a failed read changes nothing.
 func VerifyRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family) ([]domain.Route, error), held map[string]bool, only func(domain.ManagedRoute) bool) Verified {
 	wanted := indexRoutes(desired)
-	kernel := map[domain.Family]Installed{}
+	kernel := map[domain.Family]*Installed{}
 	var v Verified
 	for _, o := range owned {
-		in := Installed(nil)
+		var in *Installed
 		if _, ok := wanted[RouteKey(o.Route)]; ok && (only == nil || only(o)) {
 			var read1 bool
 			if in, read1 = kernel[o.Family]; !read1 {
@@ -706,7 +708,7 @@ func VerifyRoutes(owned, desired []domain.ManagedRoute, read func(domain.Family)
 		}
 		switch {
 		case in == nil || in.Has(o.Route):
-		case in.HasDestination(o.Route):
+		case in.Outranked(o.Route):
 			v.Taken = append(v.Taken, o)
 		case held[RouteKey(o.Route)] && !IsTunnelRoute(o):
 		default:
@@ -726,24 +728,34 @@ func IsTunnelRoute(o domain.ManagedRoute) bool {
 
 // Installed indexes a kernel table read, to tell which routes are really
 // there.
-type Installed map[string]bool
+type Installed struct {
+	routes map[string]bool
+	// lowest is, per destination, the lowest metric among the routes to it
+	// (scoped ones aside: Outranked).
+	lowest map[string]int
+}
 
 // IndexInstalled indexes kernel routes. Clone entries don't count: they are
 // the kernel's cache, not routes anyone added.
-func IndexInstalled(kernel []domain.Route) Installed {
-	in := Installed{}
+func IndexInstalled(kernel []domain.Route) *Installed {
+	in := &Installed{routes: map[string]bool{}, lowest: map[string]int{}}
 	for _, k := range kernel {
 		if k.Cloned {
 			continue
 		}
-		in[maskedDstKey(k)+"|any"] = true
+		dst := maskedDstKey(k)
+		if !k.Scoped { // macOS's per-interface routes carry only traffic bound to their interface
+			if m, ok := in.lowest[dst]; !ok || k.Metric < m {
+				in.lowest[dst] = k.Metric
+			}
+		}
 		if k.Reject {
-			in[maskedDstKey(k)+"|reject"] = true
+			in.routes[dst+"|reject"] = true
 			continue
 		}
-		in[maskedDstKey(k)+"|dev "+k.Iface] = true
+		in.routes[dst+"|dev "+k.Iface] = true
 		if k.Gateway != "" {
-			in[maskedDstKey(k)+"|via "+gatewayKey(k.Gateway)] = true
+			in.routes[dst+"|via "+gatewayKey(k.Gateway)] = true
 		}
 	}
 	return in
@@ -752,19 +764,41 @@ func IndexInstalled(kernel []domain.Route) Installed {
 // Has reports whether the kernel holds r: its destination through its
 // gateway — or, for an on-link route, on its interface; refused, for a
 // reject route.
-func (in Installed) Has(r domain.Route) bool {
+func (in *Installed) Has(r domain.Route) bool {
 	if r.Reject {
-		return in[maskedDstKey(r)+"|reject"]
+		return in.routes[maskedDstKey(r)+"|reject"]
 	}
 	if r.Gateway != "" {
-		return in[maskedDstKey(r)+"|via "+gatewayKey(r.Gateway)]
+		return in.routes[maskedDstKey(r)+"|via "+gatewayKey(r.Gateway)]
 	}
-	return in[maskedDstKey(r)+"|dev "+r.Iface]
+	return in.routes[maskedDstKey(r)+"|dev "+r.Iface]
 }
 
-// HasDestination reports whether the kernel holds any route to r's
-// destination (same family, table and masked prefix), whoever's.
-func (in Installed) HasDestination(r domain.Route) bool { return in[maskedDstKey(r)+"|any"] }
+// Outranked reports whether the kernel holds a route to r's destination
+// (same family, table and masked prefix) that leaves r no place: one whose
+// metric is no higher than r's. Linux keeps routes to one destination side
+// by side when their metrics differ, the lowest winning, and answers "File
+// exists" only to one of the same metric; a higher-metric route (a
+// NetworkManager or DHCP fallback) loses to r, and r goes in beside it.
+// Elsewhere there's one route per destination, and no metrics: any counts.
+// Call it for a route the kernel doesn't hold (Has): every route to its
+// destination is then someone else's.
+func (in *Installed) Outranked(r domain.Route) bool {
+	lowest, ok := in.lowest[maskedDstKey(r)]
+	return ok && lowest <= effectiveMetric(r)
+}
+
+// effectiveMetric is the metric the kernel gives r: its own, else Linux's
+// default for the family (IPv6 routes added without one get 1024).
+func effectiveMetric(r domain.Route) int {
+	switch {
+	case r.Metric > 0:
+		return r.Metric
+	case r.Family == domain.FamilyV6:
+		return 1024
+	}
+	return 0
+}
 
 // SameGateway reports whether two spellings name the same gateway (see
 // gatewayKey).

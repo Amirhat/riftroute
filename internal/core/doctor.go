@@ -187,7 +187,7 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 // tunnelRoutesInstalled returns each tunnel's routes as a tunnel apply would
 // install them now (by tunnel name), and the kernel's table to check them
 // against.
-func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, routing.Installed) {
+func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domain.ManagedRoute, *routing.Installed) {
 	expected := map[string][]domain.ManagedRoute{}
 	if desired, _, _, err := s.DesiredTunnelsOnly(ctx, s.actualManagedRoutes(ctx)); err == nil {
 		for _, d := range desired {
@@ -209,7 +209,7 @@ func (s *Service) tunnelRoutesInstalled(ctx context.Context) (map[string][]domai
 // table (an apply refused or still retrying, routes gone with a re-created
 // tun) or left out on this network are reported; the count is what really
 // goes through it.
-func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute, installed routing.Installed) (domain.CheckStatus, string, string) {
+func connectedTunnelCheck(t domain.TunnelStatus, expected []domain.ManagedRoute, installed *routing.Installed) (domain.CheckStatus, string, string) {
 	if t.Iface == "" {
 		return domain.CheckFail, "connected, but RiftRoute found no interface for it — none of its routes are installed",
 			"reconnect it: `riftroute tunnel down " + t.Name + "`, then `riftroute tunnel up " + t.Name + "`"
@@ -288,7 +288,7 @@ func narrowedText(ns []domain.TunnelNarrowed) string {
 
 // blockingDetail says how many of a down tunnel's destinations its reject
 // routes refuse, and which aren't refused yet.
-func blockingDetail(expected []domain.ManagedRoute, installed routing.Installed) string {
+func blockingDetail(expected []domain.ManagedRoute, installed *routing.Installed) string {
 	refused := 0
 	var missing []string
 	for _, r := range expected {

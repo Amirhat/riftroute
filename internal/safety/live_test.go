@@ -174,3 +174,42 @@ func TestLiveRepairLeavesADestinationAnotherRouteHolds(t *testing.T) {
 		t.Fatalf("not put back once the other route went: %+v", res.Plan.Ops)
 	}
 }
+
+// Block mode beside a lower-priority route to the same network (the review's
+// case for #46): the tunnel is down, its reject route refuses the network,
+// and a fallback with a higher metric sits beside it. When another program
+// removes the reject route, it's put back — the fallback doesn't "take" the
+// destination, or the tunnel's network would leave by it.
+func TestLiveRepairPutsARejectRouteBackBesideAFallback(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	want := []domain.ManagedRoute{{Route: domain.Route{DstCIDR: "10.30.0.0/16", Reject: true, Family: domain.FamilyV4, Owner: domain.OwnerRiftRoute}, ProfileID: "tunnel:office"}}
+	fallback := domain.ManagedRoute{Route: domain.Route{DstCIDR: "10.30.0.0/16", Iface: "dum0", Metric: 500, Family: domain.FamilyV4, Owner: domain.OwnerSystem}}
+	o := opts(false)
+	o.VetChangesOnly = true
+	apply := func() safety.Result {
+		t.Helper()
+		res, err := h.p.Apply(ctx, want, nil, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.TxID != "" {
+			h.clock.Advance(30 * time.Second)
+			h.p.Wait(res.TxID)
+		}
+		return res
+	}
+	if err := h.prov.AddRoute(ctx, fallback); err != nil {
+		t.Fatal(err)
+	}
+	apply()
+	for i := 1; i <= 4; i++ {
+		if err := h.prov.DelRoute(ctx, want[0]); err != nil {
+			t.Fatal(err)
+		}
+		h.clock.Advance(time.Minute)
+		if res := apply(); len(res.Plan.Ops) != 1 || res.Plan.Ops[0].Kind != domain.OpAddRoute {
+			t.Fatalf("removal %d: the reject route wasn't put back beside the fallback: %+v", i, res.Plan.Ops)
+		}
+	}
+}
