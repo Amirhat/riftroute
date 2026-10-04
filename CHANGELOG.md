@@ -4,7 +4,10 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] — 2026-10-04
+
+RiftRoute lives beside Tailscale, and puts back a route another program
+removes instead of reading "in sync" while it's gone.
 
 ### Added
 - **Beside Tailscale.** A Tailscale running on the machine is recognized
@@ -16,6 +19,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (they're looked up before Tailscale's). A tunnel route inside what
   Tailscale routes is left to it, and the tunnel's card says so. RiftRoute
   never runs or changes Tailscale (docs/tailscale.md).
+
+### Changed
+- The app is built with Vite 8 and tested with Vitest 5, and building it
+  from source needs Node 22.13 or newer (Node 20 reached its end of life).
+  Nothing changes for installed releases.
 
 ### Fixed
 - **A tunnel connects beside a VPN whose interface has a wide netmask.** A
