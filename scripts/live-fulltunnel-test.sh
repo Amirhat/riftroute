@@ -85,6 +85,10 @@ fwdport() { echo "show $OURS" | scutil 2>/dev/null | awk '$1 == "ServerPort" {pr
 ours_up() { [[ "$(ns1)" == 127.0.0.1 && -n "$(fwdport)" ]]; }
 claims() { echo "show State:/Network/Service/$1/DNS" | scutil 2>/dev/null | grep -c "SupplementalMatchDomains"; }
 resolves() { dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address/{print $2; exit}'; }
+# After a change of path, the main VPN may need a moment (one that shares the
+# tunnel's server rode its pin): these wait up to 30 s.
+names_ok() { [[ -n "$(resolves www.example.com)" ]]; }
+reach_ok() { [[ "$(reach "$1")" == ok ]]; }
 exitip() { curl -s -m 8 "$1" 2>/dev/null | awk -F= '$1 == "ip" {print $2}'; }
 reach() { curl -s -o /dev/null -m 6 "$1" && echo ok || echo blocked; }
 dns_is()  { [[ "$(ns1)" == "$1" ]]; }
@@ -355,7 +359,10 @@ ckeq "no RiftRoute keys left" "$(rrkeys)" "0"
 for a in $Q4; do ckeq "$a takes its usual path again" "$(via "$a")" "$MAINIF"; done
 ckeq "IPv6 is as before" "$(via6 2001:db8::1)" "$B6"
 ckeq "the server's pin is gone" "$(gwof "$SERVER")" "$B_SRV"
-ckne "names resolve" "$(resolves example.com)" ""
+until_ok 30 names_ok
+ckne "names resolve" "$(resolves www.example.com)" ""
+exit_back() { [[ "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" == "$BASE_EXIT" ]]; }
+[[ -n "$BASE_EXIT" ]] && until_ok 30 exit_back
 [[ -n "$BASE_EXIT" ]] && ckeq "the exit address is the one from before" "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" "$BASE_EXIT"
 
 echo "-- 7. a daemon crash with the swap in place: its successor puts it all back"
@@ -393,10 +400,12 @@ ck "the LAN still answers" "$(ping -c 1 -t 2 "$PHYSGW" 2>&1)" "1 packets receive
 [[ -n "$EXPROBE" ]] && ckeq "the excluded network still goes direct" "$(via "$EXPROBE")" "$PHYSIF"
 ckeq "1.1.1.1 still goes by $MAINIF" "$(via 1.1.1.1)" "$MAINIF"
 ckeq "DNS isn't the tunnel's while it's down" "$(ns1)" "$BASE_NS"
-ckne "names still resolve, so it can connect again" "$(resolves example.com)" ""
+until_ok 30 names_ok
+ckne "names still resolve, so it can connect again" "$(resolves www.example.com)" ""
 rr tunnel down "$NAME" 2>&1 | sed 's/^/    /'
 sleep 2
 ckeq "8.8.4.4 takes its usual path again" "$(via 8.8.4.4)" "$MAINIF"
+[[ "$BASE_REACH" == ok ]] && until_ok 30 reach_ok https://1.0.0.1
 [[ "$BASE_REACH" == ok ]] && ckeq "https://1.0.0.1 is reachable again" "$(reach https://1.0.0.1)" "ok"
 
 finish

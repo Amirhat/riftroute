@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Applier applies a full tunnel's DNS to the system.
@@ -52,14 +53,22 @@ func New(stateDir string, log *slog.Logger) Applier {
 }
 
 // execRun runs a system tool: no shell, stdin as given.
+// Each is bounded by runTimeout, so one that hangs (configd busy) can't use
+// up a whole Recover or revert.
 func execRun(ctx context.Context, stdin, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, runTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = time.Second
 	cmd.Stdin = strings.NewReader(stdin)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 	err := cmd.Run()
 	return out.String(), err
 }
+
+// runTimeout bounds one system tool's run (execRun).
+var runTimeout = 5 * time.Second
 
 // Fake records what it's asked, for tests and the fake provider.
 type Fake struct {
@@ -70,6 +79,7 @@ type Fake struct {
 	Reverts  int
 	Recovers int
 	Err      error  // returned by Apply when set
+	RevErr   error  // returned by Revert when set
 	Noted    string // returned by Note
 	LetGo    bool   // Note says what's applied isn't in effect
 }
@@ -118,7 +128,21 @@ func (f *Fake) Revert(context.Context) error {
 	defer f.mu.Unlock()
 	f.Applied = Config{}
 	f.Reverts++
-	return nil
+	return f.RevErr
+}
+
+// Reverted is how many times Revert was called.
+func (f *Fake) Reverted() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Reverts
+}
+
+// SetRevertErr sets what Revert returns.
+func (f *Fake) SetRevertErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.RevErr = err
 }
 
 func (f *Fake) Recover(context.Context) error {

@@ -294,3 +294,24 @@ func TestFullTunnelDNSRetried(t *testing.T) {
 		t.Errorf("an unavailable resolver was tried again: %d, then %d", tries, h.dns.Attempts())
 	}
 }
+
+// What a run before left may still be in place (its Recover can fail after
+// a crash): the first sync reverts even with nothing wanted, and tries
+// again until it works; after that, nothing is reverted for nothing.
+func TestFullTunnelDNSRevertsWhatAPreviousRunLeft(t *testing.T) {
+	first := dnsRetryFirst
+	dnsRetryFirst = 20 * time.Millisecond
+	t.Cleanup(func() { dnsRetryFirst = first })
+	h := newHarness(t)
+	h.dns.SetRevertErr(errors.New("RiftRoute's resolver is still in place"))
+	h.m.Resync(context.Background())
+	waitFor(t, "a first revert", func() bool { return h.dns.Reverted() >= 1 })
+	h.dns.SetRevertErr(nil)
+	waitFor(t, "a revert that works", func() bool { return h.dns.Reverted() >= 2 })
+	n := h.dns.Reverted()
+	h.m.Resync(context.Background())
+	time.Sleep(10 * dnsRetryFirst)
+	if h.dns.Reverted() != n {
+		t.Errorf("reverted again for nothing: %d, then %d", n, h.dns.Reverted())
+	}
+}

@@ -94,7 +94,22 @@ func newScutil(run runner, log *slog.Logger) *scutilApplier {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &scutilApplier{run: run, log: log, now: time.Now, upstreamPort: 53}
+	return &scutilApplier{run: timed(run, log), log: log, now: time.Now, upstreamPort: 53}
+}
+
+// timed logs a tool's run that's slow or fails, with the first line of
+// what it was given: after a crash, Recover once waited out its whole time
+// on a hung one.
+func timed(run runner, log *slog.Logger) runner {
+	return func(ctx context.Context, stdin, name string, args ...string) (string, error) {
+		start := time.Now()
+		out, err := run(ctx, stdin, name, args...)
+		if took := time.Since(start); took > 2*time.Second || err != nil && ctx.Err() == nil && name == "scutil" {
+			first, _, _ := strings.Cut(strings.TrimPrefix(stdin, "open\n"), "\n")
+			log.Warn("a system tool was slow or failed", "tool", name, "first", first, "took", took.Round(time.Millisecond), "err", err)
+		}
+		return out, err
+	}
 }
 
 func (s *scutilApplier) Backend() string {
@@ -321,16 +336,27 @@ func (s *scutilApplier) revertLocked(ctx context.Context) error {
 	s.applied = Config{}
 	s.rewrites, s.held = nil, false
 	s.note.set("")
-	return nil
+	return s.leftLocked(ctx)
 }
 
 // Recover undoes what a run that didn't end cleanly left: our resolver goes
 // (its forwarder went with that run), and every service set aside gets its
-// claim back.
+// claim back. An error says something was left (the manager tries again).
 func (s *scutilApplier) Recover(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.recoverLocked(ctx)
+	return s.leftLocked(ctx)
+}
+
+// leftLocked says what of RiftRoute's is still in the store, or nil.
+func (s *scutilApplier) leftLocked(ctx context.Context) error {
+	if s.show(ctx, ourKey) != "" {
+		return fmt.Errorf("RiftRoute's resolver is still in place")
+	}
+	if out, _ := s.run(ctx, "list "+backupPrefix+".*\n", "scutil"); strings.Contains(out, backupPrefix) {
+		return fmt.Errorf("a network service's DNS is still set aside")
+	}
 	return nil
 }
 

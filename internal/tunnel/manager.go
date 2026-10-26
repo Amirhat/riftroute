@@ -81,6 +81,9 @@ type Manager struct {
 	dnsTimer   *time.Timer
 	dnsFails   int
 	dnsLastErr string
+	// dnsDirty: what a run before left may still be there (its Recover can
+	// fail): the first sync with nothing wanted reverts anyway.
+	dnsDirty bool
 
 	store   *defStore
 	runDir  string
@@ -206,7 +209,7 @@ func New(o Options) (*Manager, error) {
 		return nil, err
 	}
 	m := &Manager{
-		o: o, store: st, runDir: o.Dir,
+		o: o, store: st, runDir: o.Dir, dnsDirty: o.DNS != nil,
 		defs: map[string]*def{}, parsed: map[string]*parsed{}, perrs: map[string]error{},
 		rt: map[string]*live{}, broken: map[string]error{}, closed: make(chan struct{}),
 	}
@@ -1893,7 +1896,7 @@ func (m *Manager) syncDNS(ctx context.Context) {
 	// Read under dnsMu: an apply that saw a tunnel up just before a panic's
 	// revertDNS can't put its DNS back after it.
 	cfg, owner, note := m.wantedDNS()
-	if !cfg.Equal(m.dnsApplied) {
+	if !cfg.Equal(m.dnsApplied) || cfg.Empty() && m.dnsDirty {
 		var err error
 		if cfg.Empty() {
 			err = m.o.DNS.Revert(ctx)
@@ -1913,7 +1916,7 @@ func (m *Manager) syncDNS(ctx context.Context) {
 				m.dnsRetryLocked()
 			}
 		default:
-			m.dnsApplied, m.dnsLastErr = cfg, ""
+			m.dnsApplied, m.dnsLastErr, m.dnsDirty = cfg, "", false
 			m.dnsStopRetryLocked()
 		}
 	}
@@ -1974,10 +1977,11 @@ func (m *Manager) revertDNS() {
 	m.dnsStopRetryLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := m.o.DNS.Revert(ctx); err != nil {
+	err := m.o.DNS.Revert(ctx)
+	if err != nil {
 		m.o.Log.Warn("system DNS not restored", "err", err)
 	}
-	m.dnsApplied = tunneldns.Config{}
+	m.dnsApplied, m.dnsDirty = tunneldns.Config{}, err != nil
 }
 
 // normalizeDNS checks a tunnel's DNS override: addresses only, cleaned

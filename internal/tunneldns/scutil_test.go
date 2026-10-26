@@ -23,6 +23,8 @@ type fakeStore struct {
 	keys map[string]map[string][]string // key → field → values (a scalar is one value)
 	arr  map[string]map[string]bool     // key → field → is an array
 	ran  []string                       // other commands run
+	// stuck: removing a key doesn't take (configd not answering).
+	stuck bool
 }
 
 func newFakeStore() *fakeStore {
@@ -110,6 +112,9 @@ func (f *fakeStore) run(_ context.Context, stdin, name string, args ...string) (
 				f.keys[f2[1]][k], f.arr[f2[1]][k] = slices.Clone(v), darr[k]
 			}
 		case "remove":
+			if f.stuck {
+				continue
+			}
 			delete(f.keys, f2[1])
 			delete(f.arr, f2[1])
 		case "d.init":
@@ -462,5 +467,21 @@ func TestResolvedNotesALinkThatTakesEveryNameLater(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if count() != n || noteOf(r) != "" {
 		t.Fatalf("still looking after the revert (%d → %d), note %q", n, count(), noteOf(r))
+	}
+}
+
+// A Recover that can't remove what's left says so, for the manager to try
+// again; once the store answers, it's clean.
+func TestScutilRecoverSaysWhatsLeft(t *testing.T) {
+	f := storeWithVPN()
+	s, cfg := newTestScutil(t, f)
+	_ = s.Apply(context.Background(), cfg) // and the daemon dies
+	f.stuck = true
+	if err := newScutil(f.run, nil).Recover(context.Background()); err == nil || !strings.Contains(err.Error(), "resolver is still in place") {
+		t.Fatalf("stuck: %v", err)
+	}
+	f.stuck = false
+	if err := newScutil(f.run, nil).Recover(context.Background()); err != nil {
+		t.Fatalf("answering: %v", err)
 	}
 }
