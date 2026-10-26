@@ -141,6 +141,10 @@ type RouteDecision struct {
 	// its interface is a VPN's too.
 	Tunnel     string     `json:"tunnel,omitempty"`
 	TunnelType TunnelType `json:"tunnel_type,omitempty"`
+	// KeptOutOf names the RiftRoute tunnel a host route keeps this traffic
+	// out of — its server's pin, or what a full tunnel mustn't carry — when
+	// the route is the tunnel's but goes elsewhere.
+	KeptOutOf string `json:"kept_out_of,omitempty"`
 	// Reachable is false when no matching route exists (blackhole/unreachable).
 	Reachable bool `json:"reachable"`
 	// Rejected: a reject route matches, so the traffic is refused. With

@@ -576,6 +576,7 @@ function TunnelCard({
             {t.state}
             {detail && t.state !== 'connected' ? ` · ${detail.replace(/_/g, ' ')}` : ''}
           </Badge>
+          {t.all_traffic && <Badge tone="accent">all traffic</Badge>}
           {t.auto_connect && <Badge tone="muted">auto-connect</Badge>}
           {t.when_down === 'block' && <Badge tone="muted">blocks when down</Badge>}
         </div>

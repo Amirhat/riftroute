@@ -1052,6 +1052,7 @@ export namespace domain {
 	    via_vpn: boolean;
 	    tunnel?: string;
 	    tunnel_type?: string;
+	    kept_out_of?: string;
 	    reachable: boolean;
 	    rejected?: boolean;
 	
@@ -1072,6 +1073,7 @@ export namespace domain {
 	        this.via_vpn = source["via_vpn"];
 	        this.tunnel = source["tunnel"];
 	        this.tunnel_type = source["tunnel_type"];
+	        this.kept_out_of = source["kept_out_of"];
 	        this.reachable = source["reachable"];
 	        this.rejected = source["rejected"];
 	    }
@@ -1269,6 +1271,7 @@ export namespace domain {
 	    routes: string[];
 	    auto_connect: boolean;
 	    when_down: string;
+	    all_traffic?: boolean;
 	    blocking?: boolean;
 	    username?: string;
 	    has_password: boolean;
@@ -1305,6 +1308,7 @@ export namespace domain {
 	        this.routes = source["routes"];
 	        this.auto_connect = source["auto_connect"];
 	        this.when_down = source["when_down"];
+	        this.all_traffic = source["all_traffic"];
 	        this.blocking = source["blocking"];
 	        this.username = source["username"];
 	        this.has_password = source["has_password"];
@@ -1583,6 +1587,7 @@ export namespace domain {
 	    routes: string[];
 	    auto_connect: boolean;
 	    when_down?: string;
+	    all_traffic?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelSpec(source);
@@ -1599,6 +1604,7 @@ export namespace domain {
 	        this.routes = source["routes"];
 	        this.auto_connect = source["auto_connect"];
 	        this.when_down = source["when_down"];
+	        this.all_traffic = source["all_traffic"];
 	    }
 	}
 	

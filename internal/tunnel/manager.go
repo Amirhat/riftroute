@@ -317,7 +317,7 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	d, p, r := m.defs[name], m.parsed[name], m.rt[name]
 	s := domain.TunnelStatus{
 		Name: d.Name, Type: d.Type, Via: d.Via, Routes: append([]string{}, d.Routes...),
-		AutoConnect: d.AutoConnect, WhenDown: whenDown(d), Blocking: blocking(d, r),
+		AutoConnect: d.AutoConnect, WhenDown: whenDown(d), AllTraffic: d.AllTraffic, Blocking: blocking(d, r),
 		Username: d.Username, HasPassword: d.Password != "",
 		State: r.state, Detail: r.detail, Iface: r.iface, LocalIP: r.localIP, Server: r.server,
 		Since: r.since, LastError: r.lastErr, BytesIn: r.in, BytesOut: r.out, Servers: []string{},
@@ -369,7 +369,7 @@ func (m *Manager) Inputs() []routing.TunnelInput {
 			in.Iface = r.iface
 		}
 		if d != nil {
-			in.Routes = append([]string(nil), d.Routes...)
+			in.Routes, in.AllTraffic = append([]string(nil), d.Routes...), d.AllTraffic
 		}
 		out = append(out, in)
 	}
@@ -512,6 +512,12 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	}
 	if d.WhenDown == domain.TunnelFallback {
 		d.WhenDown = "" // the default, stored as a definition from before it
+	}
+	switch {
+	case spec.AllTraffic != nil:
+		d.AllTraffic = *spec.AllTraffic
+	case prev != nil:
+		d.AllTraffic = prev.AllTraffic // a client from before the setting keeps it
 	}
 	keptPassword := false
 	if prev != nil && prev.Type == d.Type {
@@ -682,7 +688,7 @@ func normalizeRoutes(in []string) ([]string, []string) {
 			pfx = netip.PrefixFrom(a, a.BitLen())
 		}
 		if pfx.Bits() == 0 {
-			errs = append(errs, fmt.Sprintf("%s would send ALL traffic into the tunnel; list the networks behind it instead", v))
+			errs = append(errs, fmt.Sprintf("%s would send ALL traffic into the tunnel: list the networks behind it, or set the tunnel to carry all traffic (--all-traffic)", v))
 			continue
 		}
 		s := pfx.Masked().String()
@@ -1037,7 +1043,7 @@ func (m *Manager) runOpenVPN(ctx context.Context, name string, d *def, p *Profil
 
 	sock, cfg := m.sockPath(name), m.cfgPath(name)
 	_ = os.Remove(sock)
-	opts := RenderOptions{Remotes: remotes, Management: sock, IPv6: RoutesNeedIPv6(d.Routes)}
+	opts := RenderOptions{Remotes: remotes, Management: sock, IPv6: d.needsIPv6()}
 	if err := os.WriteFile(cfg, []byte(p.Render(opts)), 0o600); err != nil {
 		m.setErr(name, "write config: "+err.Error())
 		return

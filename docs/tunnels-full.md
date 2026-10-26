@@ -1,8 +1,8 @@
 # Full tunnel — design (proposal)
 
-Status: proposal. The owner asked for it on 2026-10-25 and chose the options
-marked **(chosen)** below. It's built before L2TP, so L2TP gets it from the
-start.
+Status: routing built (PR A, below). DNS is next. The owner asked for it on
+2026-10-25 and chose the options marked **(chosen)**. It's built before L2TP,
+so L2TP gets it from the start.
 
 ## What the owner asked for
 
@@ -28,10 +28,16 @@ refused ("list the networks behind it instead").
   - its networks are more specific on macOS, and looked up first (5251) on Linux;
   - with its exit node on, the quarters are copied past it (`BesideTailscale`), like every main-table route.
 - **Linux beside a policy-routed VPN** (wg-quick with all traffic): wg-quick adds `lookup main suppress_prefixlength 0` ahead of its own table. That ignores only /0 routes in main, so the quarters still win. To be proven in the Docker suite.
-- **Keep-outs (#38) work unchanged:**
-  - the router's network, a DNS server in use, the anchors and the servers are carved out of the quarters, as out of any tunnel route;
-  - carving a few addresses out of a /2 costs a few dozen routes, well under `maxCarved`.
-  - The tunnel's own DNS servers are the exception, in full mode only: they go in, because they're why DNS goes through the tunnel.
+- **Keep-outs: pinned, never carved.**
+  - Carving a quarter around a kept address (as #38 does for listed routes) would make its pieces narrower than the profile and VPN routes inside it, and take their traffic. The first run on the demo daemon showed it: a /13 piece beat an exclude profile's 10.0.0.0/8.
+  - So a quarter always goes in whole. What it mustn't carry gets a host route along its **usual path**, the main VPN's catch-all (on-link into its interface) or else the physical gateway (`fullTunnelPins`):
+    - tunnels' servers, which no pin already holds;
+    - the watchdog's anchors;
+    - while it blocks (down), the resolvers it needs to connect again.
+  - What a narrower route already holds needs nothing: the router's network, another VPN's network (in `Occupied`).
+  - The main VPN's catch-all is its default or its two /1 halves (`resolveVPN`, which now recognizes `redirect-gateway def1`), and never one of RiftRoute's tunnels.
+  - **The guardrail:** `gateway-capture` refused any route holding the physical gateway, so 192.0.0.0/2 was refused. It now allows a route **wider than the gateway's connected network** (192.0.0.0/2 or 192.168.0.0/16 around a 192.168.1.0/24 LAN), since that network keeps winning for the gateway. A route as narrow as the LAN or narrower, or any one without a connected route holding the gateway (a read error included), is still refused.
+  - `route explain` says "kept out of tunnel X" for such a pin, not "via tunnel X" (`RouteDecision.KeptOutOf`).
 - **Another full tunnel already up:** the second one's quarters are taken, so it's blocked with the reason, like two tunnels listing the same network.
 
 ## IPv6 when the tunnel has none: blocked **(chosen)**
@@ -100,10 +106,11 @@ tunnel does, while it's connected, and puts it back when it isn't.
   - `TunnelStatus.AllTraffic`, `TunnelStatus.DNS` (in use), `TunnelStatus.DNSNote`.
 
 ## Telemetry
-A count of full tunnels, by type, in the existing tunnel counts. No addresses.
+Not in the first version: the report's schema is fixed on both ends, and a
+new count needs a server release first.
 
 ## Plan
-1. **PR A, routing:**
+1. **PR A, routing (built):**
    - the quarters, v6 blocking, `AllTraffic` in the spec, the store, the API, the CLI and the app;
    - status;
    - the Docker suites: OpenVPN and IKEv2 on Linux beside a full-tunnel main VPN, wg-quick-style;

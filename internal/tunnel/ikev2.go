@@ -220,7 +220,7 @@ func (k *ikeSession) resolve(ctx context.Context) error {
 func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err error) {
 	m := k.m
 	login := ikeLogin{User: orString(k.d.Username, k.c.Username), Password: orString(k.d.Password, k.c.Password)}
-	setup, err := renderIKE(k.c, login, ikeRoots(k.c), host, m.runDir, k.name, RoutesNeedIPv6(k.d.Routes), ikeKeyAsP12(k.l.Engine().Version))
+	setup, err := renderIKE(k.c, login, ikeRoots(k.c), host, m.runDir, k.name, k.d.needsIPv6(), ikeKeyAsP12(k.l.Engine().Version))
 	if err != nil {
 		return false, errFatal{err.Error()}
 	}

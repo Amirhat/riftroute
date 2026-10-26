@@ -396,7 +396,8 @@ function DecisionRow({ label, d, drift }: { label: string; d: RouteDecision; dri
           <span className="ltr font-mono text-default">
             {d.matched_cidr || '—'} → {d.gateway || 'on-link'} <span className="text-muted">dev</span> {d.iface}
           </span>
-          {d.profile && !d.tunnel && <Badge tone="accent">profile: {d.profile}</Badge>}
+          {d.kept_out_of && <Badge tone="muted">kept out of tunnel {d.kept_out_of}</Badge>}
+          {d.profile && !d.tunnel && !d.kept_out_of && <Badge tone="accent">profile: {d.profile}</Badge>}
         </>
       )}
       {drift && <Badge tone="warning">differs from current — drift</Badge>}

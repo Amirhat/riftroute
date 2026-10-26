@@ -80,6 +80,9 @@ func renderDecision(cmd *cobra.Command, label string, d domain.RouteDecision) {
 	case d.ViaVPN:
 		verdict = "via VPN"
 	}
+	if d.KeptOutOf != "" {
+		verdict += " (kept out of tunnel " + d.KeptOutOf + ")"
+	}
 	gw := d.Gateway
 	if gw == "" {
 		gw = "on-link"

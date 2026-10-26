@@ -154,9 +154,42 @@ describe('Tunnels view', () => {
         routes: ['192.168.70.0/24', '192.168.72.11'],
         auto_connect: false,
         when_down: 'fallback',
+        all_traffic: false,
       }),
     )
     await waitFor(() => expect(mockApi.connectTunnel).toHaveBeenCalledWith('office'))
+  })
+
+  it('saves a tunnel that carries all traffic, and says so on its card', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      path: '/Users/me/home.ovpn',
+      name: 'home.ovpn',
+      config: 'client\nremote 198.51.100.7\n',
+      servers: ['198.51.100.7:1194/udp'],
+      needs_auth: false,
+      ignored: [],
+      username: '',
+      password: '',
+      error: '',
+    })
+    mockApi.saveTunnel.mockResolvedValue({
+      tunnel: { ...connected, name: 'home', state: 'disconnected', all_traffic: true, routes: [] },
+    })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose a file…'))
+    expect(await screen.findByText('home.ovpn')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('All traffic, like an ordinary VPN'))
+    expect(screen.getByText('Networks through this tunnel (optional)')).toBeInTheDocument()
+    expect(screen.getByText('Block traffic')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() =>
+      expect(mockApi.saveTunnel).toHaveBeenCalledWith(expect.objectContaining({ name: 'home', all_traffic: true, routes: [] })),
+    )
+    withTunnels([{ ...connected, name: 'home', all_traffic: true, routes: [] }])
+    renderView()
+    expect(await screen.findByText('all traffic')).toBeInTheDocument()
   })
 
   it('renders the daemon’s field errors inline', async () => {

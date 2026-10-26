@@ -77,6 +77,12 @@ type TunnelSpec struct {
 	// WhenDown: fallback (default) or block. A client that doesn't send it
 	// (one from before it) keeps the tunnel's.
 	WhenDown TunnelWhenDown `json:"when_down,omitempty"`
+	// AllTraffic: the tunnel carries everything, like an ordinary VPN,
+	// except what's routed more specifically on purpose — profile routes,
+	// other VPNs' networks, other tunnels, the LAN, its own server — and
+	// IPv6 it can't carry is blocked. Routes may still be listed. Unset (a
+	// client from before it) keeps the tunnel's.
+	AllTraffic *bool `json:"all_traffic,omitempty"`
 }
 
 // TunnelStatus is a tunnel as reported over the API. It never carries the
@@ -88,6 +94,9 @@ type TunnelStatus struct {
 	Routes      []string       `json:"routes"`
 	AutoConnect bool           `json:"auto_connect"`
 	WhenDown    TunnelWhenDown `json:"when_down"`
+	// AllTraffic: it carries everything but what's routed more specifically
+	// on purpose (TunnelSpec.AllTraffic).
+	AllTraffic bool `json:"all_traffic,omitempty"`
 	// Blocking: its destinations are refused right now — it's set to block
 	// and is down while it should be up.
 	Blocking    bool   `json:"blocking,omitempty"`

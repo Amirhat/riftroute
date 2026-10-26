@@ -43,6 +43,44 @@ type TunnelInput struct {
 	// and the listed networks would blackhole — so that route is left out.
 	// Bypass addresses count as servers whether or not they're listed here.
 	Servers []netip.Addr
+	// AllTraffic: the tunnel carries everything, like an ordinary VPN — its
+	// routes are also the four quarters of each family (FullTunnelQuarters).
+	// Whatever is routed more specifically keeps its path: profile routes,
+	// other VPNs' networks, other tunnels, the LAN, server pins. Without
+	// IPv6 on the tunnel its v6 quarters are refused, so IPv6 can't go
+	// around it.
+	AllTraffic bool
+}
+
+// FullTunnelQuarters are a full tunnel's routes (TunnelInput.AllTraffic):
+// the four /2s of each family. Narrower than a default or the two /1 halves
+// another VPN's catch-all uses, so they take over from it; wider than
+// anything routed on purpose, so that keeps winning.
+var FullTunnelQuarters = []string{
+	"0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2",
+	"::/2", "4000::/2", "8000::/2", "c000::/2",
+}
+
+// tunnelEntry is one destination a tunnel routes: a listed one, or one of a
+// full tunnel's quarters.
+type tunnelEntry struct {
+	value   string
+	quarter bool
+}
+
+// entries are a tunnel's destinations: its listed routes, and the quarters
+// for a full tunnel.
+func (t TunnelInput) entries() []tunnelEntry {
+	var out []tunnelEntry
+	for _, v := range t.Routes {
+		out = append(out, tunnelEntry{value: v})
+	}
+	if t.AllTraffic {
+		for _, v := range FullTunnelQuarters {
+			out = append(out, tunnelEntry{value: v, quarter: true})
+		}
+	}
+	return out
 }
 
 // TunnelPlan is what the managed tunnels contribute on the current network.
@@ -124,10 +162,19 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 		}
 	}
 
+	fullBy := "" // the full tunnel that took the quarters
 	for _, t := range ts {
 		tag := TunnelProfilePrefix + t.Name
-		byFamily := map[domain.Family][]netip.Prefix{}
-		for _, v := range t.Routes {
+		// listed and quarters (a full tunnel's) by family: a quarter isn't
+		// the tunnel's network (tp.nets) — exclude routes inside it don't
+		// yield, include rules aren't cut around it — it's just the rest.
+		listed, quarters := map[domain.Family][]netip.Prefix{}, map[domain.Family][]netip.Prefix{}
+		for _, e := range t.entries() {
+			v := e.value
+			byFamily := listed
+			if e.quarter {
+				byFamily = quarters
+			}
 			pfx, fam, ok := entryToPrefix(v)
 			if !ok {
 				continue
@@ -135,7 +182,10 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			pfx = pfx.Masked()
 			why := ""
 			noV6 := t.Iface != "" && fam == domain.FamilyV6 && !t.V6
-			if noV6 && !t.Block {
+			// A full tunnel blocks IPv6 it can't carry, as one set to block
+			// does: refused rather than left to go around it.
+			blockV6 := t.Block || t.AllTraffic
+			if noV6 && !blockV6 {
 				why = "the tunnel has no IPv6 address"
 			}
 			if why == "" {
@@ -144,13 +194,21 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 			if c, ok := taken[prefixKey(pfx)]; why == "" && ok {
 				why = c.reason(t.Name)
 			}
+			if why == "" && e.quarter && fullBy != "" {
+				// Its quarters may be carved: only one tunnel carries all.
+				why = fmt.Sprintf("tunnel %s already carries all traffic", fullBy)
+			}
 			for _, n := range in.Tailscale {
 				if why == "" && n.Addr().Is4() == pfx.Addr().Is4() && n.Bits() <= pfx.Bits() && n.Contains(pfx.Addr()) {
 					why = fmt.Sprintf("it's inside %s, which Tailscale routes — left to it", n)
 				}
 			}
 			parts := []netip.Prefix{pfx}
-			if keep := keepOut(pfx, t, ts, held, in, false); why == "" && len(keep) > 0 {
+			// A quarter is never carved: its pieces would be narrower than
+			// the profile and VPN routes inside it, and take their traffic.
+			// What it mustn't carry is pinned to its usual path instead
+			// (fullTunnelPins).
+			if keep := keepOut(pfx, t, ts, held, in, false); why == "" && !e.quarter && len(keep) > 0 {
 				// What it holds that mustn't go into the tunnel is kept out
 				// (with the network someone routes it in); the rest goes in.
 				others := othersInside(pfx, t.Name, ts, in.Occupied)
@@ -172,10 +230,19 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 				}
 			}
 			if why == "" && noV6 {
-				// Set to block: refused rather than left to leak — a name
-				// with both addresses would otherwise go out over v6.
+				// Set to block (or all traffic): refused rather than left to
+				// leak — a name with both addresses would otherwise go out
+				// over v6.
 				why = "the tunnel has no IPv6 address, so it's refused (block when down)"
 				byFamily[fam] = append(byFamily[fam], parts...)
+				if e.quarter {
+					// Said once for the four.
+					if v == FullTunnelQuarters[4] {
+						tp.Blocked[t.Name] = append(tp.Blocked[t.Name], domain.TunnelBlocked{Route: "IPv6",
+							Reason: "the tunnel has no IPv6 address, so IPv6 is blocked while it carries all traffic"})
+					}
+					continue
+				}
 			}
 			if why != "" {
 				tp.Blocked[t.Name] = append(tp.Blocked[t.Name], domain.TunnelBlocked{Route: v, Reason: why})
@@ -186,17 +253,28 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 		if t.Iface == "" && !t.Block {
 			continue // not up: nothing goes into it
 		}
+		if t.AllTraffic && fullBy == "" {
+			fullBy = t.Name
+			tp.fullTunnelPins(t, ts, held, taken, in)
+		}
 		for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
 			// Up: into the tunnel, but for v6 it can't carry. Down (and set
 			// to block): all of it refused.
 			refuse := t.Iface == "" || (fam == domain.FamilyV6 && !t.V6)
-			for _, pfx := range unclaimedAggregate(byFamily[fam], taken) {
-				taken[prefixKey(pfx)] = claim{tunnel: t.Name, refuse: refuse}
-				tp.nets = append(tp.nets, pfx)
-				if refuse {
-					tp.add(domain.Route{DstCIDR: pfx.String(), Family: fam, Reject: true}, tag, in)
-				} else {
-					tp.add(domain.Route{DstCIDR: pfx.String(), Iface: t.Iface, Family: fam}, tag, in)
+			for _, group := range []struct {
+				prefixes []netip.Prefix
+				network  bool // the tunnel's own networks (tp.nets)
+			}{{unclaimedAggregate(listed[fam], taken), true}, {quarterAggregate(quarters[fam], taken), false}} {
+				for _, pfx := range group.prefixes {
+					taken[prefixKey(pfx)] = claim{tunnel: t.Name, refuse: refuse}
+					if group.network {
+						tp.nets = append(tp.nets, pfx)
+					}
+					if refuse {
+						tp.add(domain.Route{DstCIDR: pfx.String(), Family: fam, Reject: true}, tag, in)
+					} else {
+						tp.add(domain.Route{DstCIDR: pfx.String(), Iface: t.Iface, Family: fam}, tag, in)
+					}
 				}
 			}
 		}
@@ -249,6 +327,111 @@ func unclaimedAggregate(prefixes []netip.Prefix, taken map[string]claim) []netip
 				out = append(out, p)
 			}
 		}
+	}
+	return out
+}
+
+// fullTunnelPins keeps out of a full tunnel's quarters what mustn't go into
+// it — a tunnel's server its connection would loop through, an address the
+// watchdog probes, and, while it blocks (down), the resolvers it needs to
+// connect again — with a host route along its usual path: the main VPN's
+// default, else the physical gateway. Not carved: a quarter's pieces would
+// outrank the profile and VPN routes inside it. What a narrower route
+// already takes (the LAN, another VPN's network, a pin) needs nothing. While
+// it's up its resolvers go in: DNS through the tunnel is the point.
+func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, taken map[string]claim, in DesiredInput) {
+	tag := TunnelProfilePrefix + t.Name
+	var keep []keptOut
+	for _, o := range ts {
+		for _, a := range servers(o) {
+			why := fmt.Sprintf("tunnel %s's server %s", o.Name, a)
+			if o.Name == t.Name {
+				why = "the tunnel's own server " + a.String()
+			}
+			keep = append(keep, keptOut{addr: a, why: why})
+		}
+	}
+	for _, a := range in.Anchors {
+		keep = append(keep, keptOut{addr: a, why: a.String() + ", which RiftRoute probes to check a change kept you online"})
+	}
+	if t.Iface == "" {
+		resolvers := map[bool]int{}
+		for _, a := range in.DNSServers {
+			if resolvers[a.Is4()] < maxKeptResolvers {
+				resolvers[a.Is4()]++
+				keep = append(keep, keptOut{addr: a, why: "your DNS server " + a.String() + ", to connect again"})
+			}
+		}
+	}
+	var except []domain.TunnelExcept
+	seen := map[netip.Addr]bool{}
+	for _, k := range keep {
+		a := k.addr.Unmap()
+		if seen[a] || held[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || narrowerRoute(a, in) {
+			continue
+		}
+		seen[a] = true
+		fam := famOf(a)
+		// Into the main VPN's interface, on-link (it's point-to-point, as a
+		// tunnel's own routes are); else via the physical gateway.
+		var gw netip.Addr
+		_, iface := vpnFor(fam, in)
+		if iface == "" {
+			pgw, piface, err := resolveGateway("auto", fam, in)
+			if err != nil {
+				continue // nowhere else to send it
+			}
+			gw, iface = pgw, piface
+		}
+		host := netip.PrefixFrom(a, a.BitLen())
+		if _, dup := taken[prefixKey(host)]; dup {
+			continue
+		}
+		taken[prefixKey(host)] = claim{tunnel: t.Name, pin: true}
+		rt := domain.Route{DstCIDR: host.String(), Iface: iface, Family: fam}
+		if gw.IsValid() {
+			rt.Gateway = gw.String()
+		}
+		tp.add(rt, tag, in)
+		except = append(except, domain.TunnelExcept{Net: host.String(), Reason: k.why})
+	}
+	if len(except) > 0 {
+		tp.Narrowed[t.Name] = append(tp.Narrowed[t.Name], domain.TunnelNarrowed{Route: "all traffic", Except: except})
+	}
+}
+
+// narrowerRoute reports whether something narrower than a quarter already
+// routes a — the router's network, or a route someone else has — so a full
+// tunnel's quarter never takes it.
+func narrowerRoute(a netip.Addr, in DesiredInput) bool {
+	for _, lan := range []netip.Prefix{in.PhysNetV4, in.PhysNetV6} {
+		if lan.IsValid() && lan.Contains(a) {
+			return true
+		}
+	}
+	for k := range in.Occupied {
+		if p, err := netip.ParsePrefix(k); err == nil && p.Bits() > 2 && p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// quarterAggregate is unclaimedAggregate for a full tunnel's quarters (and
+// what's left of them once carved), each kept within its quarter: merged,
+// two would be a /1 — another VPN's catch-all's own destination — and four
+// the default itself.
+func quarterAggregate(prefixes []netip.Prefix, taken map[string]claim) []netip.Prefix {
+	var out []netip.Prefix
+	for _, v := range FullTunnelQuarters {
+		q := netip.MustParsePrefix(v)
+		var in []netip.Prefix
+		for _, p := range prefixes {
+			if p.Addr().Is4() == q.Addr().Is4() && q.Bits() <= p.Bits() && q.Contains(p.Addr()) {
+				in = append(in, p)
+			}
+		}
+		out = append(out, unclaimedAggregate(in, taken)...)
 	}
 	return out
 }

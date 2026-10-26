@@ -4,6 +4,37 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A tunnel can carry all traffic** (`riftroute tunnel add … --all-traffic`,
+  or "All traffic, like an ordinary VPN" in the app), except what's routed
+  elsewhere on purpose. Profiles, other VPNs' networks, your local network,
+  the tunnel's own server and other tunnels keep their path. They're more
+  specific than the tunnel's four /2 routes, which take over from the main
+  VPN's catch-all (a default or two /1 halves). Exclude routes don't yield
+  to it and include rules aren't cut around it, as they would be for a
+  tunnel's own networks. IPv6 is blocked while it's connected without an
+  IPv6 address. With "block when down", nothing else leaves while it's
+  down. Only one tunnel carries all traffic at a time. What mustn't go into
+  it (a tunnel's server, the addresses the watchdog probes) is pinned to
+  its usual path (docs/tunnels-full.md).
+
+### Changed
+- **A route wider than your local network may hold the router.** The
+  safety guardrail refused any route containing the router's address. A
+  profile listing 192.168.0.0/16 on a 192.168.1.x network was always
+  refused, though the network's own route keeps the router reachable. It's
+  allowed now when a narrower connected route holds the router, and still
+  refused otherwise.
+- **A main VPN that takes everything with two /1 halves** (OpenVPN's
+  `redirect-gateway def1`) is recognized as the VPN, as one with a default
+  route is: include profiles find it.
+
+### Fixed
+- `route explain` said "via tunnel X" for a tunnel's server pin, which keeps
+  that traffic *out* of the tunnel. It now says "kept out of tunnel X".
+
 ## [0.8.0] — 2026-10-04
 
 RiftRoute lives beside Tailscale, and puts back a route another program
