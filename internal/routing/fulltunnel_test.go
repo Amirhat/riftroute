@@ -182,3 +182,43 @@ func TestTwoFullTunnels(t *testing.T) {
 		t.Fatalf("b's quarters: %+v", blocked)
 	}
 }
+
+// Beside Tailscale's exit node (Linux), a full tunnel's quarters are copied
+// past it — and main is looked up first, all but /2 and wider, so the LAN's
+// connected route (the router, a DNS server on it) keeps beating a quarter's
+// copy, up or blocking. A tunnel that lists networks needs no such rule.
+func TestFullTunnelBesideAnExitNodeKeepsTheLAN(t *testing.T) {
+	rule := func(rules []domain.ManagedRule) (n int) {
+		for _, r := range rules {
+			if r.Priority == FullTunnelMainRulePrio && r.Table == "main" && r.Selector == "from all suppress_prefixlength 2" {
+				n++
+			}
+		}
+		return n
+	}
+	for _, tc := range []struct {
+		name string
+		tun  TunnelInput
+		want int
+	}{
+		{"up, v4 and v6", TunnelInput{Name: "all", Iface: "utun7", V6: true, AllTraffic: true}, 2},
+		{"blocking", TunnelInput{Name: "all", AllTraffic: true, Block: true}, 2},
+		{"lists networks", TunnelInput{Name: "lab", Iface: "utun7", Routes: []string{"10.20.0.0/16"}}, 0},
+	} {
+		in := testInput()
+		in.Tunnels = []TunnelInput{tc.tun}
+		in.Tailscale, in.TailscaleTable, in.TailscaleExitNode = tailnet(), "52", true
+		_, rules, err := BuildDesired(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rule(rules); got != tc.want {
+			t.Errorf("%s: %d main-before-copies rules, want %d", tc.name, got, tc.want)
+		}
+		// Gone with the exit node: the copies and this rule together.
+		in.TailscaleExitNode = false
+		if _, rules, _ = BuildDesired(in); rule(rules) != 0 {
+			t.Errorf("%s: the rule stayed without the exit node", tc.name)
+		}
+	}
+}

@@ -38,9 +38,16 @@ func TestSaveAllTraffic(t *testing.T) {
 	if st, err := h.m.Save(ctx, infraSpec()); err != nil || !st.AllTraffic {
 		t.Fatalf("an old client's edit dropped it: %+v, %v", st, err)
 	}
+	// Turning it off changes whether it asks for IPv6: that's settled at
+	// connect, so it reconnects.
+	starts := h.fl.Starts()
 	spec.AllTraffic = &off
 	if st, err := h.m.Save(ctx, spec); err != nil || st.AllTraffic {
 		t.Fatalf("turned off: %+v, %v", st, err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	if h.fl.Starts() == starts {
+		t.Error("it didn't reconnect, so it still asks for IPv6")
 	}
 	if in := h.lastApply(); len(in) != 1 || in[0].AllTraffic {
 		t.Fatalf("inputs after turning it off = %+v", in)

@@ -40,6 +40,16 @@ refused ("list the networks behind it instead").
   - `route explain` says "kept out of tunnel X" for such a pin, not "via tunnel X" (`RouteDecision.KeptOutOf`).
 - **Another full tunnel already up:** the second one's quarters are taken, so it's blocked with the reason, like two tunnels listing the same network.
 
+## Beside Tailscale's exit node (Linux)
+- With its exit node on, every main-table route of RiftRoute's is copied into 5253, looked up at 5260, ahead of Tailscale's capture (#39). That includes a full tunnel's quarters.
+- **The LAN problem** (review of step 1): the LAN's connected route isn't RiftRoute's, so it isn't copied. A quarter's copy then won over it: the router and the LAN went into the tunnel, or were refused while blocking.
+- **The fix:** while a full tunnel's quarters are copied, a rule at 5259 (`FullTunnelMainRulePrio`) looks main up first, all but /2 and wider: `lookup main suppress_prefixlength 2`. The LAN, and every other narrower route in main, wins again. The rule goes with the copies.
+
+## Known limits
+- **A TAP main VPN:** pins go on-link into the main VPN's interface, so a TAP (broadcast) main VPN, which needs a next hop, would blackhole them. Main VPNs are TUN in practice; RiftRoute's own tunnels are TUN only.
+- **A gateway outside the LAN** (an `onlink` default): no connected route holds it, so the gateway guardrail refuses the quarter that contains it. The tunnel is left out, which fails closed.
+- **To check on a Mac:** link-local and multicast IPv6 (`fe80::/10`, `ff02::/16`) sit inside `c000::/2`, which is refused while a tunnel without IPv6 carries all traffic. macOS sends them by scoped routes, so they should be unaffected. Check `ping6 fe80::1%en0`, `dns-sd -B _airplay._tcp`, and AirDrop.
+
 ## IPv6 when the tunnel has none: blocked **(chosen)**
 
 A full tunnel without an IPv6 address installs **reject** routes for the v6

@@ -586,7 +586,10 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 	m.mu.Unlock()
 	switch {
 	case running && prev != nil && (prev.Config != d.Config || prev.Username != d.Username ||
-		prev.Password != d.Password || prev.Via != d.Via):
+		prev.Password != d.Password || prev.Via != d.Via ||
+		// Whether it asks for IPv6 (all traffic, a v6 route) is settled at
+		// connect: WireGuard's address is its configuration's.
+		d.Type != domain.TunnelWireGuard && prev.needsIPv6() != d.needsIPv6()):
 		// Reconnect; still wanted meanwhile, so a block-mode tunnel keeps
 		// blocking.
 		if err := m.stop(ctx, d.Name, true); err != nil {

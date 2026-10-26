@@ -38,6 +38,14 @@ type FakeLauncher struct {
 	mu       sync.Mutex
 	commands []string
 	running  int
+	starts   int
+}
+
+// Starts is how many fake openvpn processes were started.
+func (f *FakeLauncher) Starts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.starts
 }
 
 // Commands returns every management command the fake received, in order.
@@ -70,6 +78,9 @@ func (f *FakeLauncher) Engine() domain.TunnelEngine {
 
 // Start implements Launcher.
 func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
+	f.mu.Lock()
+	f.starts++
+	f.mu.Unlock()
 	if e := f.Engine(); !e.Available {
 		return nil, &EngineError{Engine: e}
 	}
