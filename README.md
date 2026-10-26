@@ -3,7 +3,7 @@
 [![CI](https://github.com/Amirhat/riftroute/actions/workflows/ci.yml/badge.svg)](https://github.com/Amirhat/riftroute/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
-![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)
 [![Release](https://github.com/Amirhat/riftroute/actions/workflows/release.yml/badge.svg)](https://github.com/Amirhat/riftroute/actions/workflows/release.yml)
 
 **Split-tunneling / policy-based routing controller for macOS & Linux.**
@@ -96,7 +96,7 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 
 ## Prerequisites
 
-- **Go 1.25** — `go.mod` pins the toolchain to 1.25.14 (an older Go downloads
+- **Go 1.26** — `go.mod` pins the toolchain to 1.26.10 (an older Go downloads
   it on its own), so builds never use a Go with known security fixes missing.
 - **Node 22.13+** and **npm** (for the GUI frontend; Vite 8 and Vitest 5 need it).
 - **Wails v2.12**: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`

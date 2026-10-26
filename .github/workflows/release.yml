@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 env:
-  GO_VERSION: "1.25.x"
+  GO_VERSION: "1.26.x"
 
 jobs:
   # RiftRoute's own openvpn for macOS — the daemon runs only a root-owned copy
