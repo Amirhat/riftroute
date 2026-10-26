@@ -83,11 +83,18 @@ tunnel does, while it's connected, and puts it back when it isn't.
   - `resolvectl dns <iface> <servers>`, `resolvectl domain <iface> '~.'`, `resolvectl default-route <iface> true`;
   - on the other links, `default-route false` while it's up, so queries don't also leave there;
   - all of it reverted (`resolvectl revert`) when the tunnel goes. Without systemd-resolved, the tunnel's DNS isn't applied, and the card and doctor say why. RiftRoute never rewrites `/etc/resolv.conf`.
-- **macOS:** through the dynamic store, as other VPN clients' scripts do (vpnc-script, Tunnelblick):
-  - `State:/Network/Service/riftroute-<name>/DNS` (ServerAddresses);
-  - `State:/Network/Service/riftroute-<name>/IPv4`, with the tunnel's interface and `OverridePrimary`, so its DNS becomes the default resolver;
-  - removed when it goes.
-  - To be proven first on the owner's Mac (spike below): that `OverridePrimary` on a utun with no router changes the resolver and not the routing table; that split DNS (`/etc/resolver/*`) and the wildcard loopback resolver still win for their domains; and that Wi-Fi changes don't undo it.
+- **macOS: the primary service's DNS, swapped and restored, as Tunnelblick does.** The spike on the owner's Mac (2026-10-26, macOS 15.7.2, behind an NE-based main VPN) settled it:
+  - **A resolver of RiftRoute's own for every domain** (`SupplementalMatchDomains ""`) is exactly how the NE VPN there declares its DNS. Ours, from a service that isn't primary, always ranked behind it: order 104800 vs 103400, and still behind with numeric `SupplementalMatchOrders` or `SearchOrder`. macOS orders "every domain" resolvers by service rank. **Rejected.**
+  - **Swapping the primary service's `ServerAddresses`** (`State:/Network/Service/<primary>/DNS`) made ours the default resolver at once. **Chosen.**
+  - Neither touched a route; the only differences were cloned cache entries.
+  - `OverridePrimary` (vpnc-script) wasn't tried: making our service primary can move the default route.
+- **How the swap is made safe:**
+  - **Backup:** the primary service's DNS dictionary is copied to `State:/Network/RiftRoute/DNSBackup/<service>` before it's changed, only the first time. Then only `ServerAddresses` is replaced (with the search domains, if the tunnel gives some).
+  - **Holding:** whoever owns that service can rewrite it (DHCP renewal, the NE VPN reconnecting), and the primary service can change (Wi-Fi ↔ Ethernet, the main VPN up or down). On the network watcher's DNS and primary-service changes, RiftRoute checks it:
+    - rewritten by its owner: take the new value as the backup, and apply again;
+    - a new primary: restore the old one, then apply to the new.
+  - **Restore** (the tunnel down, disconnected, panic, the daemon stopping): the backup goes back **only if the service still holds RiftRoute's servers**. A value its owner wrote since is theirs, and is left. Then the backup key goes. mDNSResponder's cache is flushed after each change.
+  - The backup lives in State:, so it survives a daemon crash (until reboot, when the swap is gone too). The daemon restores leftovers at start, before tunnels come up.
 - **Crash safety:** the keys and links are RiftRoute's by name.
   - At start, the daemon removes any left from a run that didn't end cleanly, before the tunnels come up. So a crash can't leave the system asking a DNS server that's gone.
   - Panic and `daemon uninstall` remove them too.
@@ -125,7 +132,7 @@ new count needs a server release first.
    - status;
    - the Docker suites: OpenVPN and IKEv2 on Linux beside a full-tunnel main VPN, wg-quick-style;
    - review.
-2. **Spike, macOS DNS** (the owner runs a script on the Mac): `OverridePrimary` behaviour, as listed above.
+2. **Spike, macOS DNS (done, 2026-10-26):** two rounds on the owner's Mac. The swap was chosen; see "Applying them".
 3. **PR B, DNS:**
    - capture per type;
    - apply and revert on Linux (systemd-resolved) and macOS (dynamic store);
