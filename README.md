@@ -310,8 +310,10 @@ Or use the **Tunnels** page in the app. How it works:
   network and the tunnel's own server keep their path, because they're
   routed more specifically than the tunnel's four /2 routes, which take over
   from the main VPN's catch-all. IPv6 is blocked if the tunnel has no IPv6
-  address. Only one tunnel carries all traffic at a time. Design:
-  [docs/tunnels-full.md](docs/tunnels-full.md).
+  address. Only one tunnel carries all traffic at a time. While it's
+  connected, your system resolves names through it too: with its server's
+  DNS, or servers you set (`--dns`). Your own come back when it
+  disconnects. Design: [docs/tunnels-full.md](docs/tunnels-full.md).
 - **When it's down**, its networks take their usual path (usually the main
   VPN). With `--when-down block` (or "Block its networks" in the app) they're
   refused instead while it should be up but isn't — connecting,

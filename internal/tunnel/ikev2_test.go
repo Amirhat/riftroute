@@ -512,12 +512,22 @@ func TestRenderIKE(t *testing.T) {
 			t.Errorf("config lacks %q:\n%s", s, conf)
 		}
 	}
-	for _, s := range []string{"resolve", "updown", "attr"} {
+	for _, s := range []string{"updown", "attr"} {
 		if strings.Contains(conf, " "+s+" ") {
 			t.Errorf("config loads %s:\n%s", s, conf)
 		}
 	}
-	if darwin, linux := ikeConf("darwin", "/s", false), ikeConf("linux", "/s", false); strings.Contains(darwin, "routing_table") ||
+	// resolve writes the server's DNS to the session's own file — never the
+	// system's resolv.conf, and never through resolvconf(8).
+	for _, s := range []string{" resolve\n", "file = /run/rr/office.dns\n", "path = /nonexistent/riftroute-no-resolvconf\n"} {
+		if !strings.Contains(conf, s) {
+			t.Errorf("config lacks %q:\n%s", s, conf)
+		}
+	}
+	if st.DNSFile != "/run/rr/office.dns" {
+		t.Errorf("DNS file %q", st.DNSFile)
+	}
+	if darwin, linux := ikeConf("darwin", "/s", "/d", false), ikeConf("linux", "/s", "/d", false); strings.Contains(darwin, "routing_table") ||
 		!strings.Contains(darwin, " kernel-pfroute ") || !strings.Contains(linux, "routing_table = 52520\n") ||
 		!strings.Contains(linux, "routing_table_prio = 52520\n") || !strings.Contains(linux, " kernel-netlink ") ||
 		!strings.Contains(linux, "stderr {") || strings.Contains(linux, "pem!") ||

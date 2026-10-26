@@ -83,6 +83,10 @@ type TunnelSpec struct {
 	// IPv6 it can't carry is blocked. Routes may still be listed. Unset (a
 	// client from before it) keeps the tunnel's.
 	AllTraffic *bool `json:"all_traffic,omitempty"`
+	// DNS are DNS servers to use while it carries all traffic, instead of
+	// the ones its server (or configuration) gives. Unset (nil) keeps the
+	// tunnel's; empty clears it.
+	DNS *[]string `json:"dns,omitempty"`
 }
 
 // TunnelStatus is a tunnel as reported over the API. It never carries the
@@ -97,6 +101,13 @@ type TunnelStatus struct {
 	// AllTraffic: it carries everything but what's routed more specifically
 	// on purpose (TunnelSpec.AllTraffic).
 	AllTraffic bool `json:"all_traffic,omitempty"`
+	// DNSOverride are the DNS servers the user set for it (TunnelSpec.DNS).
+	DNSOverride []string `json:"dns_override,omitempty"`
+	// DNS are the DNS servers the system uses through it right now (a full
+	// tunnel, connected); DNSNote says why there are none when it carries
+	// all traffic but the system's own DNS is still in use.
+	DNS     []string `json:"dns,omitempty"`
+	DNSNote string   `json:"dns_note,omitempty"`
 	// Blocking: its destinations are refused right now — it's set to block
 	// and is down while it should be up.
 	Blocking    bool   `json:"blocking,omitempty"`

@@ -1272,6 +1272,9 @@ export namespace domain {
 	    auto_connect: boolean;
 	    when_down: string;
 	    all_traffic?: boolean;
+	    dns_override?: string[];
+	    dns?: string[];
+	    dns_note?: string;
 	    blocking?: boolean;
 	    username?: string;
 	    has_password: boolean;
@@ -1309,6 +1312,9 @@ export namespace domain {
 	        this.auto_connect = source["auto_connect"];
 	        this.when_down = source["when_down"];
 	        this.all_traffic = source["all_traffic"];
+	        this.dns_override = source["dns_override"];
+	        this.dns = source["dns"];
+	        this.dns_note = source["dns_note"];
 	        this.blocking = source["blocking"];
 	        this.username = source["username"];
 	        this.has_password = source["has_password"];
@@ -1588,6 +1594,7 @@ export namespace domain {
 	    auto_connect: boolean;
 	    when_down?: string;
 	    all_traffic?: boolean;
+	    dns?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelSpec(source);
@@ -1605,6 +1612,7 @@ export namespace domain {
 	        this.auto_connect = source["auto_connect"];
 	        this.when_down = source["when_down"];
 	        this.all_traffic = source["all_traffic"];
+	        this.dns = source["dns"];
 	    }
 	}
 	

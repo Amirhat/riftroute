@@ -1,0 +1,293 @@
+package tunneldns
+
+import (
+	"context"
+	"fmt"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// fakeStore emulates the dynamic store behind scutil, for the commands the
+// applier sends: show, list, get, set, remove, d.init, d.add.
+type fakeStore struct {
+	mu   sync.Mutex
+	keys map[string]map[string][]string // key → field → values (a scalar is one value)
+	arr  map[string]map[string]bool     // key → field → is an array
+	ran  []string                       // other commands run
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{keys: map[string]map[string][]string{}, arr: map[string]map[string]bool{}}
+}
+
+func (f *fakeStore) put(key string, fields map[string][]string) {
+	f.keys[key] = map[string][]string{}
+	f.arr[key] = map[string]bool{}
+	for k, v := range fields {
+		f.keys[key][k] = v
+		f.arr[key][k] = true
+	}
+}
+
+func (f *fakeStore) servers(key string) []string { return f.keys[key]["ServerAddresses"] }
+
+func (f *fakeStore) run(_ context.Context, stdin, name string, args ...string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if name != "scutil" {
+		f.ran = append(f.ran, name+" "+strings.Join(args, " "))
+		return "", nil
+	}
+	var out strings.Builder
+	d, darr := map[string][]string{}, map[string]bool{}
+	for _, line := range strings.Split(stdin, "\n") {
+		f2 := strings.Fields(line)
+		if len(f2) == 0 {
+			continue
+		}
+		switch f2[0] {
+		case "open", "close":
+		case "show":
+			fields, ok := f.keys[f2[1]]
+			if !ok {
+				out.WriteString("  No such key\n")
+				continue
+			}
+			out.WriteString("<dictionary> {\n")
+			names := make([]string, 0, len(fields))
+			for k := range fields {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			for _, k := range names {
+				if f.arr[f2[1]][k] {
+					fmt.Fprintf(&out, "  %s : <array> {\n", k)
+					for i, v := range fields[k] {
+						fmt.Fprintf(&out, "    %d : %s\n", i, v)
+					}
+					out.WriteString("  }\n")
+				} else {
+					fmt.Fprintf(&out, "  %s : %s\n", k, fields[k][0])
+				}
+			}
+			out.WriteString("}\n")
+		case "list":
+			re := regexp.MustCompile("^" + f2[1] + "$")
+			var ks []string
+			for k := range f.keys {
+				if re.MatchString(k) {
+					ks = append(ks, k)
+				}
+			}
+			sort.Strings(ks)
+			for i, k := range ks {
+				fmt.Fprintf(&out, "  subKey [%d] = %s\n", i, k)
+			}
+		case "get":
+			if fields, ok := f.keys[f2[1]]; ok {
+				d, darr = map[string][]string{}, map[string]bool{}
+				for k, v := range fields {
+					d[k], darr[k] = slices.Clone(v), f.arr[f2[1]][k]
+				}
+			}
+		case "set":
+			f.keys[f2[1]], f.arr[f2[1]] = map[string][]string{}, map[string]bool{}
+			for k, v := range d {
+				f.keys[f2[1]][k], f.arr[f2[1]][k] = slices.Clone(v), darr[k]
+			}
+		case "remove":
+			delete(f.keys, f2[1])
+			delete(f.arr, f2[1])
+		case "d.init":
+			d, darr = map[string][]string{}, map[string]bool{}
+		case "d.add":
+			switch {
+			case len(f2) >= 3 && f2[2] == "*":
+				d[f2[1]], darr[f2[1]] = f2[3:], true
+			case len(f2) >= 4 && f2[2] == "#":
+				d[f2[1]], darr[f2[1]] = f2[3:4], false
+			default:
+				d[f2[1]], darr[f2[1]] = f2[2:3], false
+			}
+		}
+	}
+	return out.String(), nil
+}
+
+const (
+	wifi = "11111111-AAAA-BBBB-CCCC-000000000001"
+	eth  = "22222222-AAAA-BBBB-CCCC-000000000002"
+)
+
+func tunnelCfg() Config {
+	return Config{Iface: "utun9", Servers: []netip.Addr{netip.MustParseAddr("10.8.0.1"), netip.MustParseAddr("10.8.0.2")}, Search: []string{"corp.example"}}
+}
+
+func storeWithPrimary(svc string) *fakeStore {
+	f := newFakeStore()
+	f.put(globalIPv4, nil)
+	f.keys[globalIPv4]["PrimaryService"] = []string{svc}
+	f.put(serviceDNS(svc), map[string][]string{"ServerAddresses": {"192.168.1.1"}, "SupplementalMatchDomains": {""}})
+	return f
+}
+
+// The swap: the primary service's servers become the tunnel's, its old
+// dictionary is kept, and a revert puts it back and removes RiftRoute's keys.
+func TestScutilSwapAndRestore(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	s := newScutil(f.run)
+	ctx := context.Background()
+	if err := s.Apply(ctx, tunnelCfg()); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Revert(ctx)
+	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[10.8.0.1 10.8.0.2]" {
+		t.Fatalf("primary's servers %v", got)
+	}
+	if got := f.keys[serviceDNS(wifi)]["SearchDomains"]; fmt.Sprint(got) != "[corp.example]" {
+		t.Errorf("search domains %v", got)
+	}
+	if _, ok := f.keys[serviceDNS(wifi)]["SupplementalMatchDomains"]; !ok {
+		t.Error("the swap dropped the service's other fields")
+	}
+	if got := f.servers(backupPrefix + wifi); fmt.Sprint(got) != "[192.168.1.1]" {
+		t.Errorf("backup %v", got)
+	}
+	if err := s.Revert(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.1]" {
+		t.Fatalf("restored %v", got)
+	}
+	if _, ok := f.keys[serviceDNS(wifi)]["SearchDomains"]; ok {
+		t.Error("the tunnel's search domains stayed")
+	}
+	for k := range f.keys {
+		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
+			t.Errorf("left %s", k)
+		}
+	}
+	if !slices.Contains(f.ran, "killall -HUP mDNSResponder") {
+		t.Errorf("caches not flushed: %v", f.ran)
+	}
+}
+
+// A value the service's owner wrote while the swap was in place (a DHCP
+// renewal, a VPN reconnecting) is theirs: a revert leaves it.
+func TestScutilRestoreLeavesTheOwnersNewValue(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	s := newScutil(f.run)
+	ctx := context.Background()
+	_ = s.Apply(ctx, tunnelCfg())
+	f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.254"}
+	_ = s.Revert(ctx)
+	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.254]" {
+		t.Fatalf("the owner's value was overwritten: %v", got)
+	}
+	if _, ok := f.keys[backupPrefix+wifi]; ok {
+		t.Error("the backup stayed")
+	}
+}
+
+// A service with no DNS of its own gets one for the swap, removed again.
+func TestScutilServiceWithoutDNS(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	delete(f.keys, serviceDNS(wifi))
+	s := newScutil(f.run)
+	ctx := context.Background()
+	_ = s.Apply(ctx, tunnelCfg())
+	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.1 10.8.0.2]" {
+		t.Fatalf("not swapped: %v", f.keys)
+	}
+	_ = s.Revert(ctx)
+	if _, ok := f.keys[serviceDNS(wifi)]; ok {
+		t.Fatal("the DNS created for the swap stayed")
+	}
+}
+
+// A daemon that crashed with the swap in place: its successor's Recover
+// puts the backup back before anything comes up.
+func TestScutilRecoverAfterACrash(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	_ = newScutil(f.run).Apply(context.Background(), tunnelCfg()) // and the daemon dies
+	if err := newScutil(f.run).Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.1]" {
+		t.Fatalf("not recovered: %v", got)
+	}
+	if _, ok := f.keys[appliedKey]; ok {
+		t.Error("the applied record stayed")
+	}
+}
+
+// While the swap is in place: a new primary service gets it (the old one
+// restored), and an owner's rewrite is backed up and swapped again.
+func TestScutilRecheck(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"10.0.0.1"}})
+	s := newScutil(f.run)
+	ctx := context.Background()
+	_ = s.Apply(ctx, tunnelCfg())
+	defer s.Revert(ctx)
+
+	f.keys[globalIPv4]["PrimaryService"] = []string{eth} // Ethernet plugged in
+	s.recheck(ctx)
+	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" || fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.8.0.1 10.8.0.2]" {
+		t.Fatalf("after the primary changed: wifi %v, eth %v", f.servers(serviceDNS(wifi)), f.servers(serviceDNS(eth)))
+	}
+
+	f.keys[serviceDNS(eth)]["ServerAddresses"] = []string{"10.0.0.2"} // DHCP renewed it
+	s.recheck(ctx)
+	if fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.8.0.1 10.8.0.2]" || fmt.Sprint(f.servers(backupPrefix+eth)) != "[10.0.0.2]" {
+		t.Fatalf("after the owner's rewrite: %v, backup %v", f.servers(serviceDNS(eth)), f.servers(backupPrefix+eth))
+	}
+	_ = s.Revert(ctx)
+	if fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.0.0.2]" {
+		t.Fatalf("restored the stale value: %v", f.servers(serviceDNS(eth)))
+	}
+}
+
+// Linux: systemd-resolved on the tunnel's link, recorded for Recover.
+func TestResolvedApplyRevertRecover(t *testing.T) {
+	var ran []string
+	ok := true
+	run := func(_ context.Context, _, name string, args ...string) (string, error) {
+		ran = append(ran, name+" "+strings.Join(args, " "))
+		if args[0] == "status" && !ok {
+			return "", fmt.Errorf("exit 1")
+		}
+		return "", nil
+	}
+	state := filepath.Join(t.TempDir(), "tunnel-dns.link")
+	r := newResolved(run, state)
+	ctx := context.Background()
+	if err := r.Apply(ctx, tunnelCfg()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"resolvectl status utun9", "resolvectl dns utun9 10.8.0.1 10.8.0.2", "resolvectl domain utun9 ~. corp.example", "resolvectl default-route utun9 yes"}
+	if !slices.Equal(ran, want) {
+		t.Fatalf("ran %q", ran)
+	}
+	if b, _ := os.ReadFile(state); strings.TrimSpace(string(b)) != "utun9" {
+		t.Fatalf("state %q", b)
+	}
+	ran = nil
+	if err := newResolved(run, state).Recover(ctx); err != nil || !slices.Equal(ran, []string{"resolvectl revert utun9"}) {
+		t.Fatalf("recover: %q %v", ran, err)
+	}
+	if _, err := os.Stat(state); err == nil {
+		t.Error("the state file stayed")
+	}
+	ok = false
+	if err := r.Apply(ctx, tunnelCfg()); err != ErrUnavailable {
+		t.Fatalf("without resolved: %v", err)
+	}
+}

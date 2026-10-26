@@ -446,6 +446,11 @@ export interface TunnelStatus {
   when_down?: TunnelWhenDown
   // It carries all traffic but what's routed elsewhere on purpose.
   all_traffic?: boolean
+  // DNS servers set for it; the ones the system uses through it now; why
+  // none are, while it carries all traffic.
+  dns_override?: string[]
+  dns?: string[]
+  dns_note?: string
   // Its destinations are refused right now: set to block, and down while
   // it should be up.
   blocking?: boolean
@@ -507,6 +512,8 @@ export interface TunnelSpec {
   when_down?: TunnelWhenDown
   // Unset keeps the tunnel's (a daemon from before it ignores it).
   all_traffic?: boolean
+  // DNS servers to use through it instead of its server's (empty clears).
+  dns?: string[]
 }
 
 // TunnelProfileRef is a tunnel-mode profile routed into a tunnel: its toggle

@@ -1,6 +1,6 @@
 # Full tunnel — design (proposal)
 
-Status: routing built (PR A, below). DNS is next. The owner asked for it on
+Status: routing (PR A) and DNS (PR B) built, below. The owner asked for it on
 2026-10-25 and chose the options marked **(chosen)**. It's built before L2TP,
 so L2TP gets it from the start.
 
@@ -72,7 +72,7 @@ tunnel does, while it's connected, and puts it back when it isn't.
 |---|---|
 | OpenVPN | the server's pushed `dhcp-option DNS` / `dns server`. In full mode the pull-filter for them goes, and they're read from openvpn's `PUSH_REPLY` log line (verb ≥ 3). openvpn applies nothing itself: `script-security 1`, no up script. |
 | WireGuard | the configuration's `DNS =`, ignored today, used in full mode |
-| IKEv2 | the server's INTERNAL_IP4/6_DNS. charon-cmd's `resolve` plugin, pointed at a private file under the tunnel's state directory (`charon-cmd.plugins.resolve.file`), writes them there for the daemon to read. The system's resolver is never touched. |
+| IKEv2 | the server's INTERNAL_IP4/6_DNS. charon-cmd's `resolve` plugin, pointed at a private file under the tunnel's state directory (`charon-cmd.plugins.resolve.file`), writes them there for the daemon to read. Its `resolvconf.path` names nothing: it would otherwise run resolvconf(8) — systemd-resolved's on many Linux systems — and change the system's DNS. The macOS build adds `--enable-resolve`. The system's resolver is never touched by charon. |
 | L2TP (later) | pppd's `usepeerdns` values |
 
 - **Checks:** only addresses, at most 4 per family, never loopback or unspecified. The user can override them ("use these DNS servers").
@@ -133,7 +133,7 @@ new count needs a server release first.
    - the Docker suites: OpenVPN and IKEv2 on Linux beside a full-tunnel main VPN, wg-quick-style;
    - review.
 2. **Spike, macOS DNS (done, 2026-10-26):** two rounds on the owner's Mac. The swap was chosen; see "Applying them".
-3. **PR B, DNS:**
+3. **PR B, DNS (built):** `internal/tunneldns` (the macOS swap, systemd-resolved, a fake), capture in `internal/tunnel/dnscapture.go`, the manager's `syncDNS` after each tunnel apply, `revertDNS` on panic and exit, `Recover` at the daemon's start.
    - capture per type;
    - apply and revert on Linux (systemd-resolved) and macOS (dynamic store);
    - start-up cleanup and panic;

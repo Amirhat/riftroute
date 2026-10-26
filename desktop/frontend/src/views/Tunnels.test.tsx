@@ -180,16 +180,22 @@ describe('Tunnels view', () => {
     fireEvent.click(await screen.findByText('+ Add Tunnel'))
     fireEvent.click(screen.getByText('Choose a file…'))
     expect(await screen.findByText('home.ovpn')).toBeInTheDocument()
+    expect(screen.queryByLabelText('DNS servers')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('All traffic, like an ordinary VPN'))
     expect(screen.getByText('Networks through this tunnel (optional)')).toBeInTheDocument()
     expect(screen.getByText('Block traffic')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('DNS servers'), { target: { value: '1.1.1.1, 9.9.9.9' } })
     fireEvent.click(screen.getByText('Save'))
     await waitFor(() =>
-      expect(mockApi.saveTunnel).toHaveBeenCalledWith(expect.objectContaining({ name: 'home', all_traffic: true, routes: [] })),
+      expect(mockApi.saveTunnel).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'home', all_traffic: true, routes: [], dns: ['1.1.1.1', '9.9.9.9'] }),
+      ),
     )
-    withTunnels([{ ...connected, name: 'home', all_traffic: true, routes: [] }])
+    withTunnels([{ ...connected, name: 'home', all_traffic: true, routes: [], dns: ['10.8.0.1'] }])
     renderView()
     expect(await screen.findByText('all traffic')).toBeInTheDocument()
+    expect(screen.getByText('10.8.0.1')).toBeInTheDocument()
+    expect(screen.getByText("(its server's)")).toBeInTheDocument()
   })
 
   it('renders the daemon’s field errors inline', async () => {

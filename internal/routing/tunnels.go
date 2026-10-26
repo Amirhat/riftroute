@@ -50,6 +50,10 @@ type TunnelInput struct {
 	// IPv6 on the tunnel its v6 quarters are refused, so IPv6 can't go
 	// around it.
 	AllTraffic bool
+	// DNS are the DNS servers the system resolves with through a full
+	// tunnel (tunneldns): they go into it, never pinned out of it — not
+	// even one the watchdog also probes.
+	DNS []netip.Addr
 }
 
 // FullTunnelQuarters are a full tunnel's routes (TunnelInput.AllTraffic):
@@ -367,7 +371,7 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 	seen := map[netip.Addr]bool{}
 	for _, k := range keep {
 		a := k.addr.Unmap()
-		if seen[a] || held[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || narrowerRoute(a, in) {
+		if seen[a] || held[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || narrowerRoute(a, in) || slices.Contains(t.DNS, a) {
 			continue
 		}
 		seen[a] = true

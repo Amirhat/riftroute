@@ -30,8 +30,10 @@ type def struct {
 	// fallback.
 	WhenDown domain.TunnelWhenDown `json:"when_down,omitempty"`
 	// AllTraffic: a full tunnel (domain.TunnelSpec.AllTraffic).
-	AllTraffic bool      `json:"all_traffic,omitempty"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	AllTraffic bool `json:"all_traffic,omitempty"`
+	// DNS overrides the DNS its server gives, for a full tunnel.
+	DNS       []string  `json:"dns,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // needsIPv6 reports whether the tunnel takes an IPv6 address when its

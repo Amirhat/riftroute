@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/tunneldns"
 )
 
 // ikev2Driver runs IKEv2 connections from configuration profiles
@@ -106,6 +107,7 @@ type ikeSession struct {
 
 	remotes  []Remote // what charon-cmd connects to: the pinned addresses (via direct), or the name
 	resolved time.Time
+	dnsFile  string // where this attempt's charon-cmd writes the server's DNS
 }
 
 // errFatal ends the session: retrying can't help (the profile, the engine,
@@ -226,6 +228,7 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 	}
 	defer removeIKEFiles(setup)
 	removeIKEFiles(setup) // a crashed run's
+	k.dnsFile = setup.DNSFile
 	for _, f := range setup.Files {
 		if err := os.WriteFile(f.Name, f.Data, 0o600); err != nil {
 			return false, errFatal{"write the connection's files: " + err.Error()}
@@ -418,6 +421,7 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 	k.m.update(k.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = a.iface, a.local, a.v6
+		r.dns, r.dnsFile = tunneldns.Config{}, k.dnsFile // read when it's needed (wantedDNS)
 		if st.Server.IsValid() {
 			r.server = st.Server.String()
 			// The address charon actually reached is one of its servers.
@@ -581,4 +585,7 @@ func removeIKEFiles(st ikeSetup) {
 		_ = os.Remove(f.Name)
 	}
 	_ = os.Remove(st.Socket)
+	if st.DNSFile != "" {
+		_ = os.Remove(st.DNSFile)
+	}
 }

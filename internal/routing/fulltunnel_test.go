@@ -222,3 +222,22 @@ func TestFullTunnelBesideAnExitNodeKeepsTheLAN(t *testing.T) {
 		}
 	}
 }
+
+// The DNS servers the system resolves with through a full tunnel go into it,
+// even one the watchdog probes too: never pinned out.
+func TestFullTunnelKeepsItsDNSIn(t *testing.T) {
+	in := testInput()
+	in.Anchors = []netip.Addr{netip.MustParseAddr("1.1.1.1"), netip.MustParseAddr("1.0.0.1")}
+	in.Tunnels = []TunnelInput{{Name: "all", Iface: "utun7", AllTraffic: true, DNS: []netip.Addr{netip.MustParseAddr("1.1.1.1")}}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := map[string]bool{}
+	for _, d := range desired {
+		pinned[d.DstCIDR] = true
+	}
+	if pinned["1.1.1.1/32"] || !pinned["1.0.0.1/32"] {
+		t.Fatalf("pins %v: the tunnel's DNS server pinned out, or the other anchor not", pinned)
+	}
+}

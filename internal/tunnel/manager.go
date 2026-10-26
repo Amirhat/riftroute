@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -24,6 +25,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/routing"
 	"github.com/Amirhat/riftroute/internal/telemetry"
+	"github.com/Amirhat/riftroute/internal/tunneldns"
 )
 
 // Options wires a Manager into the daemon.
@@ -60,14 +62,22 @@ type Options struct {
 	// on the tunnel's interface across an openvpn restart, untagged, and
 	// mustn't be taken for routes the server pushed. nil: none.
 	Owned func() []domain.ManagedRoute
-	Log   *slog.Logger
+	// DNS applies a full tunnel's DNS to the system while it's connected
+	// (tunneldns). nil: the system's DNS is never changed.
+	DNS tunneldns.Applier
+	Log *slog.Logger
 }
 
 // Manager runs the daemon's tunnels: it stores their definitions, runs one
 // session per connected tunnel through its protocol's driver (driver.go), and
 // reports what the engine should route (Inputs).
 type Manager struct {
-	o       Options
+	o Options
+	// dnsMu orders a full tunnel's DNS changes; dnsApplied is what's in
+	// place.
+	dnsMu      sync.Mutex
+	dnsApplied tunneldns.Config
+
 	store   *defStore
 	runDir  string
 	drivers map[domain.TunnelType]driver
@@ -121,6 +131,15 @@ type live struct {
 	// failures counts attempts that ended before connecting, since the last
 	// successful connection (or the start of the session).
 	failures int
+	// dns is the DNS its server gave this session (OpenVPN's PUSH_REPLY,
+	// WireGuard's configuration); dnsFile, where charon-cmd's resolve plugin
+	// writes it (IKEv2), read when it's needed.
+	dns     tunneldns.Config
+	dnsFile string
+	// dnsInUse is what the system resolves with through it now, and dnsNote
+	// why it's not, for a full tunnel that's connected.
+	dnsInUse []netip.Addr
+	dnsNote  string
 	// want: someone asked for the tunnel to be up (Connect, auto-connect, a
 	// resume) and nobody has taken it down since (Disconnect, a panic,
 	// Delete). A session that ends on its own leaves it set. While it's
@@ -187,10 +206,15 @@ func New(o Options) (*Manager, error) {
 		domain.TunnelIKEv2:     ikev2Driver{o: &m.o},
 	}
 	m.ap = newApplier(func(ctx context.Context) error {
-		if m.o.Apply == nil {
-			return nil
+		if m.o.Apply != nil {
+			if err := m.o.Apply(ctx); err != nil {
+				return err
+			}
 		}
-		return m.o.Apply(ctx)
+		// Its routes are in: a full tunnel's DNS can go through it now (or
+		// the system's comes back, with it gone).
+		m.syncDNS(ctx)
+		return nil
 	}, o.Log)
 	// A unix socket path is capped (~104 bytes on macOS); a long home
 	// directory in dev can exceed it. The fallback is stable per definitions
@@ -318,12 +342,20 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	s := domain.TunnelStatus{
 		Name: d.Name, Type: d.Type, Via: d.Via, Routes: append([]string{}, d.Routes...),
 		AutoConnect: d.AutoConnect, WhenDown: whenDown(d), AllTraffic: d.AllTraffic, Blocking: blocking(d, r),
+		DNSOverride: append([]string(nil), d.DNS...), DNSNote: r.dnsNote,
 		Username: d.Username, HasPassword: d.Password != "",
 		State: r.state, Detail: r.detail, Iface: r.iface, LocalIP: r.localIP, Server: r.server,
 		Since: r.since, LastError: r.lastErr, BytesIn: r.in, BytesOut: r.out, Servers: []string{},
 	}
+	for _, a := range r.dnsInUse {
+		s.DNS = append(s.DNS, a.String())
+	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
+		if d.AllTraffic {
+			// Its DNS is used, not ignored, while it carries all traffic.
+			s.Ignored = slices.DeleteFunc(slices.Clone(s.Ignored), func(v string) bool { return strings.EqualFold(v, "DNS") })
+		}
 		if p.needsAuth {
 			// A login the profile carries (an IKEv2 one saved before its
 			// username and password were kept with the tunnel).
@@ -371,6 +403,7 @@ func (m *Manager) Inputs() []routing.TunnelInput {
 		if d != nil {
 			in.Routes, in.AllTraffic = append([]string(nil), d.Routes...), d.AllTraffic
 		}
+		in.DNS = slices.Clone(r.dnsInUse)
 		out = append(out, in)
 	}
 	slices.SortFunc(out, func(a, b routing.TunnelInput) int { return strings.Compare(a.Name, b.Name) })
@@ -518,6 +551,16 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 		d.AllTraffic = *spec.AllTraffic
 	case prev != nil:
 		d.AllTraffic = prev.AllTraffic // a client from before the setting keeps it
+	}
+	switch {
+	case spec.DNS != nil:
+		dns, err := normalizeDNS(*spec.DNS)
+		if err != "" {
+			bad("dns", err)
+		}
+		d.DNS = dns
+	case prev != nil:
+		d.DNS = prev.DNS
 	}
 	keptPassword := false
 	if prev != nil && prev.Type == d.Type {
@@ -963,6 +1006,7 @@ func (m *Manager) Shutdown() {
 		m.DisconnectAll()
 		_ = m.applyAndWait(context.Background(), shutdownApplyWait)
 		m.ap.close()
+		m.revertDNS() // whatever held the apply up: the system's DNS comes back
 	})
 }
 
@@ -1014,6 +1058,7 @@ func (m *Manager) DisconnectAll() {
 		}()
 	}
 	wg.Wait()
+	m.revertDNS() // a panic or the daemon's exit: the system's DNS back now
 	m.changed()
 }
 
@@ -1130,9 +1175,16 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 				stop(why)
 				return
 			}
+			// The DNS its server pushed (used while it carries all
+			// traffic): openvpn logged the PUSH_REPLY just now.
+			var dns tunneldns.Config
+			if p, ok := s.proc.Load().(Process); ok {
+				dns.Servers, dns.Search = pushedDNS(p.Tail())
+			}
 			now := time.Now()
 			m.update(name, func(r *live) {
 				r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
+				r.dns, r.dnsFile = dns, ""
 				if st.desc == "ERROR" {
 					r.detail = "connected with errors"
 				}
@@ -1779,4 +1831,135 @@ func lastLine(lines []string, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// --- a full tunnel's DNS ---
+
+// wantedDNS is the DNS the system should resolve with, and the full tunnel
+// it's through: the first connected one by name — the one whose quarters
+// the routes give (routing.PlanTunnels) — with its override, else what its
+// server gave. note says why there's none for it.
+func (m *Manager) wantedDNS() (cfg tunneldns.Config, owner, note string) {
+	m.mu.Lock()
+	names := slices.Sorted(maps.Keys(m.rt))
+	var dnsFile string
+	for _, n := range names {
+		d, r := m.defs[n], m.rt[n]
+		if d == nil || !d.AllTraffic || r.sess == nil || r.state != domain.TunnelConnected || r.iface == "" {
+			continue
+		}
+		owner, cfg, dnsFile = n, r.dns, r.dnsFile
+		if len(d.DNS) > 0 {
+			cfg = tunneldns.Config{Servers: parseAddrs(d.DNS), Search: r.dns.Search}
+			dnsFile = ""
+		}
+		cfg.Iface = r.iface
+		break
+	}
+	m.mu.Unlock()
+	if dnsFile != "" { // IKEv2: what charon-cmd's resolve plugin wrote
+		if b, err := os.ReadFile(dnsFile); err == nil {
+			cfg.Servers, cfg.Search = resolvConfDNS(string(b))
+		}
+	}
+	if owner != "" && cfg.Empty() {
+		note = "its server gave no DNS servers, so your system's own DNS stays in use; set some for it to send DNS through it"
+	}
+	return cfg, owner, note
+}
+
+// syncDNS applies the DNS wantedDNS says, or puts the system's back, when
+// that changed — after the tunnels' routes are in, so the servers are
+// reachable through the tunnel by then.
+func (m *Manager) syncDNS(ctx context.Context) {
+	if m.o.DNS == nil {
+		return
+	}
+	cfg, owner, note := m.wantedDNS()
+	m.dnsMu.Lock()
+	defer m.dnsMu.Unlock()
+	if !cfg.Equal(m.dnsApplied) {
+		var err error
+		if cfg.Empty() {
+			err = m.o.DNS.Revert(ctx)
+		} else {
+			err = m.o.DNS.Apply(ctx, cfg)
+		}
+		switch {
+		case err != nil:
+			note = "your system's own DNS stays in use: " + err.Error()
+			m.o.Log.Warn("full tunnel's DNS not applied", "tunnel", owner, "err", err)
+			m.dnsApplied = tunneldns.Config{}
+			cfg = tunneldns.Config{}
+		default:
+			m.dnsApplied = cfg
+		}
+	}
+	m.mu.Lock()
+	moved := false
+	for n, r := range m.rt {
+		was := r.dnsInUse
+		r.dnsInUse, r.dnsNote = nil, ""
+		if n == owner {
+			r.dnsInUse, r.dnsNote = slices.Clone(cfg.Servers), note
+		}
+		moved = moved || !slices.Equal(was, r.dnsInUse)
+	}
+	m.mu.Unlock()
+	if moved {
+		// The routes keep the DNS in use in the tunnel (TunnelInput.DNS):
+		// once more, with it. That apply finds nothing new here.
+		m.requestApply()
+	}
+	m.changed()
+}
+
+// revertDNS puts the system's DNS back, whatever the tunnels' state.
+func (m *Manager) revertDNS() {
+	if m.o.DNS == nil {
+		return
+	}
+	m.dnsMu.Lock()
+	defer m.dnsMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := m.o.DNS.Revert(ctx); err != nil {
+		m.o.Log.Warn("system DNS not restored", "err", err)
+	}
+	m.dnsApplied = tunneldns.Config{}
+}
+
+// normalizeDNS checks a tunnel's DNS override: addresses only, cleaned
+// (tunneldns.Clean); "" when fine.
+func normalizeDNS(in []string) ([]string, string) {
+	var addrs []netip.Addr
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		a, err := netip.ParseAddr(v)
+		if err != nil {
+			return nil, fmt.Sprintf("%q is not an IP address", v)
+		}
+		addrs = append(addrs, a)
+	}
+	var out []string
+	for _, a := range tunneldns.Clean(addrs) {
+		out = append(out, a.String())
+	}
+	if len(addrs) > 0 && len(out) == 0 {
+		return nil, "none of these can be a tunnel's DNS server (loopback, link-local or multicast)"
+	}
+	return out, ""
+}
+
+func parseAddrs(in []string) []netip.Addr {
+	var out []netip.Addr
+	for _, v := range in {
+		if a, err := netip.ParseAddr(v); err == nil {
+			out = append(out, a)
+		}
+	}
+	return out
 }

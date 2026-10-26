@@ -61,6 +61,7 @@ export function TunnelEditor({
   const [autoConnect, setAutoConnect] = useState(existing?.auto_connect ?? false)
   const [whenDown, setWhenDown] = useState<TunnelWhenDown>(existing?.when_down || 'fallback')
   const [allTraffic, setAllTraffic] = useState(existing?.all_traffic ?? false)
+  const [dnsText, setDnsText] = useState((existing?.dns_override ?? []).join(', '))
   const [issues, setIssues] = useState<ConfigIssue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -91,7 +92,7 @@ export function TunnelEditor({
   const errorFor = (field: string) => issuesFor(field).find((i) => i.severity === 'error')?.msg ?? null
   // Issues for a field this form doesn't show (or doesn't show right now)
   // go under the form, so a refused save never looks like a no-op.
-  const shownFields = ['config', 'name', 'routes', 'when_down', ...(needsAuth ? ['username', 'password'] : [])]
+  const shownFields = ['config', 'name', 'routes', 'when_down', 'dns', ...(needsAuth ? ['username', 'password'] : [])]
   const otherIssues = issues.filter((i) => !i.field || !shownFields.includes(i.field))
   const parsed = parseRoutes(routesText)
   const files = profile?.files ?? []
@@ -132,6 +133,14 @@ export function TunnelEditor({
         auto_connect: autoConnect,
         when_down: whenDown,
         all_traffic: allTraffic,
+        // Only with all traffic, where it means something: otherwise the
+        // tunnel keeps what it has.
+        dns: allTraffic
+          ? dnsText
+              .split(/[\s,]+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined,
       })
       const errs = (res.issues ?? []).filter((i) => i.severity === 'error')
       if (errs.length > 0 || !res.tunnel) {
@@ -316,6 +325,25 @@ export function TunnelEditor({
             </label>
           ))}
         </fieldset>
+
+        {allTraffic && (
+          <div className="space-y-1.5">
+            <Label>DNS servers (optional)</Label>
+            <input
+              value={dnsText}
+              onChange={(e) => setDnsText(e.target.value)}
+              spellCheck={false}
+              placeholder="the ones its server gives"
+              aria-label="DNS servers"
+              className={`ltr font-mono ${fieldCls(errorFor('dns'))}`}
+            />
+            <p className="text-xs text-muted">
+              While it's connected, your system resolves names through it: with the DNS servers its server gives, or these
+              (comma-separated). Your system's own come back when it disconnects.
+            </p>
+            <IssueList issues={issuesFor('dns')} />
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <Label>{allTraffic ? 'Networks through this tunnel (optional)' : 'Networks through this tunnel'}</Label>

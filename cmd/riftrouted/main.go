@@ -40,6 +40,7 @@ import (
 	"github.com/Amirhat/riftroute/internal/store"
 	"github.com/Amirhat/riftroute/internal/telemetry"
 	"github.com/Amirhat/riftroute/internal/tunnel"
+	"github.com/Amirhat/riftroute/internal/tunneldns"
 	"github.com/Amirhat/riftroute/internal/updater"
 )
 
@@ -257,6 +258,20 @@ func run() error {
 			srv.BroadcastState(context.Background())
 		}
 	}()
+	// A full tunnel's DNS: the system's DNS is changed while one is
+	// connected (never under -provider fake). What a run that crashed left
+	// is put back first, before any tunnel comes up.
+	var tunnelDNS tunneldns.Applier = &tunneldns.Fake{}
+	if providerName != "fake" {
+		tunnelDNS = tunneldns.New(filepath.Dir(dbPath))
+	}
+	if tunnelDNS != nil {
+		rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if err := tunnelDNS.Recover(rctx); err != nil {
+			logger.Warn("a previous run's tunnel DNS not restored", "err", err)
+		}
+		rcancel()
+	}
 	tunnels, err := tunnel.New(tunnel.Options{
 		Dir:       filepath.Join(filepath.Dir(dbPath), "tunnels"),
 		Launcher:  launcher,
@@ -289,6 +304,7 @@ func run() error {
 		},
 		OnChange: broadcastSoon,
 		Count:    counts.Inc,
+		DNS:      tunnelDNS,
 		Log:      logger,
 	})
 	if err != nil {

@@ -84,9 +84,25 @@ func tunnelListCmd() *cobra.Command {
 					fmt.Fprintf(cmd.OutOrStdout(), "\n%s is down and set to block: its destinations are refused until it's back (`riftroute tunnel down %s` stops that)\n", t.Name, t.Name)
 				}
 				renderTunnelRouteNotes(cmd.OutOrStdout(), t)
+				renderTunnelDNS(cmd.OutOrStdout(), t)
 			}
 			return nil
 		},
+	}
+}
+
+// renderTunnelDNS says what a full tunnel resolves names with.
+func renderTunnelDNS(w io.Writer, t domain.TunnelStatus) {
+	switch {
+	case !t.AllTraffic:
+	case len(t.DNS) > 0:
+		whose := "its server's"
+		if len(t.DNSOverride) > 0 {
+			whose = "set for it"
+		}
+		fmt.Fprintf(w, "\n%s: DNS goes through it, to %s (%s)\n", t.Name, strings.Join(t.DNS, ", "), whose)
+	case t.DNSNote != "":
+		fmt.Fprintf(w, "\n%s: %s\n", t.Name, t.DNSNote)
 	}
 }
 
@@ -152,7 +168,17 @@ type tunnelFlags struct {
 	autoConnect   bool
 	whenDown      string
 	allTraffic    bool
+	dns           []string
 	connect       bool
+}
+
+// dnsSpec is --dns, set only when given (an empty one clears it).
+func (f *tunnelFlags) dnsSpec(cmd *cobra.Command) *[]string {
+	if !cmd.Flags().Changed("dns") {
+		return nil
+	}
+	v := append([]string{}, f.dns...)
+	return &v
 }
 
 // allTrafficSpec is --all-traffic for a new tunnel: set only when given.
@@ -175,6 +201,7 @@ func (f *tunnelFlags) bind(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&f.autoConnect, "auto-connect", false, "connect whenever the daemon starts")
 	cmd.Flags().StringVar(&f.whenDown, "when-down", "", `while it's down: "fallback" (its destinations take the usual path, default) or "block" (they're refused until it's back)`)
 	cmd.Flags().BoolVar(&f.allTraffic, "all-traffic", false, "carry all traffic, like an ordinary VPN, except what's routed elsewhere on purpose (profiles, other VPNs' networks, the LAN, its own server); IPv6 it can't carry is blocked")
+	cmd.Flags().StringSliceVar(&f.dns, "dns", nil, "with --all-traffic: DNS servers to use through it instead of the ones its server gives (comma-separated; --dns= clears them)")
 	cmd.Flags().BoolVar(&f.connect, "connect", false, "connect right after saving")
 }
 
@@ -245,7 +272,7 @@ func tunnelAddCmd() *cobra.Command {
 				spec := domain.TunnelSpec{
 					Name: args[0], Type: domain.TunnelIKEv2, Config: raw, Routes: f.routes,
 					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
-					Username: f.username, AllTraffic: f.allTrafficSpec(),
+					Username: f.username, AllTraffic: f.allTrafficSpec(), DNS: f.dnsSpec(cmd),
 				}
 				switch {
 				case c.Auth != tunnel.IKEv2EAP && (f.username != "" || f.passwordStdin):
@@ -271,7 +298,7 @@ func tunnelAddCmd() *cobra.Command {
 				spec := domain.TunnelSpec{
 					Name: args[0], Type: domain.TunnelWireGuard, Config: raw, Routes: f.routes,
 					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
-					AllTraffic: f.allTrafficSpec(),
+					AllTraffic: f.allTrafficSpec(), DNS: f.dnsSpec(cmd),
 				}
 				if len(f.routes) == 0 && !f.allTraffic {
 					fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes (its AllowedIPs never become routes)")
@@ -289,7 +316,7 @@ func tunnelAddCmd() *cobra.Command {
 			spec := domain.TunnelSpec{
 				Name: args[0], Type: domain.TunnelOpenVPN, Config: text, Routes: f.routes,
 				Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, Username: f.username,
-				WhenDown: domain.TunnelWhenDown(f.whenDown), AllTraffic: f.allTrafficSpec(),
+				WhenDown: domain.TunnelWhenDown(f.whenDown), AllTraffic: f.allTrafficSpec(), DNS: f.dnsSpec(cmd),
 			}
 			if creds != nil {
 				spec.Username, spec.Password = orStr(spec.Username, creds.Username), creds.Password
@@ -385,6 +412,7 @@ func tunnelEditCmd() *cobra.Command {
 				v := f.allTraffic
 				spec.AllTraffic = &v
 			}
+			spec.DNS = f.dnsSpec(cmd)
 			if cmd.Flags().Changed("when-down") {
 				spec.WhenDown = domain.TunnelWhenDown(f.whenDown)
 			}

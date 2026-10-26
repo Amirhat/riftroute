@@ -19,6 +19,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   down. Only one tunnel carries all traffic at a time. What mustn't go into
   it (a tunnel's server, the addresses the watchdog probes) is pinned to
   its usual path (docs/tunnels-full.md).
+- **…and its DNS.** While a tunnel that carries all traffic is connected,
+  your system resolves names through it. It uses the DNS servers its
+  server gives (OpenVPN's push, WireGuard's `DNS =`, IKEv2's), or ones you
+  set for it (`--dns`, or "DNS servers" in the app). Your system's own come
+  back when it disconnects, with a panic, and after a crash (at the next
+  start). On macOS the primary network service's DNS is swapped and
+  restored, kept in place if Wi-Fi changes or another VPN rewrites it, and
+  never put back over a value its owner wrote since. On Linux it's set on
+  the tunnel's link through systemd-resolved; without it, the system's DNS
+  stays, and the tunnel's card says why. RiftRoute never rewrites
+  `/etc/resolv.conf`. The macOS strongSwan RiftRoute ships now includes
+  its resolve plugin, which only writes an IKEv2 server's DNS to a file of
+  the tunnel's own.
 
 ### Changed
 - **A route wider than your local network may hold the router.** The

@@ -2,8 +2,10 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
 )
@@ -60,5 +62,102 @@ func TestDefaultRouteListedPointsAtAllTraffic(t *testing.T) {
 	_, errs := normalizeRoutes([]string{"0.0.0.0/0"})
 	if len(errs) != 1 || !strings.Contains(errs[0], "--all-traffic") {
 		t.Fatalf("errs = %v", errs)
+	}
+}
+
+// waitDNS waits for the DNS the system resolves with to be want ("" for its
+// own).
+func waitDNS(t *testing.T, h *harness, want string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got := fmt.Sprint(h.dns.Current().Servers)
+		if want == "" && h.dns.Current().Empty() || got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("DNS in use %s (on %q), want %s", got, h.dns.Current().Iface, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A full tunnel's DNS — its server's (the PUSH_REPLY), or the servers set
+// for it — is the system's while it's connected, and the system's own comes
+// back when it disconnects, or with a panic. A tunnel that lists networks
+// never touches it.
+func TestFullTunnelDNS(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	on := true
+	spec := infraSpec()
+	spec.AllTraffic = &on
+	if _, err := h.m.Save(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	waitDNS(t, h, "[10.99.0.1]")
+	if h.dns.Current().Iface != "utun9" {
+		t.Errorf("applied on %q", h.dns.Current().Iface)
+	}
+	if st, _ := h.m.Status("infra"); fmt.Sprint(st.DNS) != "[10.99.0.1]" || st.DNSNote != "" {
+		t.Errorf("status DNS %v, note %q", st.DNS, st.DNSNote)
+	}
+
+	set := []string{"1.1.1.1", "2606:4700:4700::1111"}
+	spec.DNS = &set
+	if _, err := h.m.Save(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	h.m.Resync(ctx)
+	waitDNS(t, h, "[1.1.1.1 2606:4700:4700::1111]")
+
+	if err := h.m.Disconnect(ctx, "infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitDNS(t, h, "")
+
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitDNS(t, h, "[1.1.1.1 2606:4700:4700::1111]")
+	h.m.DisconnectAll() // a panic
+	if !h.dns.Current().Empty() {
+		t.Fatalf("a panic left the tunnel's DNS: %+v", h.dns.Current())
+	}
+}
+
+// A full tunnel whose server gives no DNS leaves the system's own, and says
+// so; one that lists networks never applies any.
+func TestFullTunnelWithoutDNS(t *testing.T) {
+	h := newHarness(t, func(f *FakeLauncher) { f.PushDNS = "-" })
+	ctx := context.Background()
+	on := true
+	spec := infraSpec()
+	spec.AllTraffic = &on
+	if _, err := h.m.Save(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	h.m.Resync(ctx)
+	if st, _ := h.m.Status("infra"); len(st.DNS) != 0 || !strings.Contains(st.DNSNote, "gave no DNS servers") || h.dns.Applies != 0 {
+		t.Fatalf("status DNS %v, note %q, applies %d", st.DNS, st.DNSNote, h.dns.Applies)
+	}
+
+	h2 := newHarness(t) // pushes 10.99.0.1, but lists networks
+	if _, err := h2.m.Save(ctx, infraSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = h2.m.Connect("infra")
+	waitState(t, h2.m, "infra", domain.TunnelConnected)
+	h2.m.Resync(ctx)
+	if h2.dns.Applies != 0 {
+		t.Fatal("a tunnel that lists networks applied its DNS")
 	}
 }
