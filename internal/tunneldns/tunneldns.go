@@ -31,8 +31,9 @@ type Applier interface {
 	Recover(ctx context.Context) error
 	// Note says what keeps what's applied from working as it should, or "":
 	// another link that also takes every name (Linux), an owner that keeps
-	// rewriting the service's DNS (macOS).
-	Note() string
+	// rewriting the service's DNS (macOS). inEffect is false when what was
+	// applied isn't any more (macOS let the owner have it).
+	Note() (note string, inEffect bool)
 }
 
 // Logf logs a change an Applier makes on its own (slog.Logger.Info).
@@ -65,19 +66,28 @@ func execRun(ctx context.Context, stdin, name string, args ...string) (string, e
 type Fake struct {
 	mu       sync.Mutex
 	Applied  Config
+	Tries    int // every Apply, failed ones too
 	Applies  int
 	Reverts  int
 	Recovers int
 	Err      error  // returned by Apply when set
 	Noted    string // returned by Note
+	LetGo    bool   // Note says what's applied isn't in effect
 }
 
 func (f *Fake) Backend() string { return "fake" }
 
-func (f *Fake) Note() string {
+func (f *Fake) Note() (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.Noted
+	return f.Noted, !f.LetGo
+}
+
+// Attempts is how many times Apply was called.
+func (f *Fake) Attempts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Tries
 }
 
 // SetErr sets what Apply returns.
@@ -90,6 +100,7 @@ func (f *Fake) SetErr(err error) {
 func (f *Fake) Apply(_ context.Context, cfg Config) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.Tries++
 	if f.Err != nil {
 		return f.Err
 	}

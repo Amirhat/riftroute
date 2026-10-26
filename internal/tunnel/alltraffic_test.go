@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/tunneldns"
 )
 
 // A full tunnel (all traffic) is saved and reported as one, its input says
@@ -265,7 +266,31 @@ func TestFullTunnelDNSRetried(t *testing.T) {
 	h.dns.SetErr(nil)
 	waitDNS(t, h, "[10.99.0.1]")
 	h.dns.Noted = "DNS also goes to tailscale0, which takes every name too"
-	if st, _ := h.m.Status("infra"); !strings.Contains(st.DNSNote, "tailscale0") {
-		t.Fatalf("the applier's note isn't on the card: %q", st.DNSNote)
+	if st, _ := h.m.Status("infra"); !strings.Contains(st.DNSNote, "tailscale0") || len(st.DNS) == 0 {
+		t.Fatalf("the applier's note isn't on the card: %q, DNS %v", st.DNSNote, st.DNS)
+	}
+	// Let go (macOS: the owner keeps rewriting it), the servers aren't in
+	// use: only the note.
+	h.dns.Noted, h.dns.LetGo = "the network service keeps rewriting its DNS", true
+	if st, _ := h.m.Status("infra"); len(st.DNS) != 0 || !strings.Contains(st.DNSNote, "keeps rewriting") {
+		t.Fatalf("let go: DNS %v, note %q", st.DNS, st.DNSNote)
+	}
+	h.dns.Noted, h.dns.LetGo = "", false
+
+	// Without systemd-resolved, nothing will change: not tried again.
+	if err := h.m.Disconnect(ctx, "infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitDNS(t, h, "")
+	h.dns.SetErr(tunneldns.ErrUnavailable)
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	h.m.Resync(ctx)
+	tries := h.dns.Attempts()
+	time.Sleep(10 * dnsRetryFirst)
+	if h.dns.Attempts() != tries {
+		t.Errorf("an unavailable resolver was tried again: %d, then %d", tries, h.dns.Attempts())
 	}
 }

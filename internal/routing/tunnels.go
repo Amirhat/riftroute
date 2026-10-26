@@ -257,9 +257,20 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 		if t.Iface == "" && !t.Block {
 			continue // not up: nothing goes into it
 		}
+		loose := false // a server of its own the quarters would carry
 		if t.AllTraffic && fullBy == "" {
 			fullBy = t.Name
-			tp.fullTunnelPins(t, ts, held, taken, in)
+			if unpinned := tp.fullTunnelPins(t, ts, held, taken, in); len(unpinned) > 0 && t.Iface != "" {
+				// Its own connection would loop into it (WireGuard then
+				// follows its server to an address inside the tunnel):
+				// nothing goes in until the server has a path outside —
+				// between networks, with no main VPN and no gateway yet.
+				// Set to block, the quarters are refused instead.
+				loose = true
+				tp.Blocked[t.Name] = append(tp.Blocked[t.Name], domain.TunnelBlocked{Route: "all traffic",
+					Reason: fmt.Sprintf("its server %s has no path outside the tunnel on this network yet (no gateway, no main VPN), "+
+						"so nothing goes into it until there is one", unpinned[0])})
+			}
 		}
 		for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
 			// Up: into the tunnel, but for v6 it can't carry. Down (and set
@@ -269,6 +280,13 @@ func PlanTunnels(in DesiredInput) TunnelPlan {
 				prefixes []netip.Prefix
 				network  bool // the tunnel's own networks (tp.nets)
 			}{{unclaimedAggregate(listed[fam], taken), true}, {quarterAggregate(quarters[fam], taken), false}} {
+				refuse := refuse
+				if loose && !group.network {
+					if !t.Block {
+						continue
+					}
+					refuse = true
+				}
 				for _, pfx := range group.prefixes {
 					taken[prefixKey(pfx)] = claim{tunnel: t.Name, refuse: refuse}
 					if group.network {
@@ -344,7 +362,10 @@ func unclaimedAggregate(prefixes []netip.Prefix, taken map[string]claim) []netip
 // already takes (the LAN, another VPN's network, a pin) needs nothing. While
 // it's up its DNS servers go in, each by a host route: DNS through the
 // tunnel is the point.
-func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, taken map[string]claim, in DesiredInput) {
+//
+// It returns the tunnel's own servers it found no path for: the quarters
+// would carry its connection into itself.
+func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, taken map[string]claim, in DesiredInput) (unpinned []netip.Addr) {
 	tag := TunnelProfilePrefix + t.Name
 	var keep []keptOut
 	for _, o := range ts {
@@ -372,7 +393,10 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 	seen := map[netip.Addr]bool{}
 	for _, k := range keep {
 		a := k.addr.Unmap()
-		if seen[a] || held[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || narrowerRoute(a, in) || slices.Contains(t.DNS, a) {
+		// A DNS server of its own goes in — unless it's also a tunnel's
+		// server, whose connection mustn't.
+		if seen[a] || held[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || narrowerRoute(a, in) ||
+			slices.Contains(t.DNS, a) && !isServer(a, ts) {
 			continue
 		}
 		seen[a] = true
@@ -384,6 +408,9 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 		if iface == "" {
 			pgw, piface, err := resolveGateway("auto", fam, in)
 			if err != nil {
+				if slices.Contains(servers(t), a) {
+					unpinned = append(unpinned, a)
+				}
 				continue // nowhere else to send it
 			}
 			gw, iface = pgw, piface
@@ -404,7 +431,7 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 		tp.Narrowed[t.Name] = append(tp.Narrowed[t.Name], domain.TunnelNarrowed{Route: "all traffic", Except: except})
 	}
 	if t.Iface == "" {
-		return
+		return unpinned
 	}
 	// Its DNS servers go into it by a host route of their own: the quarters
 	// alone would leave one that a narrower route holds (an exclude profile,
@@ -425,6 +452,7 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 		taken[prefixKey(host)] = claim{tunnel: t.Name}
 		tp.add(domain.Route{DstCIDR: host.String(), Iface: t.Iface, Family: fam}, tag, in)
 	}
+	return unpinned
 }
 
 // isServer reports whether a is one of the tunnels' servers.

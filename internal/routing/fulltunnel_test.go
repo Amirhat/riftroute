@@ -2,6 +2,7 @@ package routing
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -286,5 +287,58 @@ func TestFullTunnelRoutesItsDNSIn(t *testing.T) {
 	}
 	if r, ok := by["2001:db8::53/128"]; ok {
 		t.Errorf("IPv6 it can't carry routed: %+v", r)
+	}
+}
+
+// Between networks — no gateway, no main VPN — a full tunnel's own server
+// has no path outside it: its quarters would carry its connection into
+// itself (WireGuard then follows its server to an address inside the
+// tunnel). Nothing goes in until there's one; set to block, the quarters
+// are refused. A server that's also its DNS server is still kept out.
+func TestFullTunnelWithoutAPathForItsServer(t *testing.T) {
+	server := netip.MustParseAddr("198.51.100.7")
+	in := testInput()
+	in.GatewayV4, in.PhysIfaceV4 = netip.Addr{}, ""
+	in.Tunnels = []TunnelInput{{Name: "all", Iface: "utun7", AllTraffic: true, Bypass: []netip.Addr{server}, DNS: []netip.Addr{server}}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range desired {
+		if d.Iface == "utun7" && d.DstCIDR != "198.51.100.7/32" || d.DstCIDR == "198.51.100.7/32" {
+			t.Errorf("routed with no path for its server: %+v", d.Route)
+		}
+	}
+	if b := PlanTunnels(in).Blocked["all"]; !slices.ContainsFunc(b, func(b domain.TunnelBlocked) bool {
+		return b.Route == "all traffic" && strings.Contains(b.Reason, "no path outside the tunnel")
+	}) {
+		t.Errorf("blocked %+v", b)
+	}
+
+	in.Tunnels[0].Block = true
+	desired, _, _ = BuildDesired(in)
+	rejected := 0
+	for _, d := range desired {
+		if d.Reject && strings.HasSuffix(d.DstCIDR, "/2") && d.Family == domain.FamilyV4 {
+			rejected++
+		}
+		if d.Iface == "utun7" {
+			t.Errorf("set to block, still routed into it: %+v", d.Route)
+		}
+	}
+	if rejected != 4 {
+		t.Errorf("set to block: %d quarters refused, want 4", rejected)
+	}
+
+	// With the main VPN, the server is pinned into it, the DNS too.
+	in.Tunnels[0].Block = false
+	in.VPNIfaceV4 = "utun3"
+	by := map[string]domain.ManagedRoute{}
+	desired, _, _ = BuildDesired(in)
+	for _, d := range desired {
+		by[d.DstCIDR] = d
+	}
+	if by["198.51.100.7/32"].Iface != "utun3" || by["0.0.0.0/2"].Iface != "utun7" {
+		t.Errorf("with a main VPN: server %+v, quarter %+v", by["198.51.100.7/32"].Route, by["0.0.0.0/2"].Route)
 	}
 }

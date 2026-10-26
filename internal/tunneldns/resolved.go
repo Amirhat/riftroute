@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Linux: systemd-resolved, on the tunnel's link — its servers, the routing
@@ -23,12 +24,18 @@ import (
 // Another link that also has "~." (Tailscale overriding the local DNS, a
 // NetworkManager VPN that takes all traffic) gets every name too: resolved
 // asks both, and nothing outranks it. That's said (Note), not changed:
-// the other link isn't RiftRoute's.
+// the other link isn't RiftRoute's. It's looked for again every noteEvery
+// while the tunnel's DNS is applied, so a link that takes every name later
+// (Tailscale started after the tunnel) is said too.
 
 // ErrUnavailable is Apply's error where nothing can apply a tunnel's DNS.
 var ErrUnavailable = errors.New("systemd-resolved isn't running, so the tunnel's DNS can't be applied (RiftRoute never rewrites /etc/resolv.conf)")
 
 var reLink = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
+
+// noteEvery is how often, while the tunnel's DNS is applied, the other links
+// are looked at again for one that takes every name too.
+var noteEvery = 30 * time.Second
 
 type resolvedApplier struct {
 	run   runner
@@ -37,6 +44,7 @@ type resolvedApplier struct {
 	mu   sync.Mutex
 	link string
 	note noteBox
+	stop chan struct{} // ends watch
 }
 
 func newResolved(run runner, state string) *resolvedApplier {
@@ -82,15 +90,55 @@ func (r *resolvedApplier) Apply(ctx context.Context, cfg Config) error {
 	// 240 has no default-route to say so twice.
 	_ = r.resolvectl(ctx, "default-route", cfg.Iface, "yes")
 	out, _ := r.run(ctx, "", "resolvectl", "domain")
-	r.note.set("")
-	if others := everyNameElsewhere(out, cfg.Iface); len(others) > 0 {
-		r.note.set("DNS also goes to " + strings.Join(others, ", ") + ", which takes every name too: systemd-resolved asks both")
+	r.note.set(elsewhereNote(out, cfg.Iface))
+	if r.stop == nil {
+		r.stop = make(chan struct{})
+		go r.watch(r.stop, noteEvery)
 	}
 	return nil
 }
 
+// elsewhereNote is the note for `resolvectl domain`'s output: the links but
+// iface that take every name too, or "".
+func elsewhereNote(out, iface string) string {
+	if others := everyNameElsewhere(out, iface); len(others) > 0 {
+		return "DNS also goes to " + strings.Join(others, ", ") + ", which takes every name too: systemd-resolved asks both"
+	}
+	return ""
+}
+
+// watch looks at the other links again while the tunnel's DNS is applied.
+func (r *resolvedApplier) watch(stop chan struct{}, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			r.mu.Lock()
+			link := r.link
+			r.mu.Unlock()
+			if link == "" {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			out, err := r.run(ctx, "", "resolvectl", "domain")
+			cancel()
+			if err != nil {
+				continue
+			}
+			r.mu.Lock()
+			if r.link == link { // still applied there
+				r.note.set(elsewhereNote(out, link))
+			}
+			r.mu.Unlock()
+		}
+	}
+}
+
 // Note says when another link takes every name too.
-func (r *resolvedApplier) Note() string { return r.note.get() }
+func (r *resolvedApplier) Note() (string, bool) { return r.note.get(), true }
 
 // everyNameElsewhere reads `resolvectl domain` ("Global: …", "Link 3
 // (eth0): …") for the links but iface whose domains include "~.".
@@ -123,6 +171,10 @@ func (r *resolvedApplier) Revert(ctx context.Context) error {
 }
 
 func (r *resolvedApplier) revertLocked(ctx context.Context) error {
+	if r.stop != nil {
+		close(r.stop)
+		r.stop = nil
+	}
 	if r.link != "" {
 		_ = r.resolvectl(ctx, "revert", r.link) // gone with its link is fine
 		r.link = ""

@@ -53,6 +53,11 @@ func (f *fakeStore) run(_ context.Context, stdin, name string, args ...string) (
 		if len(f2) == 0 {
 			continue
 		}
+		for i, v := range f2 {
+			if v == `""` { // scutil's empty string
+				f2[i] = ""
+			}
+		}
 		switch f2[0] {
 		case "open", "close":
 		case "show":
@@ -125,6 +130,12 @@ func (f *fakeStore) run(_ context.Context, stdin, name string, args ...string) (
 	return out.String(), nil
 }
 
+// noteOf is an Applier's note, without whether what's applied is in effect.
+func noteOf(a Applier) string {
+	n, _ := a.Note()
+	return n
+}
+
 const (
 	wifi = "11111111-AAAA-BBBB-CCCC-000000000001"
 	eth  = "22222222-AAAA-BBBB-CCCC-000000000002"
@@ -139,6 +150,7 @@ func storeWithPrimary(svc string) *fakeStore {
 	f.put(globalIPv4, nil)
 	f.keys[globalIPv4]["PrimaryService"] = []string{svc}
 	f.put(serviceDNS(svc), map[string][]string{"ServerAddresses": {"192.168.1.1"}, "SupplementalMatchDomains": {""}})
+	f.keys[serviceDNS(svc)]["InterfaceName"], f.arr[serviceDNS(svc)]["InterfaceName"] = []string{"utun8"}, false
 	return f
 }
 
@@ -158,8 +170,10 @@ func TestScutilSwapAndRestore(t *testing.T) {
 	if got := f.keys[serviceDNS(wifi)]["SearchDomains"]; fmt.Sprint(got) != "[corp.example]" {
 		t.Errorf("search domains %v", got)
 	}
-	if _, ok := f.keys[serviceDNS(wifi)]["SupplementalMatchDomains"]; !ok {
-		t.Error("the swap dropped the service's other fields")
+	// The plain default resolver, reached through the tunnel: a VPN's
+	// supplemental one, scoped to its interface, never sends to it.
+	if _, ok := f.keys[serviceDNS(wifi)]["SupplementalMatchDomains"]; ok || fmt.Sprint(f.keys[serviceDNS(wifi)]["InterfaceName"]) != "[utun9]" {
+		t.Errorf("not the plain default resolver through the tunnel: %v", f.keys[serviceDNS(wifi)])
 	}
 	if got := f.servers(backupPrefix + wifi); fmt.Sprint(got) != "[192.168.1.1]" {
 		t.Errorf("backup %v", got)
@@ -172,6 +186,10 @@ func TestScutilSwapAndRestore(t *testing.T) {
 	}
 	if _, ok := f.keys[serviceDNS(wifi)]["SearchDomains"]; ok {
 		t.Error("the tunnel's search domains stayed")
+	}
+	if dns := f.keys[serviceDNS(wifi)]; fmt.Sprintf("%q %v", dns["SupplementalMatchDomains"], f.arr[serviceDNS(wifi)]["SupplementalMatchDomains"]) != `[""] true` ||
+		fmt.Sprint(dns["InterfaceName"]) != "[utun8]" {
+		t.Errorf("the interface and match domains aren't back: %q", dns)
 	}
 	for k := range f.keys {
 		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
@@ -284,8 +302,8 @@ func TestResolvedApplyRevertRecover(t *testing.T) {
 	if b, _ := os.ReadFile(state); strings.TrimSpace(string(b)) != "utun9" {
 		t.Fatalf("state %q", b)
 	}
-	if r.Note() != "" {
-		t.Errorf("note %q", r.Note())
+	if noteOf(r) != "" {
+		t.Errorf("note %q", noteOf(r))
 	}
 	ran = nil
 	if err := newResolved(run, state).Recover(ctx); err != nil || !slices.Equal(ran, []string{"resolvectl revert utun9"}) {
@@ -316,15 +334,15 @@ func TestResolvedAnotherLinkTakesEveryName(t *testing.T) {
 	if err := r.Apply(context.Background(), tunnelCfg()); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(r.Note(), "tailscale0") || strings.Contains(r.Note(), "eth0") || strings.Contains(r.Note(), "utun9") {
-		t.Fatalf("note %q", r.Note())
+	if !strings.Contains(noteOf(r), "tailscale0") || strings.Contains(noteOf(r), "eth0") || strings.Contains(noteOf(r), "utun9") {
+		t.Fatalf("note %q", noteOf(r))
 	}
 	if got := everyNameElsewhere("Global: ~.\nLink 3 (wg0): ~.\n", "wg0"); fmt.Sprint(got) != "[the global DNS setting]" {
 		t.Errorf("global: %v", got)
 	}
 	_ = r.Revert(context.Background())
-	if r.Note() != "" {
-		t.Errorf("note after revert %q", r.Note())
+	if noteOf(r) != "" {
+		t.Errorf("note after revert %q", noteOf(r))
 	}
 }
 
@@ -360,12 +378,12 @@ func TestScutilLetsAKeenOwnerHaveIt(t *testing.T) {
 		clock = clock.Add(time.Minute)
 		s.recheck(ctx)
 		swapped := fmt.Sprint(f.servers(serviceDNS(wifi))) == "[10.8.0.1 10.8.0.2]"
-		if i < maxRewrites && (!swapped || s.Note() != "") {
-			t.Fatalf("rewrite %d: swapped %v, note %q", i, swapped, s.Note())
+		if i < maxRewrites && (!swapped || noteOf(s) != "") {
+			t.Fatalf("rewrite %d: swapped %v, note %q", i, swapped, noteOf(s))
 		}
 	}
-	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" || !strings.Contains(s.Note(), "keeps rewriting") {
-		t.Fatalf("after %d rewrites: %v, note %q", maxRewrites, f.servers(serviceDNS(wifi)), s.Note())
+	if _, inEffect := s.Note(); fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" || !strings.Contains(noteOf(s), "keeps rewriting") || inEffect {
+		t.Fatalf("after %d rewrites: %v, note %q (in effect %v)", maxRewrites, f.servers(serviceDNS(wifi)), noteOf(s), inEffect)
 	}
 	for k := range f.keys {
 		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
@@ -383,7 +401,105 @@ func TestScutilLetsAKeenOwnerHaveIt(t *testing.T) {
 		clock = clock.Add(rewriteWindow / 2)
 		s.recheck(ctx)
 	}
-	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.9]" || s.Note() != "" {
-		t.Fatalf("slow rewrites: %v, note %q", f.servers(serviceDNS(wifi)), s.Note())
+	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.9]" || noteOf(s) != "" {
+		t.Fatalf("slow rewrites: %v, note %q", f.servers(serviceDNS(wifi)), noteOf(s))
+	}
+}
+
+// DNS servers set by hand are the service's Setup: DNS, which outranks its
+// State: one: both are swapped, and both restored. When the preferences are
+// applied again (configd puts the saved Setup: back), the recheck swaps it
+// again, keeping State's backup as it was before the swap.
+func TestScutilSwapsDNSSetByHand(t *testing.T) {
+	f := storeWithPrimary(eth)
+	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"192.168.88.1"}})
+	f.put(setupDNS(eth), map[string][]string{"ServerAddresses": {"1.1.1.1"}})
+	f.keys[globalIPv4]["PrimaryService"] = []string{eth}
+	s := newScutil(f.run, nil)
+	ctx := context.Background()
+	if err := s.Apply(ctx, tunnelCfg()); err != nil {
+		t.Fatal(err)
+	}
+	ours := "[10.8.0.1 10.8.0.2]"
+	if fmt.Sprint(f.servers(serviceDNS(eth))) != ours || fmt.Sprint(f.servers(setupDNS(eth))) != ours {
+		t.Fatalf("swapped: State %v, Setup %v", f.servers(serviceDNS(eth)), f.servers(setupDNS(eth)))
+	}
+	f.keys[setupDNS(eth)]["ServerAddresses"] = []string{"1.1.1.1"} // the preferences applied
+	s.recheck(ctx)
+	if fmt.Sprint(f.servers(setupDNS(eth))) != ours || fmt.Sprint(f.servers(backupPrefix+eth)) != "[192.168.88.1]" ||
+		fmt.Sprint(f.servers(setupBackupPrefix+eth)) != "[1.1.1.1]" {
+		t.Fatalf("after the preferences were applied: Setup %v, backups %v %v", f.servers(setupDNS(eth)),
+			f.servers(backupPrefix+eth), f.servers(setupBackupPrefix+eth))
+	}
+	_ = newScutil(f.run, nil).Recover(ctx) // a crash, then the next start
+	_ = s.Revert(ctx)
+	if fmt.Sprint(f.servers(serviceDNS(eth))) != "[192.168.88.1]" || fmt.Sprint(f.servers(setupDNS(eth))) != "[1.1.1.1]" {
+		t.Fatalf("restored: State %v, Setup %v", f.servers(serviceDNS(eth)), f.servers(setupDNS(eth)))
+	}
+	for k := range f.keys {
+		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
+			t.Errorf("left %s", k)
+		}
+	}
+
+	// Let go after the preferences keep coming back: State's goes back too.
+	_ = s.Apply(ctx, tunnelCfg())
+	for i := 0; i < maxRewrites; i++ {
+		f.keys[setupDNS(eth)]["ServerAddresses"] = []string{"1.1.1.1"}
+		s.recheck(ctx)
+	}
+	if _, inEffect := s.Note(); inEffect || fmt.Sprint(f.servers(serviceDNS(eth))) != "[192.168.88.1]" || fmt.Sprint(f.servers(setupDNS(eth))) != "[1.1.1.1]" {
+		t.Fatalf("let go: State %v, Setup %v, in effect %v", f.servers(serviceDNS(eth)), f.servers(setupDNS(eth)), inEffect)
+	}
+	for k := range f.keys {
+		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
+			t.Errorf("let go, left %s", k)
+		}
+	}
+}
+
+// A link that takes every name after the tunnel's DNS was applied
+// (Tailscale started later) is said too, and no longer once it's gone; the
+// looking stops with the revert.
+func TestResolvedNotesALinkThatTakesEveryNameLater(t *testing.T) {
+	every := noteEvery
+	noteEvery = 10 * time.Millisecond
+	t.Cleanup(func() { noteEvery = every })
+	var mu sync.Mutex
+	domains, asked := "Global:\nLink 5 (utun9): ~.\n", 0
+	run := func(_ context.Context, _, name string, args ...string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(args) == 1 && args[0] == "domain" {
+			asked++
+			return domains, nil
+		}
+		return "", nil
+	}
+	set := func(v string) { mu.Lock(); domains = v; mu.Unlock() }
+	count := func() int { mu.Lock(); defer mu.Unlock(); return asked }
+	r := newResolved(run, filepath.Join(t.TempDir(), "link"))
+	wait := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !ok(); time.Sleep(5 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: note %q", what, noteOf(r))
+			}
+		}
+	}
+	ctx := context.Background()
+	if err := r.Apply(ctx, tunnelCfg()); err != nil || noteOf(r) != "" {
+		t.Fatalf("apply: %v, note %q", err, noteOf(r))
+	}
+	set("Global:\nLink 5 (utun9): ~.\nLink 7 (tailscale0): ~. ts.net\n")
+	wait("tailscale0 taking every name later", func() bool { return strings.Contains(noteOf(r), "tailscale0") })
+	set("Global:\nLink 5 (utun9): ~.\n")
+	wait("tailscale0 gone", func() bool { return noteOf(r) == "" })
+	_ = r.Revert(ctx)
+	time.Sleep(20 * time.Millisecond) // a look already under way ends
+	n := count()
+	time.Sleep(50 * time.Millisecond)
+	if count() != n || noteOf(r) != "" {
+		t.Fatalf("still looking after the revert (%d → %d), note %q", n, count(), noteOf(r))
 	}
 }

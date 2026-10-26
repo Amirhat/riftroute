@@ -18,16 +18,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   IPv6 address. With "block when down", nothing else leaves while it's
   down. Only one tunnel carries all traffic at a time. What mustn't go into
   it (a tunnel's server, the addresses the watchdog probes) is pinned to
-  its usual path (docs/tunnels-full.md).
+  its usual path (docs/tunnels-full.md). While its own server has no path
+  outside it (between networks), nothing goes in, and WireGuard never
+  follows its server to an address inside the tunnel.
 - **…and its DNS.** While a tunnel that carries all traffic is connected,
   your system resolves names through it. It uses the DNS servers its
   server gives (OpenVPN's push, WireGuard's `DNS =`, IKEv2's), or ones you
   set for it (`--dns`, or "DNS servers" in the app). Your system's own come
   back when it disconnects, with a panic, and after a crash (at the next
   start). On macOS the primary network service's DNS is swapped and
-  restored, kept in place if Wi-Fi changes or another VPN rewrites it (up
-  to 5 times in 10 minutes), and never put back over a value its owner
-  wrote since. On Linux it's set on the tunnel's link through
+  restored (DNS servers set by hand included), kept in place if Wi-Fi
+  changes or another VPN rewrites it (up to 5 times in 10 minutes), and
+  never put back over a value its owner wrote since. On Linux it's set on the tunnel's link through
   systemd-resolved; without it, the system's DNS stays, and the tunnel's
   card says why, as it does when another link also takes every name.
   RiftRoute never rewrites `/etc/resolv.conf`. The DNS servers go into the

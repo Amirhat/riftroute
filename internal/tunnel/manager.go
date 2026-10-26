@@ -74,11 +74,13 @@ type Options struct {
 type Manager struct {
 	o Options
 	// dnsMu orders a full tunnel's DNS changes; dnsApplied is what's in
-	// place; dnsTimer tries a failed change again, the dnsFails'th time.
+	// place; dnsTimer tries a failed change again, the dnsFails'th time;
+	// dnsLastErr is the failure last logged.
 	dnsMu      sync.Mutex
 	dnsApplied tunneldns.Config
 	dnsTimer   *time.Timer
 	dnsFails   int
+	dnsLastErr string
 
 	store   *defStore
 	runDir  string
@@ -353,8 +355,14 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 		s.DNS = append(s.DNS, a.String())
 	}
 	if len(s.DNS) > 0 && m.o.DNS != nil {
-		// What keeps it from working as it should, found since it was applied.
-		s.DNSNote = orString(m.o.DNS.Note(), s.DNSNote)
+		// What keeps it from working as it should, found since it was
+		// applied; and, let go, it's not in use at all.
+		if note, inEffect := m.o.DNS.Note(); note != "" {
+			s.DNSNote = note
+			if !inEffect {
+				s.DNS = nil
+			}
+		}
 	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
@@ -1889,12 +1897,17 @@ func (m *Manager) syncDNS(ctx context.Context) {
 		switch {
 		case err != nil:
 			note = "your system's own DNS stays in use: " + err.Error()
-			m.o.Log.Warn("full tunnel's DNS not applied", "tunnel", owner, "err", err)
+			if err.Error() != m.dnsLastErr { // once, not at every retry
+				m.o.Log.Warn("full tunnel's DNS not applied", "tunnel", owner, "err", err)
+			}
+			m.dnsLastErr = err.Error()
 			m.dnsApplied = tunneldns.Config{}
 			cfg = tunneldns.Config{}
-			m.dnsRetryLocked()
+			if !errors.Is(err, tunneldns.ErrUnavailable) { // nothing to wait for there
+				m.dnsRetryLocked()
+			}
 		default:
-			m.dnsApplied = cfg
+			m.dnsApplied, m.dnsLastErr = cfg, ""
 			m.dnsStopRetryLocked()
 		}
 	}

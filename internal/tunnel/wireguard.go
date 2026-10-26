@@ -319,6 +319,12 @@ func (w *wgSession) observe(st wgStats, now time.Time) {
 // it — WireGuard's own packets looping into a tunnel. It isn't pinned: the
 // address is the server's choice, and a pin routes it around the main VPN,
 // so it's reached through that instead.
+//
+// An endpoint inside the tunnel itself — its own network, its DNS servers —
+// is never followed: the device would send into its own interface. (It
+// happens when the server got this side's packets through the tunnel, a
+// moment its own route was missing, and answered there.) The device is set
+// back to the configured endpoint.
 func (w *wgSession) follow(st wgStats) {
 	if w.endpoints == nil {
 		w.endpoints = map[string]netip.AddrPort{}
@@ -327,6 +333,10 @@ func (w *wgSession) follow(st wgStats) {
 	for _, p := range st.peers {
 		ap, ok := endpointOf(p.endpoint)
 		if !ok || ap == w.endpoints[p.key] {
+			continue
+		}
+		if w.inside(ap.Addr()) {
+			w.restoreEndpoint(p.key, ap)
 			continue
 		}
 		w.endpoints[p.key] = ap
@@ -364,6 +374,36 @@ func (w *wgSession) follow(st wgStats) {
 	}
 	w.m.requestApply()
 	w.m.changed()
+}
+
+// inside reports whether a is reached only through the tunnel: in its own
+// network (its Address prefixes) or one of its DNS servers.
+func (w *wgSession) inside(a netip.Addr) bool {
+	if w.c == nil {
+		return false
+	}
+	for _, p := range w.c.Addresses {
+		if p.Masked().Contains(a) {
+			return true
+		}
+	}
+	return slices.Contains(w.c.DNS, a) || w.d != nil && slices.Contains(parseAddrs(w.d.DNS), a)
+}
+
+// restoreEndpoint points the device back at the configured endpoint of the
+// peer whose endpoint moved to bad.
+func (w *wgSession) restoreEndpoint(key string, bad netip.AddrPort) {
+	for i, p := range w.c.Peers {
+		if hex.EncodeToString(p.PublicKey[:]) != key || i >= len(w.eps) || !w.eps[i].IsValid() {
+			continue
+		}
+		w.m.o.Log.Warn("tunnel server answered from inside the tunnel; its endpoint is set back",
+			"tunnel", w.name, "addr", bad.Addr(), "endpoint", w.eps[i])
+		if err := w.dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", key, w.eps[i])); err != nil {
+			w.m.o.Log.Warn("couldn't set the tunnel's endpoint back", "tunnel", w.name)
+		}
+		return
+	}
 }
 
 // endpointOf parses an endpoint the device reports, unmapped.

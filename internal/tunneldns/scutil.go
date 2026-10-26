@@ -1,6 +1,7 @@
 package tunneldns
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/netip"
@@ -17,18 +18,36 @@ import (
 // whatever order it's given; replacing the primary service's ServerAddresses
 // makes the tunnel's the default resolver, and touches no route.
 //
+// The servers alone aren't enough: macOS judges a resolver's reach through
+// its service's interface, and a VPN's resolver for every domain is
+// "Supplemental" and scoped to the VPN's interface — the tunnel's server,
+// reached through neither, is "Not Reachable", and no query is ever sent
+// (the owner's Mac, 2026-10-26). So the swap also names the tunnel's
+// interface (InterfaceName) and drops SupplementalMatchDomains/Orders: the
+// resolver is then the plain default one, reachable, and its queries go
+// into the tunnel. A restore puts those back too.
+//
+// DNS servers set by hand (System Settings) are the service's Setup: DNS,
+// which outranks its State: one: such a service's Setup: key is swapped too,
+// in the dynamic store only — as Tunnelblick does — never in the saved
+// preferences. configd puts the saved one back whenever the preferences are
+// applied; the recheck then sees the owner's value, and swaps again.
+//
 // What's changed is recorded in the dynamic store, where it outlives a
 // crashed daemon (until a reboot, which also undoes the swap):
-//   - backupPrefix<service>: the service's DNS dictionary before the swap (or
-//     a marker that it had none);
+//   - backupPrefix<service>, setupBackupPrefix<service>: the service's DNS
+//     dictionaries before the swap (State's, or a marker that it had none;
+//     Setup's, when it has servers);
 //   - appliedKey: the servers RiftRoute wrote, so a restore only puts the
 //     backup back while they're still there — a value the service's owner
-//     wrote since (a DHCP renewal, a VPN reconnecting) is theirs.
+//     wrote since (a DHCP renewal, a VPN reconnecting, the preferences
+//     applied) is theirs.
 const (
-	backupPrefix = "State:/Network/RiftRoute/DNSBackup/"
-	appliedKey   = "State:/Network/RiftRoute/DNSApplied"
-	globalIPv4   = "State:/Network/Global/IPv4"
-	absentMarker = "RiftRouteAbsent"
+	backupPrefix      = "State:/Network/RiftRoute/DNSBackup/"
+	setupBackupPrefix = "State:/Network/RiftRoute/DNSSetupBackup/"
+	appliedKey        = "State:/Network/RiftRoute/DNSApplied"
+	globalIPv4        = "State:/Network/Global/IPv4"
+	absentMarker      = "RiftRouteAbsent"
 )
 
 // recheckEvery is how often, while a swap is in place, the primary service
@@ -77,8 +96,12 @@ func newScutil(run runner, log Logf) *scutilApplier {
 
 func (s *scutilApplier) Backend() string { return "macOS primary service DNS (swapped)" }
 
-// Note says when the swap was let go, its owner rewriting it.
-func (s *scutilApplier) Note() string { return s.note.get() }
+// Note says when the swap was let go, its owner rewriting it: then it's no
+// longer in effect.
+func (s *scutilApplier) Note() (string, bool) {
+	n := s.note.get()
+	return n, n == ""
+}
 
 func (s *scutilApplier) scutil(ctx context.Context, script string) (string, error) {
 	return s.run(ctx, "open\n"+script+"close\n", "scutil")
@@ -117,6 +140,8 @@ func arrayValues(dict, key string) []string {
 		case in:
 			if _, v, ok := strings.Cut(t, " : "); ok {
 				out = append(out, v)
+			} else if strings.HasSuffix(t, " :") { // an empty string
+				out = append(out, "")
 			}
 		}
 	}
@@ -124,6 +149,26 @@ func arrayValues(dict, key string) []string {
 }
 
 func serviceDNS(service string) string { return "State:/Network/Service/" + service + "/DNS" }
+
+func setupDNS(service string) string { return "Setup:/Network/Service/" + service + "/DNS" }
+
+// hasSetupServers reports whether the service has DNS servers set by hand.
+func (s *scutilApplier) hasSetupServers(ctx context.Context, svc string) bool {
+	return len(arrayValues(s.show(ctx, setupDNS(svc)), "ServerAddresses")) > 0
+}
+
+// holds reports whether the service's DNS is still cfg's: State's (its
+// servers, interface and no match domains), and Setup's when it has servers.
+func (s *scutilApplier) holds(ctx context.Context, svc string, cfg Config) bool {
+	ours := addrStrings(cfg.Servers)
+	state := s.show(ctx, serviceDNS(svc))
+	if !slices.Equal(arrayValues(state, "ServerAddresses"), ours) || scalarValue(state, "InterfaceName") != cfg.Iface ||
+		strings.Contains(state, "SupplementalMatchDomains : ") {
+		return false
+	}
+	setup := arrayValues(s.show(ctx, setupDNS(svc)), "ServerAddresses")
+	return len(setup) == 0 || slices.Equal(setup, ours)
+}
 
 // Apply makes cfg's servers the default resolver: the primary service's
 // ServerAddresses (and SearchDomains, with search domains), backed up first.
@@ -153,7 +198,8 @@ func (s *scutilApplier) Apply(ctx context.Context, cfg Config) error {
 	return nil
 }
 
-// swapLocked backs the service's DNS up (once) and writes cfg into it.
+// swapLocked backs the service's DNS up (once) and writes cfg into it:
+// State's, and Setup's when it has servers set by hand.
 func (s *scutilApplier) swapLocked(ctx context.Context, svc string, cfg Config) error {
 	if s.show(ctx, backupPrefix+svc) == "" {
 		script := "get " + serviceDNS(svc) + "\nset " + backupPrefix + svc + "\n"
@@ -164,13 +210,31 @@ func (s *scutilApplier) swapLocked(ctx context.Context, svc string, cfg Config) 
 			return fmt.Errorf("back up the DNS of %s: %w", svc, err)
 		}
 	}
-	servers := addrStrings(cfg.Servers)
-	script := "get " + serviceDNS(svc) + "\nd.add ServerAddresses * " + strings.Join(servers, " ") + "\n"
-	if len(cfg.Search) > 0 {
-		script += "d.add SearchDomains * " + strings.Join(cfg.Search, " ") + "\n"
+	setup := s.hasSetupServers(ctx, svc)
+	if setup && s.show(ctx, setupBackupPrefix+svc) == "" {
+		if _, err := s.scutil(ctx, "get "+setupDNS(svc)+"\nset "+setupBackupPrefix+svc+"\n"); err != nil {
+			return fmt.Errorf("back up the DNS set by hand for %s: %w", svc, err)
+		}
 	}
-	script += "set " + serviceDNS(svc) + "\n" +
-		"d.init\nd.add ServerAddresses * " + strings.Join(servers, " ") + "\nd.add Service " + svc + "\n"
+	if !reLink.MatchString(cfg.Iface) {
+		return fmt.Errorf("bad interface name %q", cfg.Iface)
+	}
+	servers := addrStrings(cfg.Servers)
+	write := func(key string, shape bool) string {
+		w := "get " + key + "\nd.add ServerAddresses * " + strings.Join(servers, " ") + "\n"
+		if len(cfg.Search) > 0 {
+			w += "d.add SearchDomains * " + strings.Join(cfg.Search, " ") + "\n"
+		}
+		if shape { // the plain default resolver, reached through the tunnel
+			w += "d.add InterfaceName " + cfg.Iface + "\nd.remove SupplementalMatchDomains\nd.remove SupplementalMatchOrders\n"
+		}
+		return w + "set " + key + "\n"
+	}
+	script := write(serviceDNS(svc), true)
+	if setup {
+		script += write(setupDNS(svc), false)
+	}
+	script += "d.init\nd.add ServerAddresses * " + strings.Join(servers, " ") + "\nd.add Service " + svc + "\n"
 	if len(cfg.Search) > 0 {
 		script += "d.add Search # 1\n" // its SearchDomains are ours too: a restore puts them back
 	}
@@ -182,39 +246,70 @@ func (s *scutilApplier) swapLocked(ctx context.Context, svc string, cfg Config) 
 	return nil
 }
 
-// restoreLocked puts a service's backup back while it still holds the
-// servers RiftRoute wrote, and drops the backup either way.
+// restoreLocked puts a service's backups back while it still holds the
+// servers RiftRoute wrote, and drops them either way.
 func (s *scutilApplier) restoreLocked(ctx context.Context, svc string) {
 	applied := s.show(ctx, appliedKey)
-	ours := arrayValues(applied, "ServerAddresses")
-	now := arrayValues(s.show(ctx, serviceDNS(svc)), "ServerAddresses")
-	backup := s.show(ctx, backupPrefix+svc)
-	script := ""
-	switch {
-	case backup == "":
-	case len(ours) == 0 || !slices.Equal(now, ours):
-		// Its owner wrote it since: theirs, left as it is.
-	case strings.Contains(backup, absentMarker):
-		script = "remove " + serviceDNS(svc) + "\n"
-	default:
-		script = restoreScript(svc, backup, strings.Contains(applied, "Search : 1"))
-	}
-	_, _ = s.scutil(ctx, script+"remove "+backupPrefix+svc+"\n")
+	ours, search := arrayValues(applied, "ServerAddresses"), strings.Contains(applied, "Search : 1")
+	script := s.restoreOne(ctx, serviceDNS(svc), backupPrefix+svc, ours, search, true) +
+		s.restoreOne(ctx, setupDNS(svc), setupBackupPrefix+svc, ours, search, false)
+	_, _ = s.scutil(ctx, script+"remove "+backupPrefix+svc+"\nremove "+setupBackupPrefix+svc+"\n")
 }
 
-// restoreScript puts what the swap changed back from the backup — the
-// servers, and the search domains when it set some — into the service's
-// DNS as it is now, so whatever else its owner changed meanwhile stays.
-// The whole backup goes back when a value isn't plainly an address or a
-// name, which a script couldn't carry.
-func restoreScript(svc, backup string, search bool) string {
+// restoreOne is the script that puts one of a service's DNS keys back from
+// its backup, if it has one and still holds ours.
+func (s *scutilApplier) restoreOne(ctx context.Context, key, backupKey string, ours []string, search, shape bool) string {
+	backup := s.show(ctx, backupKey)
+	switch {
+	case backup == "":
+		return ""
+	case len(ours) == 0 || !slices.Equal(arrayValues(s.show(ctx, key), "ServerAddresses"), ours):
+		return "" // its owner wrote it since: theirs, left as it is
+	case strings.Contains(backup, absentMarker):
+		return "remove " + key + "\n"
+	}
+	return restoreScript(key, backupKey, backup, search, shape)
+}
+
+// restoreScript puts what the swap changed back into key from its backup —
+// the servers, the search domains when it set some, and (shape) the
+// interface and match domains — into the dictionary as it is now, so
+// whatever else its owner changed meanwhile stays. The whole backup goes
+// back when a value isn't plainly an address or a name (a match domain may
+// be "", every domain), or there are match orders (numbers, which a
+// script's array can't carry).
+func restoreScript(key, backupKey, backup string, search, shape bool) string {
+	whole := "get " + backupKey + "\nset " + key + "\n"
 	servers, domains := arrayValues(backup, "ServerAddresses"), arrayValues(backup, "SearchDomains")
+	match, iface := arrayValues(backup, "SupplementalMatchDomains"), scalarValue(backup, "InterfaceName")
 	for _, v := range slices.Concat(servers, domains) {
 		if !reWord.MatchString(v) {
-			return "get " + backupPrefix + svc + "\nset " + serviceDNS(svc) + "\n"
+			return whole
 		}
 	}
-	script := "get " + serviceDNS(svc) + "\n"
+	for _, v := range match {
+		if v != "" && !reWord.MatchString(v) {
+			return whole
+		}
+	}
+	if shape && (strings.Contains(backup, "SupplementalMatchOrders : ") || iface != "" && !reLink.MatchString(iface)) {
+		return whole
+	}
+	script := "get " + key + "\n"
+	if shape {
+		if iface != "" {
+			script += "d.add InterfaceName " + iface + "\n"
+		} else {
+			script += "d.remove InterfaceName\n"
+		}
+		if strings.Contains(backup, "SupplementalMatchDomains : ") {
+			quoted := make([]string, len(match))
+			for i, v := range match {
+				quoted[i] = cmp.Or(v, `""`)
+			}
+			script += "d.add SupplementalMatchDomains * " + strings.Join(quoted, " ") + "\n"
+		}
+	}
 	if len(servers) > 0 {
 		script += "d.add ServerAddresses * " + strings.Join(servers, " ") + "\n"
 	} else {
@@ -227,7 +322,7 @@ func restoreScript(svc, backup string, search bool) string {
 	default:
 		script += "d.remove SearchDomains\n"
 	}
-	return script + "set " + serviceDNS(svc) + "\n"
+	return script + "set " + key + "\n"
 }
 
 // Revert puts back whatever is swapped.
@@ -259,18 +354,20 @@ func (s *scutilApplier) Recover(ctx context.Context) error {
 }
 
 func (s *scutilApplier) recoverLocked(ctx context.Context) {
-	out, _ := s.run(ctx, "list "+backupPrefix+".*\n", "scutil")
-	restored := false
+	out, _ := s.run(ctx, "list State:/Network/RiftRoute/.*\n", "scutil")
+	restored := map[string]bool{}
 	for _, l := range strings.Split(out, "\n") {
-		if i := strings.Index(l, backupPrefix); i >= 0 {
-			if svc := strings.TrimSpace(l[i+len(backupPrefix):]); reService.MatchString(svc) {
-				s.restoreLocked(ctx, svc)
-				restored = true
+		for _, prefix := range []string{backupPrefix, setupBackupPrefix} {
+			if i := strings.Index(l, prefix); i >= 0 {
+				if svc := strings.TrimSpace(l[i+len(prefix):]); reService.MatchString(svc) && !restored[svc] {
+					s.restoreLocked(ctx, svc)
+					restored[svc] = true
+				}
 			}
 		}
 	}
 	_, _ = s.scutil(ctx, "remove "+appliedKey+"\n")
-	if restored {
+	if len(restored) > 0 {
 		s.flush(ctx)
 	}
 }
@@ -307,23 +404,33 @@ func (s *scutilApplier) recheck(ctx context.Context) {
 		return // between networks: the next check sees where it lands
 	case svc != s.service:
 		s.restoreLocked(ctx, s.service)
-	case slices.Equal(arrayValues(s.show(ctx, serviceDNS(svc)), "ServerAddresses"), addrStrings(s.applied.Servers)):
+	case s.holds(ctx, svc, s.applied):
 		return
 	default:
 		now := s.now()
 		s.rewrites = append(slices.DeleteFunc(s.rewrites, func(t time.Time) bool { return now.Sub(t) > rewriteWindow }), now)
 		iface := scalarValue(s.show(ctx, serviceDNS(svc)), "InterfaceName")
 		s.logf("the network service's own DNS was written again; the tunnel's goes back in", "service", svc, "iface", iface, "times", len(s.rewrites))
-		// The owner's new value is the backup now (or, let go, simply its).
-		script := "remove " + backupPrefix + svc + "\n"
 		if len(s.rewrites) >= maxRewrites {
+			// Let go: what still holds ours goes back, what the owner wrote
+			// stays.
 			s.held = false
 			s.note.set(fmt.Sprintf("the network service%s keeps rewriting its DNS (%d times in %d minutes), so RiftRoute stopped putting "+
 				"the tunnel's back: your system's own DNS is in use", onIface(iface), len(s.rewrites), int(rewriteWindow/time.Minute)))
 			s.logf("letting the network service keep its DNS", "service", svc, "iface", iface)
-			_, _ = s.scutil(ctx, script+"remove "+appliedKey+"\n")
+			s.restoreLocked(ctx, svc)
+			_, _ = s.scutil(ctx, "remove "+appliedKey+"\n")
 			s.flush(ctx)
 			return
+		}
+		// The owner's new value is the backup now, of the key it rewrote:
+		// the other's backup still holds what was there before the swap.
+		ours, script := addrStrings(s.applied.Servers), ""
+		if !slices.Equal(arrayValues(s.show(ctx, serviceDNS(svc)), "ServerAddresses"), ours) {
+			script += "remove " + backupPrefix + svc + "\n"
+		}
+		if setup := arrayValues(s.show(ctx, setupDNS(svc)), "ServerAddresses"); len(setup) > 0 && !slices.Equal(setup, ours) {
+			script += "remove " + setupBackupPrefix + svc + "\n"
 		}
 		_, _ = s.scutil(ctx, script)
 	}

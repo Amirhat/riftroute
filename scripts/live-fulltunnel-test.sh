@@ -44,7 +44,7 @@ HEAD=$(sudo -u "$SUDO_USER" git rev-parse --short=7 HEAD 2>/dev/null)
 NAME=rr-fulltest
 LABEL=system/com.riftroute.daemon
 BUNDLE_CLI=${BUNDLE_CLI:-/Applications/RiftRoute.app/Contents/Resources/bin/riftroute}
-DLOG=/var/log/riftroute/riftrouted.log
+DLOG=/var/log/riftroute/riftrouted.err.log # slog writes to stderr
 REPORT=/tmp/rr-fulltunnel-test.log
 TMPD=$(mktemp -d /tmp/rr-fulltest.XXXXXX) && chmod 700 "$TMPD" || exit 1
 : > "$REPORT" && chown "$SUDO_USER" "$REPORT" && chmod 600 "$REPORT"
@@ -255,6 +255,9 @@ CONF_DNS=$(awk -F= 'tolower($1) ~ /^[[:space:]]*dns[[:space:]]*$/ {print $2; exi
 ckeq "the tunnel's DNS is its configuration's" "$TDNS" "$CONF_DNS"
 until_ok 10 dns_is "$TDNS"
 ckeq "the system's first resolver is the tunnel's" "$(ns1)" "$TDNS"
+R1=$(scutil --dns | sed -n '/^resolver #1$/,/^$/p')
+ck "and macOS takes it as reachable" "$R1" "(Reachable"
+ckne "not a supplemental resolver scoped to another interface" "$(echo "$R1" | grep -c Supplemental)" "1"
 SVC=$(primary)
 ck "the primary service ($SVC) has it" "$(svcdns "$SVC")" "$TDNS"
 ckeq "a backup and the applied record are in the dynamic store" "$(rrkeys)" "2"
@@ -303,7 +306,8 @@ if [[ "$MAINIF" != "$PHYSIF" ]] && ask "Optional: turn your main VPN OFF now, in
   until_ok 12 dns_is "$TDNS"
   ckeq "DNS is still the tunnel's" "$(ns1)" "$TDNS"
   ckeq "1.1.1.1 moved to $PHYSIF" "$(via 1.1.1.1)" "$PHYSIF"
-  ckeq "the exit address is still the tunnel's" "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" "$E_T"
+  [[ -n "$E_T" ]] && ckeq "the exit address is still the tunnel's" "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" "$E_T"
+  ck "WireGuard still sends to its server" "$(tj .server)" "$SERVER"
   OFFBACKUP=$(servers_of "State:/Network/RiftRoute/DNSBackup/$OFFSVC")
   if ask "Now turn your main VPN back ON"; then
     back_now() { [[ -n "$(defif)" && "$(defif)" != "$PHYSIF" ]]; }
@@ -314,6 +318,7 @@ if [[ "$MAINIF" != "$PHYSIF" ]] && ask "Optional: turn your main VPN OFF now, in
     ckeq "DNS is still the tunnel's" "$(ns1)" "$TDNS"
     [[ -n "$OFFSVC" && "$OFFSVC" != "$(primary)" ]] && ckeq "$OFFSVC got its DNS back" "$(svcdns "$OFFSVC")" "$OFFBACKUP"
     ckeq "1.1.1.1 is back on the main VPN" "$(via 1.1.1.1)" "$NEWMAIN"
+    ck "WireGuard still sends to its server" "$(tj .server)" "$SERVER"
     if [[ "$NEWMAIN" != "$MAINIF" ]]; then
       BASE_KEEP=${BASE_KEEP//=$MAINIF/=$NEWMAIN}; MAINIF=$NEWMAIN
     fi
