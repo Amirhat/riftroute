@@ -342,3 +342,36 @@ func TestFullTunnelWithoutAPathForItsServer(t *testing.T) {
 		t.Errorf("with a main VPN: server %+v, quarter %+v", by["198.51.100.7/32"].Route, by["0.0.0.0/2"].Route)
 	}
 }
+
+// On an IPv4-only network a server whose name has an AAAA record too has no
+// v6 path: the tunnel still connects over v4, whose address is pinned, so
+// its quarters go in (the review of c4e0736). Only when none of its servers
+// has a path is it held back.
+func TestFullTunnelServerWithAV6AddressOnAV4OnlyNetwork(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("198.51.100.7"), netip.MustParseAddr("2001:db8::7")
+	for _, block := range []bool{false, true} {
+		in := testInput()
+		in.Tunnels = []TunnelInput{{Name: "all", Iface: "utun7", AllTraffic: true, Block: block, Bypass: []netip.Addr{v4, v6}}}
+		desired, _, err := BuildDesired(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		by := map[string]domain.ManagedRoute{}
+		for _, d := range desired {
+			by[d.DstCIDR] = d
+		}
+		for _, q := range []string{"0.0.0.0/2", "64.0.0.0/2", "128.0.0.0/2", "192.0.0.0/2"} {
+			if r := by[q]; r.Iface != "utun7" || r.Reject {
+				t.Errorf("block %v: %s not into the tunnel: %+v", block, q, r.Route)
+			}
+		}
+		if by["198.51.100.7/32"].Gateway != "192.168.1.1" {
+			t.Errorf("block %v: the v4 server isn't pinned: %+v", block, by["198.51.100.7/32"].Route)
+		}
+		for _, b := range PlanTunnels(in).Blocked["all"] {
+			if b.Route == "all traffic" {
+				t.Errorf("block %v: held back though v4 has a path: %s", block, b.Reason)
+			}
+		}
+	}
+}

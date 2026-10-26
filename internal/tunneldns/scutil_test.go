@@ -503,3 +503,29 @@ func TestResolvedNotesALinkThatTakesEveryNameLater(t *testing.T) {
 		t.Fatalf("still looking after the revert (%d → %d), note %q", n, count(), noteOf(r))
 	}
 }
+
+// A plain primary (Wi-Fi, Ethernet: servers only) gets the servers alone —
+// no interface named, nothing dropped — and a recheck takes it as held.
+func TestScutilPlainPrimaryKeepsItsShape(t *testing.T) {
+	f := storeWithPrimary(eth)
+	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"192.168.88.1"}})
+	f.keys[globalIPv4]["PrimaryService"] = []string{eth}
+	s := newScutil(f.run, nil)
+	ctx := context.Background()
+	if err := s.Apply(ctx, tunnelCfg()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.keys[serviceDNS(eth)]["InterfaceName"]; ok || fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.8.0.1 10.8.0.2]" {
+		t.Fatalf("plain primary reshaped: %v", f.keys[serviceDNS(eth)])
+	}
+	for i := 0; i < maxRewrites+1; i++ {
+		s.recheck(ctx)
+	}
+	if n, inEffect := s.Note(); n != "" || !inEffect || len(s.rewrites) != 0 {
+		t.Fatalf("held taken as rewritten: %q %v %d", n, inEffect, len(s.rewrites))
+	}
+	_ = s.Revert(ctx)
+	if fmt.Sprint(f.keys[serviceDNS(eth)]) != "map[ServerAddresses:[192.168.88.1]]" {
+		t.Fatalf("restored %v", f.keys[serviceDNS(eth)])
+	}
+}

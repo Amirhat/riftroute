@@ -305,6 +305,8 @@ if [[ "$MAINIF" != "$PHYSIF" ]] && ask "Optional: turn your main VPN OFF now, in
   ckeq "the tunnel stays connected" "$(tj .state)" "connected"
   until_ok 12 dns_is "$TDNS"
   ckeq "DNS is still the tunnel's" "$(ns1)" "$TDNS"
+  ck "and macOS takes it as reachable" "$(scutil --dns | sed -n '/^resolver #1$/,/^$/p')" "(Reachable"
+  ckne "names resolve through it (a plain primary, DNS set by hand included)" "$(resolves www.example.com)" ""
   ckeq "1.1.1.1 moved to $PHYSIF" "$(via 1.1.1.1)" "$PHYSIF"
   [[ -n "$E_T" ]] && ckeq "the exit address is still the tunnel's" "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" "$E_T"
   ck "WireGuard still sends to its server" "$(tj .server)" "$SERVER"

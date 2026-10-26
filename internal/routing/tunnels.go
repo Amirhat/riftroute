@@ -363,8 +363,11 @@ func unclaimedAggregate(prefixes []netip.Prefix, taken map[string]claim) []netip
 // it's up its DNS servers go in, each by a host route: DNS through the
 // tunnel is the point.
 //
-// It returns the tunnel's own servers it found no path for: the quarters
-// would carry its connection into itself.
+// It returns the tunnel's own servers it found no path for, when none of
+// them has one: the quarters would carry its connection into itself. One
+// with a path is enough — the connection goes there (the family a server
+// has a path in, WireGuard's preferred v4). An IPv6 server of a tunnel
+// without IPv6 doesn't count: its v6 quarters are refused, not carried.
 func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, taken map[string]claim, in DesiredInput) (unpinned []netip.Addr) {
 	tag := TunnelProfilePrefix + t.Name
 	var keep []keptOut
@@ -391,12 +394,17 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 	}
 	var except []domain.TunnelExcept
 	seen := map[netip.Addr]bool{}
+	hasPath := false // one of its own servers has one
 	for _, k := range keep {
 		a := k.addr.Unmap()
+		own := slices.Contains(servers(t), a) && (a.Is4() || t.V6)
 		// A DNS server of its own goes in — unless it's also a tunnel's
 		// server, whose connection mustn't.
-		if seen[a] || held[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || narrowerRoute(a, in) ||
-			slices.Contains(t.DNS, a) && !isServer(a, ts) {
+		if seen[a] || a.IsLoopback() || a.IsLinkLocalUnicast() || slices.Contains(t.DNS, a) && !isServer(a, ts) {
+			continue
+		}
+		if held[a] || narrowerRoute(a, in) {
+			hasPath = hasPath || own
 			continue
 		}
 		seen[a] = true
@@ -408,13 +416,14 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 		if iface == "" {
 			pgw, piface, err := resolveGateway("auto", fam, in)
 			if err != nil {
-				if slices.Contains(servers(t), a) {
+				if own {
 					unpinned = append(unpinned, a)
 				}
 				continue // nowhere else to send it
 			}
 			gw, iface = pgw, piface
 		}
+		hasPath = hasPath || own
 		host := netip.PrefixFrom(a, a.BitLen())
 		if _, dup := taken[prefixKey(host)]; dup {
 			continue
@@ -429,6 +438,9 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 	}
 	if len(except) > 0 {
 		tp.Narrowed[t.Name] = append(tp.Narrowed[t.Name], domain.TunnelNarrowed{Route: "all traffic", Except: except})
+	}
+	if hasPath {
+		unpinned = nil
 	}
 	if t.Iface == "" {
 		return unpinned

@@ -22,10 +22,12 @@ import (
 // its service's interface, and a VPN's resolver for every domain is
 // "Supplemental" and scoped to the VPN's interface — the tunnel's server,
 // reached through neither, is "Not Reachable", and no query is ever sent
-// (the owner's Mac, 2026-10-26). So the swap also names the tunnel's
-// interface (InterfaceName) and drops SupplementalMatchDomains/Orders: the
-// resolver is then the plain default one, reachable, and its queries go
-// into the tunnel. A restore puts those back too.
+// (the owner's Mac, 2026-10-26). So the swap of such a dictionary — one
+// with match domains or an interface of its own, a VPN's — also names the
+// tunnel's interface (InterfaceName) and drops SupplementalMatchDomains/
+// Orders: the resolver is then the plain default one, reachable, and its
+// queries go into the tunnel. A restore puts those back too. A plain one
+// (Wi-Fi, Ethernet: servers only) gets the servers alone, as Tunnelblick's.
 //
 // DNS servers set by hand (System Settings) are the service's Setup: DNS,
 // which outranks its State: one: such a service's Setup: key is swapped too,
@@ -82,6 +84,7 @@ type scutilApplier struct {
 	mu      sync.Mutex
 	applied Config // what's in place, empty when nothing is
 	service string // the primary service it's applied to
+	shaped  bool   // its dictionary was a VPN's, reshaped (swapLocked)
 	stop    chan struct{}
 	// rewrites are the owner's rewrites of the service's DNS while it's
 	// held; note, why it's let go (held false).
@@ -158,12 +161,13 @@ func (s *scutilApplier) hasSetupServers(ctx context.Context, svc string) bool {
 }
 
 // holds reports whether the service's DNS is still cfg's: State's (its
-// servers, interface and no match domains), and Setup's when it has servers.
+// servers; reshaped, its interface and no match domains), and Setup's when
+// it has servers.
 func (s *scutilApplier) holds(ctx context.Context, svc string, cfg Config) bool {
 	ours := addrStrings(cfg.Servers)
 	state := s.show(ctx, serviceDNS(svc))
-	if !slices.Equal(arrayValues(state, "ServerAddresses"), ours) || scalarValue(state, "InterfaceName") != cfg.Iface ||
-		strings.Contains(state, "SupplementalMatchDomains : ") {
+	if !slices.Equal(arrayValues(state, "ServerAddresses"), ours) ||
+		s.shaped && (scalarValue(state, "InterfaceName") != cfg.Iface || strings.Contains(state, "SupplementalMatchDomains : ")) {
 		return false
 	}
 	setup := arrayValues(s.show(ctx, setupDNS(svc)), "ServerAddresses")
@@ -230,11 +234,19 @@ func (s *scutilApplier) swapLocked(ctx context.Context, svc string, cfg Config) 
 		}
 		return w + "set " + key + "\n"
 	}
-	script := write(serviceDNS(svc), true)
+	state := s.show(ctx, serviceDNS(svc))
+	shape := strings.Contains(state, "SupplementalMatchDomains : ") || scalarValue(state, "InterfaceName") != ""
+	if strings.Contains(state, "ServerAddresses : ") && slices.Equal(arrayValues(state, "ServerAddresses"), servers) {
+		shape = s.shaped // ours already (a recheck after the Setup: key moved): as it was
+	}
+	script := write(serviceDNS(svc), shape)
 	if setup {
 		script += write(setupDNS(svc), false)
 	}
 	script += "d.init\nd.add ServerAddresses * " + strings.Join(servers, " ") + "\nd.add Service " + svc + "\n"
+	if shape {
+		script += "d.add Shape # 1\n" // its interface and match domains are ours too
+	}
 	if len(cfg.Search) > 0 {
 		script += "d.add Search # 1\n" // its SearchDomains are ours too: a restore puts them back
 	}
@@ -242,6 +254,7 @@ func (s *scutilApplier) swapLocked(ctx context.Context, svc string, cfg Config) 
 	if _, err := s.scutil(ctx, script); err != nil {
 		return fmt.Errorf("set the DNS of %s: %w", svc, err)
 	}
+	s.shaped = shape
 	s.flush(ctx)
 	return nil
 }
@@ -251,7 +264,7 @@ func (s *scutilApplier) swapLocked(ctx context.Context, svc string, cfg Config) 
 func (s *scutilApplier) restoreLocked(ctx context.Context, svc string) {
 	applied := s.show(ctx, appliedKey)
 	ours, search := arrayValues(applied, "ServerAddresses"), strings.Contains(applied, "Search : 1")
-	script := s.restoreOne(ctx, serviceDNS(svc), backupPrefix+svc, ours, search, true) +
+	script := s.restoreOne(ctx, serviceDNS(svc), backupPrefix+svc, ours, search, strings.Contains(applied, "Shape : 1")) +
 		s.restoreOne(ctx, setupDNS(svc), setupBackupPrefix+svc, ours, search, false)
 	_, _ = s.scutil(ctx, script+"remove "+backupPrefix+svc+"\nremove "+setupBackupPrefix+svc+"\n")
 }
@@ -338,7 +351,7 @@ func (s *scutilApplier) revertLocked(ctx context.Context) error {
 		s.stop = nil
 	}
 	s.recoverLocked(ctx)
-	s.applied, s.service = Config{}, ""
+	s.applied, s.service, s.shaped = Config{}, "", false
 	s.rewrites, s.held = nil, false
 	s.note.set("")
 	return nil

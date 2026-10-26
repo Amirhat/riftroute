@@ -246,6 +246,9 @@ type wgSession struct {
 	endpoints map[string]netip.AddrPort
 	serverKey string
 	server    netip.AddrPort
+	// insideWarned is when each address inside the tunnel was last warned
+	// about (restoreEndpoint): once a minute, not at every poll.
+	insideWarned map[netip.Addr]time.Time
 }
 
 func (w *wgSession) supervise(ctx context.Context) {
@@ -397,8 +400,14 @@ func (w *wgSession) restoreEndpoint(key string, bad netip.AddrPort) {
 		if hex.EncodeToString(p.PublicKey[:]) != key || i >= len(w.eps) || !w.eps[i].IsValid() {
 			continue
 		}
-		w.m.o.Log.Warn("tunnel server answered from inside the tunnel; its endpoint is set back",
-			"tunnel", w.name, "addr", bad.Addr(), "endpoint", w.eps[i])
+		if now := time.Now(); now.Sub(w.insideWarned[bad.Addr()]) >= time.Minute {
+			if w.insideWarned == nil {
+				w.insideWarned = map[netip.Addr]time.Time{}
+			}
+			w.insideWarned[bad.Addr()] = now
+			w.m.o.Log.Warn("tunnel server answered from inside the tunnel; its endpoint is set back",
+				"tunnel", w.name, "addr", bad.Addr(), "endpoint", w.eps[i])
+		}
 		if err := w.dev.IpcSet(fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", key, w.eps[i])); err != nil {
 			w.m.o.Log.Warn("couldn't set the tunnel's endpoint back", "tunnel", w.name)
 		}
