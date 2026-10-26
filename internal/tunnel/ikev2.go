@@ -107,7 +107,10 @@ type ikeSession struct {
 
 	remotes  []Remote // what charon-cmd connects to: the pinned addresses (via direct), or the name
 	resolved time.Time
-	dnsFile  string // where this attempt's charon-cmd writes the server's DNS
+	// dns: this attempt's charon-cmd logs the server's DNS servers (ikeDNS),
+	// and dnsSeen, they've been read. dnsWhy: why a full tunnel's aren't.
+	dns, dnsSeen bool
+	dnsWhy       string
 }
 
 // errFatal ends the session: retrying can't help (the profile, the engine,
@@ -222,13 +225,21 @@ func (k *ikeSession) resolve(ctx context.Context) error {
 func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err error) {
 	m := k.m
 	login := ikeLogin{User: orString(k.d.Username, k.c.Username), Password: orString(k.d.Password, k.c.Password)}
-	setup, err := renderIKE(k.c, login, ikeRoots(k.c), host, m.runDir, k.name, k.d.needsIPv6(), ikeKeyAsP12(k.l.Engine().Version))
+	ver := k.l.Engine().Version
+	k.dns, k.dnsSeen, k.dnsWhy = false, false, ""
+	if k.d.AllTraffic {
+		_, err := os.Stat(systemResolvconf)
+		if k.dns = ikeDNSCapture(ver, err == nil); !k.dns {
+			k.dnsWhy = "strongSwan " + ver + " here would hand its server's DNS servers to resolvconf, changing your " +
+				"system's DNS, so they aren't read; set some for it to send DNS through it"
+		}
+	}
+	setup, err := renderIKE(k.c, login, ikeRoots(k.c), host, m.runDir, k.name, k.d.needsIPv6(), ikeKeyAsP12(ver), k.dns)
 	if err != nil {
 		return false, errFatal{err.Error()}
 	}
 	defer removeIKEFiles(setup)
 	removeIKEFiles(setup) // a crashed run's
-	k.dnsFile = setup.DNSFile
 	for _, f := range setup.Files {
 		if err := os.WriteFile(f.Name, f.Data, 0o600); err != nil {
 			return false, errFatal{"write the connection's files: " + err.Error()}
@@ -315,13 +326,14 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 		}
 		switch {
 		case st.Up && !wasUp:
-			if why := k.connected(ctx, st); why != "" {
+			if why := k.connected(ctx, st, proc.Tail()); why != "" {
 				stop()
 				return false, errFatal{why}
 			}
 			wasUp, downSince, vips = true, time.Time{}, st.VIPs
 		case st.Up:
 			downSince = time.Time{}
+			k.lateDNS(proc.Tail())
 			if len(st.VIPs) > 0 && !sameAddrs(st.VIPs, vips) {
 				// charon made the connection again (the network changed;
 				// dead-peer detection) and the server handed out another
@@ -402,7 +414,7 @@ func (k *ikeSession) readdress(ctx context.Context, st IKEStatus) (done bool, wh
 // why it's refused: without an address from the server, the tunnel's
 // traffic can't be told apart; an address that clashes with this machine's
 // networks would cut it off.
-func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
+func (k *ikeSession) connected(ctx context.Context, st IKEStatus, tail []string) string {
 	if len(st.VIPs) == 0 {
 		return "connected, but the server assigned no address (virtual IP) to this client; RiftRoute routes " +
 			"only into a tunnel that has one — the server must hand out addresses (e.g. strongSwan's rightsourceip)"
@@ -421,7 +433,11 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 	k.m.update(k.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = a.iface, a.local, a.v6
-		r.dns, r.dnsFile = tunneldns.Config{}, k.dnsFile // read when it's needed (wantedDNS)
+		r.dns, r.dnsWhy = tunneldns.Config{}, k.dnsWhy
+		if k.dns {
+			r.dns.Servers = ikeDNS(tail)
+			k.dnsSeen = len(r.dns.Servers) > 0
+		}
 		if st.Server.IsValid() {
 			r.server = st.Server.String()
 			// The address charon actually reached is one of its servers.
@@ -434,6 +450,22 @@ func (k *ikeSession) connected(ctx context.Context, st IKEStatus) string {
 	k.m.requestApply()
 	k.m.changed()
 	return ""
+}
+
+// lateDNS reads the server's DNS servers once more while the tunnel is up,
+// until they're seen: charon-cmd's log may reach the daemon after the
+// connection's status does.
+func (k *ikeSession) lateDNS(tail []string) {
+	if !k.dns || k.dnsSeen {
+		return
+	}
+	servers := ikeDNS(tail)
+	if len(servers) == 0 {
+		return
+	}
+	k.dnsSeen = true
+	k.m.update(k.name, func(r *live) { r.dns.Servers = servers })
+	k.m.requestApply()
 }
 
 // loginPrint fingerprints the session's login: the profile and what it

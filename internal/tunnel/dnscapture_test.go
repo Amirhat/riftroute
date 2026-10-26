@@ -26,10 +26,22 @@ func TestPushedDNS(t *testing.T) {
 	}
 }
 
-// charon-cmd's resolve plugin writes a resolv.conf of its own.
-func TestResolvConfDNS(t *testing.T) {
-	servers, search := resolvConfDNS("nameserver 10.30.0.1   # by strongSwan\nnameserver 2001:db8::53   # by strongSwan\n# comment\nsearch Corp.Example.\nnameserver nonsense\n")
-	if fmt.Sprint(servers) != "[10.30.0.1 2001:db8::53]" || fmt.Sprint(search) != "[corp.example]" {
-		t.Fatalf("servers %v, search %v", servers, search)
+// charon-cmd's resolve plugin logs each server it's given, both ways it
+// installs them (resolvconf from 5.9.9, a file before), once each.
+func TestIKEDNS(t *testing.T) {
+	servers := ikeDNS([]string{
+		"[CFG] handling INTERNAL_IP4_DNS attribute failed",
+		"[IKE] installing DNS server 10.30.0.1 via resolvconf",
+		"[IKE] installing DNS server 2001:db8::53 to /tmp/rr-tun-x/office.dns",
+		"[IKE] installing DNS server 10.30.0.1 via resolvconf",
+		"[IKE] installing DNS server 127.0.0.1 via resolvconf",
+		"[IKE] installing DNS server nonsense via resolvconf",
+		"[IKE] DNS server 10.30.0.1 already installed, increasing refcount",
+	})
+	if fmt.Sprint(servers) != "[10.30.0.1 2001:db8::53]" {
+		t.Fatalf("servers %v", servers)
+	}
+	if s := ikeDNS([]string{"[IKE] IKE_SA office[1] established"}); len(s) != 0 {
+		t.Fatalf("none given: %v", s)
 	}
 }

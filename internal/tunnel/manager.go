@@ -74,9 +74,11 @@ type Options struct {
 type Manager struct {
 	o Options
 	// dnsMu orders a full tunnel's DNS changes; dnsApplied is what's in
-	// place.
+	// place; dnsTimer tries a failed change again, the dnsFails'th time.
 	dnsMu      sync.Mutex
 	dnsApplied tunneldns.Config
+	dnsTimer   *time.Timer
+	dnsFails   int
 
 	store   *defStore
 	runDir  string
@@ -132,10 +134,10 @@ type live struct {
 	// successful connection (or the start of the session).
 	failures int
 	// dns is the DNS its server gave this session (OpenVPN's PUSH_REPLY,
-	// WireGuard's configuration); dnsFile, where charon-cmd's resolve plugin
-	// writes it (IKEv2), read when it's needed.
-	dns     tunneldns.Config
-	dnsFile string
+	// WireGuard's configuration, charon-cmd's log); dnsWhy, why a full
+	// tunnel's can't be read (an old strongSwan beside resolvconf).
+	dns    tunneldns.Config
+	dnsWhy string
 	// dnsInUse is what the system resolves with through it now, and dnsNote
 	// why it's not, for a full tunnel that's connected.
 	dnsInUse []netip.Addr
@@ -349,6 +351,10 @@ func (m *Manager) statusLocked(name string) domain.TunnelStatus {
 	}
 	for _, a := range r.dnsInUse {
 		s.DNS = append(s.DNS, a.String())
+	}
+	if len(s.DNS) > 0 && m.o.DNS != nil {
+		// What keeps it from working as it should, found since it was applied.
+		s.DNSNote = orString(m.o.DNS.Note(), s.DNSNote)
 	}
 	if p != nil {
 		s.NeedsAuth, s.Servers, s.Ignored = p.needsAuth, p.servers, p.ignored
@@ -1184,7 +1190,7 @@ func (m *Manager) handle(ctx context.Context, name string, d *def, s *session, m
 			now := time.Now()
 			m.update(name, func(r *live) {
 				r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
-				r.dns, r.dnsFile = dns, ""
+				r.dns, r.dnsWhy = dns, ""
 				if st.desc == "ERROR" {
 					r.detail = "connected with errors"
 				}
@@ -1841,43 +1847,38 @@ func lastLine(lines []string, fallback string) string {
 // server gave. note says why there's none for it.
 func (m *Manager) wantedDNS() (cfg tunneldns.Config, owner, note string) {
 	m.mu.Lock()
-	names := slices.Sorted(maps.Keys(m.rt))
-	var dnsFile string
-	for _, n := range names {
+	defer m.mu.Unlock()
+	for _, n := range slices.Sorted(maps.Keys(m.rt)) {
 		d, r := m.defs[n], m.rt[n]
 		if d == nil || !d.AllTraffic || r.sess == nil || r.state != domain.TunnelConnected || r.iface == "" {
 			continue
 		}
-		owner, cfg, dnsFile = n, r.dns, r.dnsFile
+		owner, cfg = n, r.dns
 		if len(d.DNS) > 0 {
 			cfg = tunneldns.Config{Servers: parseAddrs(d.DNS), Search: r.dns.Search}
-			dnsFile = ""
 		}
 		cfg.Iface = r.iface
-		break
-	}
-	m.mu.Unlock()
-	if dnsFile != "" { // IKEv2: what charon-cmd's resolve plugin wrote
-		if b, err := os.ReadFile(dnsFile); err == nil {
-			cfg.Servers, cfg.Search = resolvConfDNS(string(b))
+		if cfg.Empty() {
+			note = orString(r.dnsWhy, "its server gave no DNS servers, so your system's own DNS stays in use; set some for it to send DNS through it")
 		}
-	}
-	if owner != "" && cfg.Empty() {
-		note = "its server gave no DNS servers, so your system's own DNS stays in use; set some for it to send DNS through it"
+		break
 	}
 	return cfg, owner, note
 }
 
 // syncDNS applies the DNS wantedDNS says, or puts the system's back, when
 // that changed — after the tunnels' routes are in, so the servers are
-// reachable through the tunnel by then.
+// reachable through the tunnel by then. A change that fails is tried again
+// (dnsRetryLocked).
 func (m *Manager) syncDNS(ctx context.Context) {
 	if m.o.DNS == nil {
 		return
 	}
-	cfg, owner, note := m.wantedDNS()
 	m.dnsMu.Lock()
 	defer m.dnsMu.Unlock()
+	// Read under dnsMu: an apply that saw a tunnel up just before a panic's
+	// revertDNS can't put its DNS back after it.
+	cfg, owner, note := m.wantedDNS()
 	if !cfg.Equal(m.dnsApplied) {
 		var err error
 		if cfg.Empty() {
@@ -1891,8 +1892,10 @@ func (m *Manager) syncDNS(ctx context.Context) {
 			m.o.Log.Warn("full tunnel's DNS not applied", "tunnel", owner, "err", err)
 			m.dnsApplied = tunneldns.Config{}
 			cfg = tunneldns.Config{}
+			m.dnsRetryLocked()
 		default:
 			m.dnsApplied = cfg
+			m.dnsStopRetryLocked()
 		}
 	}
 	m.mu.Lock()
@@ -1914,6 +1917,34 @@ func (m *Manager) syncDNS(ctx context.Context) {
 	m.changed()
 }
 
+// dnsRetryLocked tries a DNS change that failed again — macOS between
+// networks has no primary service; systemd-resolved restarts — in 5 s,
+// doubling up to a minute, until it works or isn't wanted any more: a
+// change that works, or nothing to change, stops it.
+func (m *Manager) dnsRetryLocked() {
+	m.dnsFails++
+	wait := min(dnsRetryFirst<<min(m.dnsFails-1, 4), dnsRetryMax)
+	if m.dnsTimer != nil {
+		m.dnsTimer.Stop()
+	}
+	m.dnsTimer = time.AfterFunc(wait, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		m.syncDNS(ctx)
+	})
+}
+
+func (m *Manager) dnsStopRetryLocked() {
+	m.dnsFails = 0
+	if m.dnsTimer != nil {
+		m.dnsTimer.Stop()
+		m.dnsTimer = nil
+	}
+}
+
+// dnsRetryFirst and dnsRetryMax bound dnsRetryLocked's waits.
+var dnsRetryFirst, dnsRetryMax = 5 * time.Second, time.Minute
+
 // revertDNS puts the system's DNS back, whatever the tunnels' state.
 func (m *Manager) revertDNS() {
 	if m.o.DNS == nil {
@@ -1921,6 +1952,7 @@ func (m *Manager) revertDNS() {
 	}
 	m.dnsMu.Lock()
 	defer m.dnsMu.Unlock()
+	m.dnsStopRetryLocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := m.o.DNS.Revert(ctx); err != nil {

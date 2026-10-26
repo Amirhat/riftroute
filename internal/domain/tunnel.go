@@ -105,7 +105,8 @@ type TunnelStatus struct {
 	DNSOverride []string `json:"dns_override,omitempty"`
 	// DNS are the DNS servers the system uses through it right now (a full
 	// tunnel, connected); DNSNote says why there are none when it carries
-	// all traffic but the system's own DNS is still in use.
+	// all traffic but the system's own DNS is still in use, or what keeps
+	// them from working as they should (another link taking every name).
 	DNS     []string `json:"dns,omitempty"`
 	DNSNote string   `json:"dns_note,omitempty"`
 	// Blocking: its destinations are refused right now — it's set to block

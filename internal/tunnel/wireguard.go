@@ -398,7 +398,7 @@ func (w *wgSession) connected(now time.Time) {
 	w.m.update(w.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = w.iface, local, v6
-		r.dns, r.dnsFile = tunneldns.Config{Servers: w.c.DNS, Search: w.c.DNSSearch}, "" // its DNS =
+		r.dns, r.dnsWhy = tunneldns.Config{Servers: w.c.DNS, Search: w.c.DNSSearch}, "" // its DNS =
 		if w.server.IsValid() {
 			r.server = w.server.String()
 		}

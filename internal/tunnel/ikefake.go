@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -26,6 +27,9 @@ type FakeIKE struct {
 	Fail []string
 	// Version is the strongSwan it reports (default 6.1.0).
 	Version string
+	// DNS are the servers the server "gives": logged as charon-cmd's
+	// resolve plugin does, when the session's configuration loads it.
+	DNS []string
 
 	mu    sync.Mutex
 	specs []IKESpec
@@ -60,6 +64,11 @@ func (f *FakeIKE) Start(spec IKESpec) (IKEProcess, error) {
 		p.vip = netip.MustParseAddr(f.VIP)
 	}
 	p.log("Starting charon-cmd IKE client (strongSwan 6.1.0, fake)")
+	if conf, err := os.ReadFile(spec.Conf); err == nil && strings.Contains(string(conf), " resolve\n") {
+		for _, s := range f.DNS {
+			p.log("[IKE] installing DNS server " + s + " via resolvconf")
+		}
+	}
 	if len(f.Fail) > 0 {
 		for _, l := range f.Fail {
 			p.log(l)

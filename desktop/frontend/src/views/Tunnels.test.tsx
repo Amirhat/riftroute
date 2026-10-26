@@ -198,6 +198,14 @@ describe('Tunnels view', () => {
     expect(screen.getByText("(its server's)")).toBeInTheDocument()
   })
 
+  it('shows what keeps a full tunnel’s DNS from working beside the servers in use', async () => {
+    const note = 'DNS also goes to tailscale0, which takes every name too: systemd-resolved asks both'
+    withTunnels([{ ...connected, name: 'home', all_traffic: true, routes: [], dns: ['10.8.0.1'], dns_note: note }])
+    renderView()
+    expect(await screen.findByText('10.8.0.1')).toBeInTheDocument()
+    expect(screen.getByText(note)).toBeInTheDocument()
+  })
+
   it('renders the daemon’s field errors inline', async () => {
     withTunnels([])
     mockApi.openTunnelProfile.mockResolvedValue({

@@ -101,6 +101,9 @@ func renderTunnelDNS(w io.Writer, t domain.TunnelStatus) {
 			whose = "set for it"
 		}
 		fmt.Fprintf(w, "\n%s: DNS goes through it, to %s (%s)\n", t.Name, strings.Join(t.DNS, ", "), whose)
+		if t.DNSNote != "" {
+			fmt.Fprintf(w, "  but %s\n", t.DNSNote)
+		}
 	case t.DNSNote != "":
 		fmt.Fprintf(w, "\n%s: %s\n", t.Name, t.DNSNote)
 	}

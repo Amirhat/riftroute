@@ -12,10 +12,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeStore emulates the dynamic store behind scutil, for the commands the
-// applier sends: show, list, get, set, remove, d.init, d.add.
+// applier sends: show, list, get, set, remove, d.init, d.add, d.remove.
 type fakeStore struct {
 	mu   sync.Mutex
 	keys map[string]map[string][]string // key → field → values (a scalar is one value)
@@ -107,6 +108,9 @@ func (f *fakeStore) run(_ context.Context, stdin, name string, args ...string) (
 			delete(f.arr, f2[1])
 		case "d.init":
 			d, darr = map[string][]string{}, map[string]bool{}
+		case "d.remove":
+			delete(d, f2[1])
+			delete(darr, f2[1])
 		case "d.add":
 			switch {
 			case len(f2) >= 3 && f2[2] == "*":
@@ -142,7 +146,7 @@ func storeWithPrimary(svc string) *fakeStore {
 // dictionary is kept, and a revert puts it back and removes RiftRoute's keys.
 func TestScutilSwapAndRestore(t *testing.T) {
 	f := storeWithPrimary(wifi)
-	s := newScutil(f.run)
+	s := newScutil(f.run, nil)
 	ctx := context.Background()
 	if err := s.Apply(ctx, tunnelCfg()); err != nil {
 		t.Fatal(err)
@@ -183,7 +187,7 @@ func TestScutilSwapAndRestore(t *testing.T) {
 // renewal, a VPN reconnecting) is theirs: a revert leaves it.
 func TestScutilRestoreLeavesTheOwnersNewValue(t *testing.T) {
 	f := storeWithPrimary(wifi)
-	s := newScutil(f.run)
+	s := newScutil(f.run, nil)
 	ctx := context.Background()
 	_ = s.Apply(ctx, tunnelCfg())
 	f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.254"}
@@ -200,7 +204,7 @@ func TestScutilRestoreLeavesTheOwnersNewValue(t *testing.T) {
 func TestScutilServiceWithoutDNS(t *testing.T) {
 	f := storeWithPrimary(wifi)
 	delete(f.keys, serviceDNS(wifi))
-	s := newScutil(f.run)
+	s := newScutil(f.run, nil)
 	ctx := context.Background()
 	_ = s.Apply(ctx, tunnelCfg())
 	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.1 10.8.0.2]" {
@@ -216,8 +220,8 @@ func TestScutilServiceWithoutDNS(t *testing.T) {
 // puts the backup back before anything comes up.
 func TestScutilRecoverAfterACrash(t *testing.T) {
 	f := storeWithPrimary(wifi)
-	_ = newScutil(f.run).Apply(context.Background(), tunnelCfg()) // and the daemon dies
-	if err := newScutil(f.run).Recover(context.Background()); err != nil {
+	_ = newScutil(f.run, nil).Apply(context.Background(), tunnelCfg()) // and the daemon dies
+	if err := newScutil(f.run, nil).Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.1]" {
@@ -233,7 +237,7 @@ func TestScutilRecoverAfterACrash(t *testing.T) {
 func TestScutilRecheck(t *testing.T) {
 	f := storeWithPrimary(wifi)
 	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"10.0.0.1"}})
-	s := newScutil(f.run)
+	s := newScutil(f.run, nil)
 	ctx := context.Background()
 	_ = s.Apply(ctx, tunnelCfg())
 	defer s.Revert(ctx)
@@ -272,12 +276,16 @@ func TestResolvedApplyRevertRecover(t *testing.T) {
 	if err := r.Apply(ctx, tunnelCfg()); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"resolvectl status utun9", "resolvectl dns utun9 10.8.0.1 10.8.0.2", "resolvectl domain utun9 ~. corp.example", "resolvectl default-route utun9 yes"}
+	want := []string{"resolvectl status utun9", "resolvectl dns utun9 10.8.0.1 10.8.0.2", "resolvectl domain utun9 ~. corp.example",
+		"resolvectl default-route utun9 yes", "resolvectl domain"}
 	if !slices.Equal(ran, want) {
 		t.Fatalf("ran %q", ran)
 	}
 	if b, _ := os.ReadFile(state); strings.TrimSpace(string(b)) != "utun9" {
 		t.Fatalf("state %q", b)
+	}
+	if r.Note() != "" {
+		t.Errorf("note %q", r.Note())
 	}
 	ran = nil
 	if err := newResolved(run, state).Recover(ctx); err != nil || !slices.Equal(ran, []string{"resolvectl revert utun9"}) {
@@ -289,5 +297,93 @@ func TestResolvedApplyRevertRecover(t *testing.T) {
 	ok = false
 	if err := r.Apply(ctx, tunnelCfg()); err != ErrUnavailable {
 		t.Fatalf("without resolved: %v", err)
+	}
+}
+
+// Another link that also takes every name gets every query too: said, not
+// changed. resolvectl before systemd 240 has no default-route: that's fine.
+func TestResolvedAnotherLinkTakesEveryName(t *testing.T) {
+	run := func(_ context.Context, _, name string, args ...string) (string, error) {
+		switch {
+		case args[0] == "default-route":
+			return "Unknown operation default-route", fmt.Errorf("exit 1")
+		case len(args) == 1 && args[0] == "domain":
+			return "Global:\nLink 2 (eth0): corp.example\nLink 5 (utun9): ~. corp.example\nLink 7 (tailscale0): ~. ts.net\n", nil
+		}
+		return "", nil
+	}
+	r := newResolved(run, filepath.Join(t.TempDir(), "link"))
+	if err := r.Apply(context.Background(), tunnelCfg()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.Note(), "tailscale0") || strings.Contains(r.Note(), "eth0") || strings.Contains(r.Note(), "utun9") {
+		t.Fatalf("note %q", r.Note())
+	}
+	if got := everyNameElsewhere("Global: ~.\nLink 3 (wg0): ~.\n", "wg0"); fmt.Sprint(got) != "[the global DNS setting]" {
+		t.Errorf("global: %v", got)
+	}
+	_ = r.Revert(context.Background())
+	if r.Note() != "" {
+		t.Errorf("note after revert %q", r.Note())
+	}
+}
+
+// A restore puts back what the swap changed — the servers, and search
+// domains it set — into the service's DNS as it is, so what else its owner
+// changed meanwhile stays.
+func TestScutilRestoreKeepsTheOwnersOtherChanges(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	f.keys[serviceDNS(wifi)]["SearchDomains"], f.arr[serviceDNS(wifi)]["SearchDomains"] = []string{"home.example"}, true
+	s := newScutil(f.run, nil)
+	ctx := context.Background()
+	_ = s.Apply(ctx, tunnelCfg())
+	f.keys[serviceDNS(wifi)]["DomainName"], f.arr[serviceDNS(wifi)]["DomainName"] = []string{"lan.example"}, false
+	_ = s.Revert(ctx)
+	dns := f.keys[serviceDNS(wifi)]
+	if fmt.Sprint(dns["ServerAddresses"]) != "[192.168.1.1]" || fmt.Sprint(dns["SearchDomains"]) != "[home.example]" || fmt.Sprint(dns["DomainName"]) != "[lan.example]" {
+		t.Fatalf("restored %v", dns)
+	}
+}
+
+// An owner that keeps rewriting the service's DNS is let have it after
+// maxRewrites: the swap stops, the note says why, and RiftRoute's keys go.
+func TestScutilLetsAKeenOwnerHaveIt(t *testing.T) {
+	f := storeWithPrimary(wifi)
+	s := newScutil(f.run, nil)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	ctx := context.Background()
+	_ = s.Apply(ctx, tunnelCfg())
+	defer s.Revert(ctx)
+	for i := 1; i <= maxRewrites; i++ {
+		f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.1"}
+		clock = clock.Add(time.Minute)
+		s.recheck(ctx)
+		swapped := fmt.Sprint(f.servers(serviceDNS(wifi))) == "[10.8.0.1 10.8.0.2]"
+		if i < maxRewrites && (!swapped || s.Note() != "") {
+			t.Fatalf("rewrite %d: swapped %v, note %q", i, swapped, s.Note())
+		}
+	}
+	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" || !strings.Contains(s.Note(), "keeps rewriting") {
+		t.Fatalf("after %d rewrites: %v, note %q", maxRewrites, f.servers(serviceDNS(wifi)), s.Note())
+	}
+	for k := range f.keys {
+		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
+			t.Errorf("left %s", k)
+		}
+	}
+	s.recheck(ctx)
+	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" {
+		t.Error("swapped again after letting it go")
+	}
+	// Rewrites far apart are each held.
+	_ = s.Apply(ctx, Config{Iface: "utun9", Servers: []netip.Addr{netip.MustParseAddr("10.8.0.9")}})
+	for i := 0; i < 2*maxRewrites; i++ {
+		f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.1"}
+		clock = clock.Add(rewriteWindow / 2)
+		s.recheck(ctx)
+	}
+	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.9]" || s.Note() != "" {
+		t.Fatalf("slow rewrites: %v, note %q", f.servers(serviceDNS(wifi)), s.Note())
 	}
 }

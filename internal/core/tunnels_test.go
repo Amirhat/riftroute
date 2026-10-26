@@ -348,3 +348,23 @@ func TestDoctorReportsABlockingTunnel(t *testing.T) {
 		t.Errorf("failed check = %+v", c)
 	}
 }
+
+// The doctor says when a connected full tunnel's DNS isn't in use, or isn't
+// working as it should, beside its routes' check.
+func TestDoctorReportsAFullTunnelsDNS(t *testing.T) {
+	svc := newSvc(t)
+	withTunnels(svc, routing.TunnelInput{Name: "home", Iface: "utun6", AllTraffic: true})
+	note := "DNS also goes to tailscale0, which takes every name too: systemd-resolved asks both"
+	svc.tunnelStatus = func() []domain.TunnelStatus {
+		return []domain.TunnelStatus{{Name: "home", State: domain.TunnelConnected, Iface: "utun6", AllTraffic: true, DNS: []string{"10.8.0.1"}, DNSNote: note}}
+	}
+	var dns *domain.DoctorCheck
+	for _, c := range svc.Doctor(context.Background()).Checks {
+		if c.Name == "tunnel:home:dns" {
+			dns = &c
+		}
+	}
+	if dns == nil || dns.Status != domain.CheckWarn || dns.Detail != note {
+		t.Fatalf("DNS check %+v", dns)
+	}
+}

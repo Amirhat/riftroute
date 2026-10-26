@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -18,6 +19,11 @@ import (
 // /etc/resolv.conf never. The link's name is recorded in a file, so a
 // crashed daemon's successor reverts it (Recover); resolved forgets it
 // anyway when the link goes.
+//
+// Another link that also has "~." (Tailscale overriding the local DNS, a
+// NetworkManager VPN that takes all traffic) gets every name too: resolved
+// asks both, and nothing outranks it. That's said (Note), not changed:
+// the other link isn't RiftRoute's.
 
 // ErrUnavailable is Apply's error where nothing can apply a tunnel's DNS.
 var ErrUnavailable = errors.New("systemd-resolved isn't running, so the tunnel's DNS can't be applied (RiftRoute never rewrites /etc/resolv.conf)")
@@ -30,6 +36,7 @@ type resolvedApplier struct {
 
 	mu   sync.Mutex
 	link string
+	note noteBox
 }
 
 func newResolved(run runner, state string) *resolvedApplier {
@@ -71,7 +78,42 @@ func (r *resolvedApplier) Apply(ctx context.Context, cfg Config) error {
 	if err := r.resolvectl(ctx, append([]string{"domain", cfg.Iface, "~."}, cfg.Search...)...); err != nil {
 		return err
 	}
-	return r.resolvectl(ctx, "default-route", cfg.Iface, "yes")
+	// "~." already makes it the default route; resolvectl before systemd
+	// 240 has no default-route to say so twice.
+	_ = r.resolvectl(ctx, "default-route", cfg.Iface, "yes")
+	out, _ := r.run(ctx, "", "resolvectl", "domain")
+	r.note.set("")
+	if others := everyNameElsewhere(out, cfg.Iface); len(others) > 0 {
+		r.note.set("DNS also goes to " + strings.Join(others, ", ") + ", which takes every name too: systemd-resolved asks both")
+	}
+	return nil
+}
+
+// Note says when another link takes every name too.
+func (r *resolvedApplier) Note() string { return r.note.get() }
+
+// everyNameElsewhere reads `resolvectl domain` ("Global: …", "Link 3
+// (eth0): …") for the links but iface whose domains include "~.".
+func everyNameElsewhere(out, iface string) []string {
+	var others []string
+	for _, l := range strings.Split(out, "\n") {
+		name, domains, ok := strings.Cut(l, ":")
+		if !ok || !slices.Contains(strings.Fields(domains), "~.") {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		if i, j := strings.IndexByte(name, '('), strings.IndexByte(name, ')'); i >= 0 && j > i {
+			name = name[i+1 : j]
+		}
+		switch {
+		case name == iface:
+		case name == "Global":
+			others = append(others, "the global DNS setting")
+		default:
+			others = append(others, name)
+		}
+	}
+	return others
 }
 
 func (r *resolvedApplier) Revert(ctx context.Context) error {
@@ -85,6 +127,7 @@ func (r *resolvedApplier) revertLocked(ctx context.Context) error {
 		_ = r.resolvectl(ctx, "revert", r.link) // gone with its link is fine
 		r.link = ""
 	}
+	r.note.set("")
 	_ = os.Remove(r.state)
 	return nil
 }

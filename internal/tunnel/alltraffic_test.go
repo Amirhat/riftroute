@@ -2,7 +2,10 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -159,5 +162,110 @@ func TestFullTunnelWithoutDNS(t *testing.T) {
 	h2.m.Resync(ctx)
 	if h2.dns.Applies != 0 {
 		t.Fatal("a tunnel that lists networks applied its DNS")
+	}
+}
+
+// IKEv2: the server's DNS servers are read from charon-cmd's log, whose
+// resolve plugin is loaded for a full tunnel's session only — and not by a
+// strongSwan before 5.9.9 beside a resolvconf, which it would run whatever
+// it's told: then the card says why, and the system's DNS stays.
+func TestFullTunnelIKEv2DNS(t *testing.T) {
+	h, fi := newIKEHarness(t)
+	ctx := context.Background()
+	fi.DNS = []string{"10.30.0.53", "10.30.0.54"}
+	loadsResolve := func() bool {
+		started := fi.Started()
+		conf, err := os.ReadFile(started[len(started)-1].Conf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Contains(string(conf), "resolve")
+	}
+	connect := func() {
+		t.Helper()
+		if err := h.m.Connect("office"); err != nil {
+			t.Fatal(err)
+		}
+		waitState(t, h.m, "office", domain.TunnelConnected)
+	}
+	disconnect := func() {
+		t.Helper()
+		if err := h.m.Disconnect(ctx, "office"); err != nil {
+			t.Fatal(err)
+		}
+		waitDNS(t, h, "")
+	}
+	spec := ikeSpec(t, newTestPKI(t))
+	if _, err := h.m.Save(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	connect()
+	if loadsResolve() {
+		t.Error("a tunnel that lists networks loads the resolve plugin")
+	}
+	disconnect()
+
+	on := true
+	spec.AllTraffic = &on
+	if _, err := h.m.Save(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	connect()
+	if !loadsResolve() {
+		t.Error("a full tunnel's session doesn't load the resolve plugin")
+	}
+	waitDNS(t, h, "[10.30.0.53 10.30.0.54]")
+	disconnect()
+
+	old := systemResolvconf
+	t.Cleanup(func() { systemResolvconf = old })
+	systemResolvconf = filepath.Join(t.TempDir(), "resolvconf")
+	if err := os.WriteFile(systemResolvconf, nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fi.Version = "5.9.8"
+	applies := h.dns.Applies
+	connect()
+	h.m.Resync(ctx)
+	if st, _ := h.m.Status("office"); loadsResolve() || len(st.DNS) != 0 || !strings.Contains(st.DNSNote, "resolvconf") || h.dns.Applies != applies {
+		t.Fatalf("5.9.8 beside resolvconf: resolve loaded %v, DNS %v, note %q", loadsResolve(), st.DNS, st.DNSNote)
+	}
+	disconnect()
+
+	systemResolvconf = filepath.Join(t.TempDir(), "none") // it writes its own file then
+	connect()
+	waitDNS(t, h, "[10.30.0.53 10.30.0.54]")
+	disconnect()
+}
+
+// A DNS change that fails (macOS between networks) is tried again on its
+// own, not only at the next tunnel apply; and what the applier finds wrong
+// later (another link taking every name) is on the card.
+func TestFullTunnelDNSRetried(t *testing.T) {
+	first := dnsRetryFirst
+	dnsRetryFirst = 20 * time.Millisecond
+	t.Cleanup(func() { dnsRetryFirst = first })
+	h := newHarness(t)
+	ctx := context.Background()
+	h.dns.SetErr(errors.New("macOS has no primary network service to give the tunnel's DNS to"))
+	on := true
+	spec := infraSpec()
+	spec.AllTraffic = &on
+	if _, err := h.m.Save(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("infra"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	h.m.Resync(ctx)
+	if st, _ := h.m.Status("infra"); len(st.DNS) != 0 || !strings.Contains(st.DNSNote, "no primary network service") {
+		t.Fatalf("failed: DNS %v, note %q", st.DNS, st.DNSNote)
+	}
+	h.dns.SetErr(nil)
+	waitDNS(t, h, "[10.99.0.1]")
+	h.dns.Noted = "DNS also goes to tailscale0, which takes every name too"
+	if st, _ := h.m.Status("infra"); !strings.Contains(st.DNSNote, "tailscale0") {
+		t.Fatalf("the applier's note isn't on the card: %q", st.DNSNote)
 	}
 }

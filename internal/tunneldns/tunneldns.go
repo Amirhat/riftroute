@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Applier applies a full tunnel's DNS to the system.
@@ -28,14 +29,22 @@ type Applier interface {
 	// Recover undoes what a run that didn't end cleanly left, before any
 	// tunnel comes up.
 	Recover(ctx context.Context) error
+	// Note says what keeps what's applied from working as it should, or "":
+	// another link that also takes every name (Linux), an owner that keeps
+	// rewriting the service's DNS (macOS).
+	Note() string
 }
 
-// New is this OS's Applier; stateDir holds what Recover needs (Linux). nil
-// where there's none.
-func New(stateDir string) Applier {
+// Logf logs a change an Applier makes on its own (slog.Logger.Info).
+type Logf func(msg string, args ...any)
+
+// New is this OS's Applier; stateDir holds what Recover needs (Linux), and
+// log is told what it does on its own (macOS: holding the swap). nil where
+// there's none.
+func New(stateDir string, log Logf) Applier {
 	switch runtime.GOOS {
 	case "darwin":
-		return newScutil(execRun)
+		return newScutil(execRun, log)
 	case "linux":
 		return newResolved(execRun, filepath.Join(stateDir, "tunnel-dns.link"))
 	}
@@ -59,10 +68,24 @@ type Fake struct {
 	Applies  int
 	Reverts  int
 	Recovers int
-	Err      error // returned by Apply when set
+	Err      error  // returned by Apply when set
+	Noted    string // returned by Note
 }
 
 func (f *Fake) Backend() string { return "fake" }
+
+func (f *Fake) Note() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Noted
+}
+
+// SetErr sets what Apply returns.
+func (f *Fake) SetErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Err = err
+}
 
 func (f *Fake) Apply(_ context.Context, cfg Config) error {
 	f.mu.Lock()
@@ -100,6 +123,17 @@ func (f *Fake) Current() Config {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.Applied
+}
+
+// noteBox holds an Applier's Note, read without waiting for a change in
+// progress (the manager asks while it reports status).
+type noteBox struct{ v atomic.Value }
+
+func (n *noteBox) set(s string) { n.v.Store(s) }
+
+func (n *noteBox) get() string {
+	s, _ := n.v.Load().(string)
+	return s
 }
 
 // maxPerFamily is how many DNS servers of each family are used.

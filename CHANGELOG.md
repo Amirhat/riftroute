@@ -25,13 +25,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   set for it (`--dns`, or "DNS servers" in the app). Your system's own come
   back when it disconnects, with a panic, and after a crash (at the next
   start). On macOS the primary network service's DNS is swapped and
-  restored, kept in place if Wi-Fi changes or another VPN rewrites it, and
-  never put back over a value its owner wrote since. On Linux it's set on
-  the tunnel's link through systemd-resolved; without it, the system's DNS
-  stays, and the tunnel's card says why. RiftRoute never rewrites
-  `/etc/resolv.conf`. The macOS strongSwan RiftRoute ships now includes
-  its resolve plugin, which only writes an IKEv2 server's DNS to a file of
-  the tunnel's own.
+  restored, kept in place if Wi-Fi changes or another VPN rewrites it (up
+  to 5 times in 10 minutes), and never put back over a value its owner
+  wrote since. On Linux it's set on the tunnel's link through
+  systemd-resolved; without it, the system's DNS stays, and the tunnel's
+  card says why, as it does when another link also takes every name.
+  RiftRoute never rewrites `/etc/resolv.conf`. The DNS servers go into the
+  tunnel by routes of their own, and a change that fails is tried again.
+  For IKEv2, strongSwan's resolve plugin is loaded only for a tunnel that
+  carries all traffic, and only where it can't touch the system's DNS: a
+  strongSwan before 5.9.9 beside resolvconf (Debian 12's) would run it, so
+  there the server's DNS isn't read, and the card says to set some. The
+  macOS strongSwan RiftRoute ships now includes the plugin.
 
 ### Changed
 - **A route wider than your local network may hold the router.** The

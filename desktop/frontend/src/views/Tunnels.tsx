@@ -691,9 +691,8 @@ function TunnelCard({
                 Through it, to <Addr>{t.dns.join(', ')}</Addr>{' '}
                 <span className="text-muted">({t.dns_override?.length ? 'set for it' : "its server's"})</span>
               </p>
-            ) : (
-              <p className="mt-1 text-muted">{t.dns_note}</p>
-            )}
+            ) : null}
+            {t.dns_note && <p className="mt-1 text-muted">{t.dns_note}</p>}
           </div>
         )}
         <div>

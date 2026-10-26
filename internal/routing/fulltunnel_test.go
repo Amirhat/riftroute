@@ -233,11 +233,58 @@ func TestFullTunnelKeepsItsDNSIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pinned := map[string]bool{}
+	by := map[string]domain.ManagedRoute{}
 	for _, d := range desired {
-		pinned[d.DstCIDR] = true
+		by[d.DstCIDR] = d
 	}
-	if pinned["1.1.1.1/32"] || !pinned["1.0.0.1/32"] {
-		t.Fatalf("pins %v: the tunnel's DNS server pinned out, or the other anchor not", pinned)
+	if r := by["1.1.1.1/32"]; r.Iface != "utun7" {
+		t.Errorf("the tunnel's DNS server pinned out: %+v", r)
+	}
+	if r, ok := by["1.0.0.1/32"]; !ok || r.Iface == "utun7" {
+		t.Errorf("the other anchor isn't pinned out: %+v", r)
+	}
+}
+
+// While it's up, its DNS servers go in by host routes of their own, so a
+// narrower route — an exclude profile's network, another VPN's — doesn't
+// take them. Not one on the LAN, a tunnel's server or IPv6 it can't carry;
+// and an exclude profile's own route for that very host still wins.
+func TestFullTunnelRoutesItsDNSIn(t *testing.T) {
+	excl := domain.Profile{ID: "exc", Name: "exc", Enabled: true, Mode: domain.ModeExclude, Gateway: "auto",
+		Rules: []domain.Rule{{Type: domain.RuleCIDR, Value: "9.9.9.0/24"}, {Type: domain.RuleIP, Value: "8.8.4.4"}}}
+	in := testInput(excl)
+	in.PhysNetV4 = netip.MustParsePrefix("192.168.1.0/24")
+	in.Occupied = map[string]string{"10.0.0.0/8": "utun3"}
+	server := netip.MustParseAddr("198.51.100.7")
+	var dns []netip.Addr
+	for _, a := range []string{"9.9.9.9", "10.10.0.53", "192.168.1.1", "198.51.100.7", "8.8.4.4", "2001:db8::53"} {
+		dns = append(dns, netip.MustParseAddr(a))
+	}
+	in.Tunnels = []TunnelInput{{Name: "all", Iface: "utun7", AllTraffic: true, Bypass: []netip.Addr{server}, DNS: dns}}
+	desired, _, err := BuildDesired(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oneRoutePerDestination(t, desired)
+	by := map[string]domain.ManagedRoute{}
+	for _, d := range desired {
+		by[d.DstCIDR] = d
+	}
+	for _, h := range []string{"9.9.9.9/32", "10.10.0.53/32"} {
+		if r := by[h]; r.Iface != "utun7" || r.Gateway != "" {
+			t.Errorf("%s not routed into the tunnel: %+v", h, r)
+		}
+	}
+	if r, ok := by["192.168.1.1/32"]; ok {
+		t.Errorf("the router routed: %+v", r)
+	}
+	if r := by["198.51.100.7/32"]; r.Iface == "utun7" {
+		t.Errorf("the tunnel's server routed into it: %+v", r)
+	}
+	if r := by["8.8.4.4/32"]; r.Iface == "utun7" || r.Profile != "exc" {
+		t.Errorf("the exclude profile's host route lost: %+v", r)
+	}
+	if r, ok := by["2001:db8::53/128"]; ok {
+		t.Errorf("IPv6 it can't carry routed: %+v", r)
 	}
 }

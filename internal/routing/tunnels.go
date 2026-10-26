@@ -51,8 +51,8 @@ type TunnelInput struct {
 	// around it.
 	AllTraffic bool
 	// DNS are the DNS servers the system resolves with through a full
-	// tunnel (tunneldns): they go into it, never pinned out of it — not
-	// even one the watchdog also probes.
+	// tunnel (tunneldns): they go into it, by host routes of their own, and
+	// are never pinned out of it — not even one the watchdog also probes.
 	DNS []netip.Addr
 }
 
@@ -342,7 +342,8 @@ func unclaimedAggregate(prefixes []netip.Prefix, taken map[string]claim) []netip
 // default, else the physical gateway. Not carved: a quarter's pieces would
 // outrank the profile and VPN routes inside it. What a narrower route
 // already takes (the LAN, another VPN's network, a pin) needs nothing. While
-// it's up its resolvers go in: DNS through the tunnel is the point.
+// it's up its DNS servers go in, each by a host route: DNS through the
+// tunnel is the point.
 func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[netip.Addr]bool, taken map[string]claim, in DesiredInput) {
 	tag := TunnelProfilePrefix + t.Name
 	var keep []keptOut
@@ -402,16 +403,56 @@ func (tp *TunnelPlan) fullTunnelPins(t TunnelInput, ts []TunnelInput, held map[n
 	if len(except) > 0 {
 		tp.Narrowed[t.Name] = append(tp.Narrowed[t.Name], domain.TunnelNarrowed{Route: "all traffic", Except: except})
 	}
+	if t.Iface == "" {
+		return
+	}
+	// Its DNS servers go into it by a host route of their own: the quarters
+	// alone would leave one that a narrower route holds (an exclude profile,
+	// another VPN's network) to that route. Not one on the LAN (the router
+	// as DNS, or the gateway itself), nor a tunnel's server, pinned out so
+	// its connection doesn't loop.
+	for _, a := range t.DNS {
+		a = a.Unmap()
+		fam := famOf(a)
+		host := netip.PrefixFrom(a, a.BitLen())
+		_, occupied := in.Occupied[host.String()]
+		if held[a] || isServer(a, ts) || occupied || (fam == domain.FamilyV6 && !t.V6) || onLAN(a, in) {
+			continue
+		}
+		if _, dup := taken[prefixKey(host)]; dup {
+			continue
+		}
+		taken[prefixKey(host)] = claim{tunnel: t.Name}
+		tp.add(domain.Route{DstCIDR: host.String(), Iface: t.Iface, Family: fam}, tag, in)
+	}
+}
+
+// isServer reports whether a is one of the tunnels' servers.
+func isServer(a netip.Addr, ts []TunnelInput) bool {
+	for _, o := range ts {
+		if slices.Contains(servers(o), a) {
+			return true
+		}
+	}
+	return false
+}
+
+// onLAN reports whether the router's network holds a.
+func onLAN(a netip.Addr, in DesiredInput) bool {
+	for _, lan := range []netip.Prefix{in.PhysNetV4, in.PhysNetV6} {
+		if lan.IsValid() && lan.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // narrowerRoute reports whether something narrower than a quarter already
 // routes a — the router's network, or a route someone else has — so a full
 // tunnel's quarter never takes it.
 func narrowerRoute(a netip.Addr, in DesiredInput) bool {
-	for _, lan := range []netip.Prefix{in.PhysNetV4, in.PhysNetV6} {
-		if lan.IsValid() && lan.Contains(a) {
-			return true
-		}
+	if onLAN(a, in) {
+		return true
 	}
 	for k := range in.Occupied {
 		if p, err := netip.ParsePrefix(k); err == nil && p.Bits() > 2 && p.Contains(a) {

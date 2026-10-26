@@ -61,6 +61,7 @@ so.
 
 - **fallback** (default): the quarters go, and traffic takes its usual path, usually the main VPN.
 - **block:** the quarters become reject routes while it should be up but isn't. Only the more specific routes still go anywhere, so it works as the tunnel's own kill switch. The existing when-down machinery already does this per route.
+  - Tailscale's own connections (Linux: its marked packets, looked up in main) ride the full tunnel while it's up. While it blocks they're refused too, so Tailscale's peers and DERP servers on the internet drop until it's back, as with wg-quick.
 
 ## DNS: the tunnel's own **(chosen)**
 
@@ -72,16 +73,20 @@ tunnel does, while it's connected, and puts it back when it isn't.
 |---|---|
 | OpenVPN | the server's pushed `dhcp-option DNS` / `dns server`. In full mode the pull-filter for them goes, and they're read from openvpn's `PUSH_REPLY` log line (verb ≥ 3). openvpn applies nothing itself: `script-security 1`, no up script. |
 | WireGuard | the configuration's `DNS =`, ignored today, used in full mode |
-| IKEv2 | the server's INTERNAL_IP4/6_DNS. charon-cmd's `resolve` plugin, pointed at a private file under the tunnel's state directory (`charon-cmd.plugins.resolve.file`), writes them there for the daemon to read. Its `resolvconf.path` names nothing: it would otherwise run resolvconf(8) — systemd-resolved's on many Linux systems — and change the system's DNS. The macOS build adds `--enable-resolve`. The system's resolver is never touched by charon. |
+| IKEv2 | the server's INTERNAL_IP4/6_DNS, read from charon-cmd's log: its `resolve` plugin logs each one ("installing DNS server …"), from 5.9 to 6. See below for how it's kept from installing them. The macOS build adds `--enable-resolve`. |
 | L2TP (later) | pppd's `usepeerdns` values |
 
+- **IKEv2's resolve plugin** is loaded only for a full tunnel's session, and never where it could change the system's DNS:
+  - From strongSwan 5.9.9 it takes `resolvconf.path`, and given one, runs it through a shell instead of resolvconf(8). RiftRoute gives it `:`, which does nothing. (A path that names nothing, as first built, also made it skip its file, so no DNS was read.)
+  - Before 5.9.9 (Debian 12's 5.9.8) it ignores the setting and runs `/sbin/resolvconf` whenever that exists. With classic resolvconf or openresolv, that would put the IKEv2 server's DNS first in the system's resolv.conf (the review proved it in Docker). So beside a `/sbin/resolvconf` it isn't loaded: the server's DNS isn't read, and the card says to set some. Without one it writes its `file`, a private one in the run directory, never `/etc/resolv.conf`.
 - **Checks:** only addresses, at most 4 per family, never loopback or unspecified. The user can override them ("use these DNS servers").
 - **Fallback:** a full tunnel with no DNS from its server keeps the system's DNS and says so.
 
 ### Applying them
 - **Linux:** systemd-resolved, on the tunnel's link:
-  - `resolvectl dns <iface> <servers>`, `resolvectl domain <iface> '~.'`, `resolvectl default-route <iface> true`;
-  - on the other links, `default-route false` while it's up, so queries don't also leave there;
+  - `resolvectl dns <iface> <servers>`, `resolvectl domain <iface> '~.'`, `resolvectl default-route <iface> true` (systemd before 240 has no `default-route`; `~.` alone makes it the default);
+  - proved with systemd-resolved 255 in Docker (review): names go to the tunnel's link only, and a split-DNS domain on another link still goes there;
+  - **another link that also has `~.`** (Tailscale overriding the local DNS, a NetworkManager VPN taking all traffic) gets every name too: resolved asks both, and nothing outranks it. RiftRoute doesn't change links that aren't its own; the card says "DNS also goes to <link>";
   - all of it reverted (`resolvectl revert`) when the tunnel goes. Without systemd-resolved, the tunnel's DNS isn't applied, and the card and doctor say why. RiftRoute never rewrites `/etc/resolv.conf`.
 - **macOS: the primary service's DNS, swapped and restored, as Tunnelblick does.** The spike on the owner's Mac (2026-10-26, macOS 15.7.2, behind an NE-based main VPN) settled it:
   - **A resolver of RiftRoute's own for every domain** (`SupplementalMatchDomains ""`) is exactly how the NE VPN there declares its DNS. Ours, from a service that isn't primary, always ranked behind it: order 104800 vs 103400, and still behind with numeric `SupplementalMatchOrders` or `SearchOrder`. macOS orders "every domain" resolvers by service rank. **Rejected.**
@@ -90,14 +95,19 @@ tunnel does, while it's connected, and puts it back when it isn't.
   - `OverridePrimary` (vpnc-script) wasn't tried: making our service primary can move the default route.
 - **How the swap is made safe:**
   - **Backup:** the primary service's DNS dictionary is copied to `State:/Network/RiftRoute/DNSBackup/<service>` before it's changed, only the first time. Then only `ServerAddresses` is replaced (with the search domains, if the tunnel gives some).
-  - **Holding:** whoever owns that service can rewrite it (DHCP renewal, the NE VPN reconnecting), and the primary service can change (Wi-Fi ↔ Ethernet, the main VPN up or down). On the network watcher's DNS and primary-service changes, RiftRoute checks it:
-    - rewritten by its owner: take the new value as the backup, and apply again;
+  - **Holding:** whoever owns that service can rewrite it (DHCP renewal, the NE VPN reconnecting), and the primary service can change (Wi-Fi ↔ Ethernet, the main VPN up or down). Every 5 s while the swap is in place, RiftRoute checks it:
+    - rewritten by its owner: take the new value as the backup, and apply again (logged);
+    - rewritten 5 times in 10 minutes: let the owner have it. Held against it, the DNS would flip back for seconds at a time, with a cache flush each time. The swap stops, RiftRoute's keys go, and the card says why, until the tunnel connects again;
     - a new primary: restore the old one, then apply to the new.
-  - **Restore** (the tunnel down, disconnected, panic, the daemon stopping): the backup goes back **only if the service still holds RiftRoute's servers**. A value its owner wrote since is theirs, and is left. Then the backup key goes. mDNSResponder's cache is flushed after each change.
+  - **Restore** (the tunnel down, disconnected, panic, the daemon stopping): the backup goes back **only if the service still holds RiftRoute's servers**. A value its owner wrote since is theirs, and is left. Only what the swap changed goes back: the servers, and the search domains if it set some, into the dictionary as it is now, so what else the owner changed meanwhile stays. (The whole backup goes back if a value isn't plainly an address or a name.) Then the backup key goes. mDNSResponder's cache is flushed after each change.
+  - **Beside Tailscale:** when Tailscale's service is the primary (its exit node on), the swap replaces its `ServerAddresses` (100.100.100.100), which its supplemental match domains share, so MagicDNS names go to the tunnel's servers too. Two catch-alls at once is rare.
   - The backup lives in State:, so it survives a daemon crash (until reboot, when the swap is gone too). The daemon restores leftovers at start, before tunnels come up.
+- **A change that fails** (macOS between networks has no primary service; systemd-resolved restarting) is tried again on its own: in 5 s, doubling up to a minute, until it works or isn't wanted any more.
 - **Crash safety:** the keys and links are RiftRoute's by name.
   - At start, the daemon removes any left from a run that didn't end cleanly, before the tunnels come up. So a crash can't leave the system asking a DNS server that's gone.
   - Panic and `daemon uninstall` remove them too.
+  - On macOS the keys are the system's, not the database's: a second daemon (`-provider auto -db /tmp/x`, a test) restores the service daemon's swap at its start. Test beside the installed daemon only with `-provider fake`, or with the installed one stopped.
+- **Routes:** the tunnel's DNS servers go into it by host routes of their own, so a narrower route (an exclude profile's network, another VPN's) doesn't take them. Not one on the LAN (the router as DNS), a tunnel's server, or IPv6 the tunnel can't carry; and an exclude profile's route for that very host still wins.
 - **Kill switch:** unchanged. The tunnel's DNS servers are reached through the tunnel.
 
 ### Order with split DNS and wildcard learning

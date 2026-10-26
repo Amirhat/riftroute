@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"net/netip"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -13,7 +14,7 @@ import (
 // applies none of it to the system unless the tunnel carries all traffic
 // (tunneldns), and even then never lets the engine do it: openvpn keeps its
 // pull-filters (it applies nothing without scripts anyway), and charon-cmd's
-// resolve plugin only writes a file of the session's own.
+// resolve plugin, loaded only then, installs it nowhere (ikeConf).
 
 // maxSearchDomains bounds the search domains taken from a server.
 const maxSearchDomains = 8
@@ -61,8 +62,8 @@ func pushedDNS(lines []string) (servers []netip.Addr, search []string) {
 }
 
 // dnsServerAddr reads one address of an OpenVPN `dns server … address`:
-// an IP, optionally with a port (1.2.3.4:53, [fd00::1]:53) — the port is
-// dropped, since the system's resolver asks on 53.
+// an IP, optionally with a port (1.2.3.4:53, [fd00::1]:53). One on another
+// port is left out, since the system's resolver asks on 53.
 func dnsServerAddr(s string) (netip.Addr, bool) {
 	if ap, err := netip.ParseAddrPort(s); err == nil {
 		return ap.Addr(), ap.Port() == 53
@@ -71,28 +72,20 @@ func dnsServerAddr(s string) (netip.Addr, bool) {
 	return a, err == nil
 }
 
-// resolvConfDNS reads the file charon-cmd's resolve plugin writes:
-// "nameserver <addr>" lines (with its "# by strongSwan" comments) and an
-// optional "search" line.
-func resolvConfDNS(text string) (servers []netip.Addr, search []string) {
-	for _, line := range strings.Split(text, "\n") {
-		if i := strings.IndexByte(line, '#'); i >= 0 {
-			line = line[:i]
-		}
-		f := strings.Fields(line)
-		switch {
-		case len(f) == 2 && f[0] == "nameserver":
-			if a, err := netip.ParseAddr(f[1]); err == nil {
+// reIKEDNS is the line charon-cmd's resolve plugin logs for each DNS server
+// the server gives, whether it then runs resolvconf ("via resolvconf") or
+// writes its file ("to <file>"): the same from strongSwan 5.9 to 6.
+var reIKEDNS = regexp.MustCompile(`installing DNS server (\S+) (?:via resolvconf|to )`)
+
+// ikeDNS reads the DNS servers in charon-cmd's log.
+func ikeDNS(lines []string) []netip.Addr {
+	var servers []netip.Addr
+	for _, l := range lines {
+		if m := reIKEDNS.FindStringSubmatch(l); m != nil {
+			if a, err := netip.ParseAddr(m[1]); err == nil {
 				servers = append(servers, a)
-			}
-		case len(f) >= 2 && (f[0] == "search" || f[0] == "domain"):
-			for _, d := range f[1:] {
-				d = strings.TrimSuffix(strings.ToLower(d), ".")
-				if config.IsValidDomain(d) && !slices.Contains(search, d) && len(search) < maxSearchDomains {
-					search = append(search, d)
-				}
 			}
 		}
 	}
-	return tunneldns.Clean(servers), search
+	return tunneldns.Clean(servers)
 }
