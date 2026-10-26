@@ -24,7 +24,7 @@ spec is the source of truth.
 
 ## Prerequisites
 
-- **Go 1.25+** (a transitive dep requires it; the toolchain auto-downloads)
+- **Go 1.26+** (`go.mod` pins the toolchain to 1.26.10; an older Go downloads it on its own)
 - **Node 22.13+** and **npm** (GUI frontend; Vite 8 and Vitest 5 need it)
 - **Wails v2.12**: `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`
 - **macOS**: Xcode Command Line Tools.
