@@ -1,13 +1,15 @@
 // Package tunneldns applies a full tunnel's DNS servers to the system while
 // it's connected, and puts the system's own back when it isn't
-// (docs/tunnels-full.md, "DNS: the tunnel's own"): systemd-resolved on Linux,
-// the primary service's DNS in the dynamic store on macOS. Every change is
-// recorded where a crashed daemon's successor finds it (Recover).
+// (docs/tunnels-full.md, "DNS: the tunnel's own"): systemd-resolved on Linux;
+// on macOS a resolver of RiftRoute's own for every domain, at a forwarder on
+// loopback that asks the tunnel's servers. Every change is recorded where a
+// crashed daemon's successor finds it (Recover).
 package tunneldns
 
 import (
 	"bytes"
 	"context"
+	"log/slog"
 	"net/netip"
 	"os/exec"
 	"path/filepath"
@@ -36,13 +38,10 @@ type Applier interface {
 	Note() (note string, inEffect bool)
 }
 
-// Logf logs a change an Applier makes on its own (slog.Logger.Info).
-type Logf func(msg string, args ...any)
-
 // New is this OS's Applier; stateDir holds what Recover needs (Linux), and
-// log is told what it does on its own (macOS: holding the swap). nil where
-// there's none.
-func New(stateDir string, log Logf) Applier {
+// log is told what it does on its own (macOS: setting another service's
+// claim aside, its forwarder). nil where there's none.
+func New(stateDir string, log *slog.Logger) Applier {
 	switch runtime.GOOS {
 	case "darwin":
 		return newScutil(execRun, log)
@@ -145,6 +144,14 @@ func (n *noteBox) set(s string) { n.v.Store(s) }
 func (n *noteBox) get() string {
 	s, _ := n.v.Load().(string)
 	return s
+}
+
+func addrStrings(as []netip.Addr) []string {
+	out := make([]string, len(as))
+	for i, a := range as {
+		out[i] = a.String()
+	}
+	return out
 }
 
 // maxPerFamily is how many DNS servers of each family are used.

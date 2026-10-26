@@ -50,6 +50,7 @@ refused ("list the networks behind it instead").
 ## Known limits
 - **A TAP main VPN:** pins go on-link into the main VPN's interface, so a TAP (broadcast) main VPN, which needs a next hop, would blackhole them. Main VPNs are TUN in practice; RiftRoute's own tunnels are TUN only.
 - **A gateway outside the LAN** (an `onlink` default): no connected route holds it, so the gateway guardrail refuses the quarter that contains it. The tunnel is left out, which fails closed.
+- **An IPv6-only network** (NAT64, some carriers) with a dual-stack WireGuard server: WireGuard prefers the v4 endpoint, which has no path there, so its handshakes fall into the v4 quarters and it doesn't connect. Without a full tunnel it couldn't either (no v4 route); choosing the endpoint's family by the paths would lift it.
 - **To check on a Mac:** link-local and multicast IPv6 (`fe80::/10`, `ff02::/16`) sit inside `c000::/2`, which is refused while a tunnel without IPv6 carries all traffic. macOS sends them by scoped routes, so they should be unaffected. Check `ping6 fe80::1%en0`, `dns-sd -B _airplay._tcp`, and AirDrop.
 
 ## IPv6 when the tunnel has none: blocked **(chosen)**
@@ -90,35 +91,29 @@ tunnel does, while it's connected, and puts it back when it isn't.
   - proved with systemd-resolved 255 in Docker (review): names go to the tunnel's link only, and a split-DNS domain on another link still goes there;
   - **another link that also has `~.`** (Tailscale overriding the local DNS, a NetworkManager VPN taking all traffic) gets every name too: resolved asks both, and nothing outranks it. RiftRoute doesn't change links that aren't its own; the card says "DNS also goes to <link>", looked for again every 30 s while it's applied (Tailscale started later);
   - all of it reverted (`resolvectl revert`) when the tunnel goes. Without systemd-resolved, the tunnel's DNS isn't applied, and the card and doctor say why. RiftRoute never rewrites `/etc/resolv.conf`.
-- **macOS: the primary service's DNS, swapped and restored, as Tunnelblick does.** DNS servers set by hand (System Settings) are the service's `Setup:` DNS, which outranks `State:`: the owner's live test showed the State swap doing nothing on such a service (Ethernet with 1.1.1.1). Its `Setup:` key is swapped too, in the dynamic store only, never in the saved preferences, with a backup of its own (`DNSSetupBackup/<service>`). configd puts the saved one back whenever the preferences are applied; the recheck takes that as the owner's rewrite. The spike on the owner's Mac (2026-10-26, macOS 15.7.2, behind an NE-based main VPN) settled it:
-  - **A resolver of RiftRoute's own for every domain** (`SupplementalMatchDomains ""`) is exactly how the NE VPN there declares its DNS. Ours, from a service that isn't primary, always ranked behind it: order 104800 vs 103400, and still behind with numeric `SupplementalMatchOrders` or `SearchOrder`. macOS orders "every domain" resolvers by service rank. **Rejected.**
-  - **Swapping the primary service's `ServerAddresses`** (`State:/Network/Service/<primary>/DNS`) made ours the default resolver at once. **Chosen.**
-  - **…and its shape.** The owner's live test showed the servers alone aren't enough behind an NE VPN. Its resolver for every domain is "Supplemental" and scoped to its interface (`if_index utun8`), and macOS judges reach through that interface. The tunnel's server was "Not Reachable" there, so mDNSResponder sent nothing and every lookup timed out. A diagnostic run tried the variants:
+- **macOS: a resolver of our own, at a forwarder.** riftrouted runs a DNS forwarder on loopback (`dnsproxy`, as the wildcard learner does), which asks the tunnel's servers. RiftRoute's own resolver for every domain (`State:/Network/Service/RiftRoute-TunnelDNS/DNS`: `127.0.0.1`, the forwarder's `ServerPort`, `SupplementalMatchDomains ""`) points the system at it. The primary service's DNS is never touched. How it got there, on the owner's Mac (macOS 15.7, behind the WireGuard app's NE VPN, 2026-10-26):
+  - **The spike** (two rounds): a resolver of our own for every domain ranked behind the NE VPN's own (order 104800 vs 103400), whatever order it was given. Swapping the primary service's `ServerAddresses` made ours the default resolver at once, so the swap was built, as Tunnelblick does.
+  - **The live tests** showed the swap never worked behind the NE VPN, and four diagnostics showed why:
 
-    | Variant | Reach | Lookups |
+    | What | Where the query went | Answered |
     |---|---|---|
-    | the servers only | Not Reachable | timed out (no query anywhere) |
-    | + `InterfaceName` = the tunnel's | still scoped to utun8 | answered by the main VPN's DNS |
-    | + no `SupplementalMatchDomains` | Not Reachable | failed |
-    | **both** | **Reachable, unscoped** | **answered at once, the query on the tunnel's interface** |
+    | the swap, with the full tunnel's routes | nowhere: the resolver, scoped to utun8, was "Not Reachable" there | timed out |
+    | every shape of the primary's dictionary, by hand | **"via utun8/32"**: bound to the primary service's interface | by the main VPN's own DNS |
+    | our own resolver for every domain, no interface | out of **utun8** too, though `10.72.242.1` routes into the tunnel | by the main VPN |
+    | an ordinary process (`dig`) | **utun10**, the tunnel | ✓ |
+    | **our resolver at a forwarder on 127.0.0.1** | **127.0.0.1, then utun10** | **✓ at once** |
 
-    So the swap of such a dictionary (a VPN's: one with match domains or an `InterfaceName` of its own) also sets `InterfaceName` to the tunnel's interface and drops `SupplementalMatchDomains`/`SupplementalMatchOrders`. The resolver is then the plain default one. A restore puts them back from the backup (`""`, every domain, included). A plain primary's dictionary (Wi-Fi, Ethernet: servers only) gets the servers alone, as Tunnelblick does; the live test checks it with the main VPN off.
-  - Neither touched a route; the only differences were cloned cache entries.
-  - `OverridePrimary` (vpnc-script) wasn't tried: making our service primary can move the default route.
-- **How the swap is made safe:**
-  - **Backup:** the primary service's DNS dictionary is copied to `State:/Network/RiftRoute/DNSBackup/<service>` before it's changed, only the first time. Then only `ServerAddresses` is replaced (with the search domains, if the tunnel gives some).
-  - **Holding:** whoever owns that service can rewrite it (DHCP renewal, the NE VPN reconnecting), and the primary service can change (Wi-Fi ↔ Ethernet, the main VPN up or down). Every 5 s while the swap is in place, RiftRoute checks it:
-    - rewritten by its owner: take the new value as the backup, and apply again (logged);
-    - rewritten 5 times in 10 minutes: let the owner have it. Held against it, the DNS would flip back for seconds at a time, with a cache flush each time. The swap stops, what still holds the tunnel's servers goes back, RiftRoute's keys go, and the card shows only why (no servers in use), until the tunnel connects again;
-    - a new primary: restore the old one, then apply to the new.
-  - **Restore** (the tunnel down, disconnected, panic, the daemon stopping): the backup goes back **only if the service still holds RiftRoute's servers**. A value its owner wrote since is theirs, and is left. Only what the swap changed goes back: the servers, and the search domains if it set some, into the dictionary as it is now, so what else the owner changed meanwhile stays. (The whole backup goes back if a value isn't plainly an address or a name.) Then the backup key goes. mDNSResponder's cache is flushed after each change.
-  - **Beside Tailscale:** when Tailscale's service is the primary (its exit node on), the swap replaces its `ServerAddresses` (100.100.100.100), which its supplemental match domains share, so MagicDNS names go to the tunnel's servers too. Two catch-alls at once is rare.
-  - The backup lives in State:, so it survives a daemon crash (until reboot, when the swap is gone too). The daemon restores leftovers at start, before tunnels come up.
+    mDNSResponder sends the primary service's queries bound to its interface. Beside an NE VPN that takes DNS for every domain, the system also steers the resolver's own queries into the VPN's tunnel whatever the routes say. A process's own queries follow the routes, and loopback isn't steered. Traffic by address went through the tunnel all along (5,824 bytes in for one HTTPS request to 1.0.0.1).
+  - **Every domain, ours alone:** another service that also takes every domain (an NE VPN's `SupplementalMatchDomains ""`) would rank ahead of ours. While ours is in place, that claim is set aside: its `SupplementalMatchDomains`/`Orders` come off its State: DNS (only `""`, when other domains are beside it), after a backup to `State:/Network/RiftRoute/DNSBackup/<service>`. A claim that can't be taken apart cleanly (orders beside other domains) is left, and logged.
+  - **Holding:** every 5 s, ours is put back if it's gone, and a service that took every domain back (the NE VPN reconnecting) is set aside again, its new DNS the backup. One that does so 5 times in 10 minutes is let have it: ours goes, and the card shows only why, until the tunnel connects again.
+  - **Restore** (the tunnel down, disconnected, panic, the daemon stopping): ours goes, the forwarder stops, and each set-aside service gets its claim back while it's still set aside. One that took every domain back by itself, or went away, is left as it is. Orders, which a script can't write, come back with the whole backup while the service's servers are as they were. mDNSResponder's cache is flushed after each change.
+  - **Split DNS and wildcard learning** keep their domains: their resolvers (`/etc/resolver`) match narrower.
+  - The keys live in State:, so they survive a daemon crash (until reboot, when they're gone too). The daemon removes them at start, before tunnels come up: the forwarder they point at went with the crash.
 - **A change that fails** (macOS between networks has no primary service; systemd-resolved restarting) is tried again on its own: in 5 s, doubling up to a minute, until it works or isn't wanted any more. Not where nothing will change (no systemd-resolved), and each failure is logged once.
 - **Crash safety:** the keys and links are RiftRoute's by name.
   - At start, the daemon removes any left from a run that didn't end cleanly, before the tunnels come up. So a crash can't leave the system asking a DNS server that's gone.
   - Panic and `daemon uninstall` remove them too.
-  - On macOS the keys are the system's, not the database's: a second daemon (`-provider auto -db /tmp/x`, a test) restores the service daemon's swap at its start. Test beside the installed daemon only with `-provider fake`, or with the installed one stopped.
+  - On macOS the keys are the system's, not the database's: a second daemon (`-provider auto -db /tmp/x`, a test) removes the service daemon's resolver at its start. Test beside the installed daemon only with `-provider fake`, or with the installed one stopped.
 - **Routes:** the tunnel's DNS servers go into it by host routes of their own, so a narrower route (an exclude profile's network, another VPN's) doesn't take them. Not one on the LAN (the router as DNS), a tunnel's server, or IPv6 the tunnel can't carry; and an exclude profile's route for that very host still wins.
 - **Kill switch:** unchanged. The tunnel's DNS servers are reached through the tunnel.
 

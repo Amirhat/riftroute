@@ -16,7 +16,9 @@
 #   3. IPv6 the tunnel can't carry is refused, while IPv6 link-local and
 #      multicast (AirDrop, Bonjour) keep their scoped routes;
 #   4. DNS goes to the tunnel's server, through it, and no query leaves by
-#      another interface; the swap holds when the service's owner rewrites it;
+#      another interface: the system asks RiftRoute's resolver, at its
+#      forwarder on loopback; the main VPN's claim on every domain, taken
+#      back, is set aside again;
 #   5. after a disconnect, a daemon crash (kill -9) and a block-when-down
 #      outage, routes and DNS are as they were.
 #
@@ -75,7 +77,13 @@ ns1() { scutil --dns 2>/dev/null | awk '/^resolver #1$/{f=1; next} f && /nameser
 primary() { echo "show State:/Network/Global/IPv4" | scutil 2>/dev/null | awk '$1 == "PrimaryService" {print $3}'; }
 servers_of() { echo "show $1" | scutil 2>/dev/null | awk '/ServerAddresses : <array>/{f=1; next} f && /}/{exit} f {print $3}' | paste -sd, -; }
 svcdns() { servers_of "State:/Network/Service/$1/DNS"; }
-rrkeys() { echo "list State:/Network/RiftRoute/.*" | scutil 2>/dev/null | grep -c "subKey"; }
+# RiftRoute's keys: its resolver (OURS), the services' backups, the record.
+OURS=State:/Network/Service/RiftRoute-TunnelDNS/DNS
+rrkeys() { echo "list State:/Network/(RiftRoute/.*|Service/RiftRoute-TunnelDNS/.*)" | scutil 2>/dev/null | grep -c "subKey"; }
+fwdport() { echo "show $OURS" | scutil 2>/dev/null | awk '$1 == "ServerPort" {print $3}'; }
+# ours_up: the first resolver is ours, at the forwarder on loopback.
+ours_up() { [[ "$(ns1)" == 127.0.0.1 && -n "$(fwdport)" ]]; }
+claims() { echo "show State:/Network/Service/$1/DNS" | scutil 2>/dev/null | grep -c "SupplementalMatchDomains"; }
 resolves() { dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address/{print $2; exit}'; }
 exitip() { curl -s -m 8 "$1" 2>/dev/null | awk -F= '$1 == "ip" {print $2}'; }
 reach() { curl -s -o /dev/null -m 6 "$1" && echo ok || echo blocked; }
@@ -160,6 +168,7 @@ MAINIF=$(via 8.8.4.4)
 PSVC=$(primary)
 BASE_NS=$(ns1)
 BASE_SERVERS=$(svcdns "$PSVC")
+BASE_CLAIM=$(claims "$PSVC")
 BASE_EXIT=$(exitip https://www.cloudflare.com/cdn-cgi/trace)
 BASE_EXIT1=$(exitip https://1.1.1.1/cdn-cgi/trace)
 BASE_REACH=$(reach https://1.0.0.1)
@@ -220,9 +229,17 @@ ckeq "the tunnel's server goes direct ($SERVER via $PHYSGW)" "$(gwof "$SERVER")"
 ckeq "1.1.1.1 (the watchdog's anchor) stays on $MAINIF" "$(via 1.1.1.1)" "$MAINIF"
 [[ -n "$CLONE" ]] && ckeq "$CLONE, cloned onto $MAINIF before, now goes into the tunnel" "$(via "$CLONE")" "$T"
 ck "the LAN answers ($PHYSGW)" "$(ping -c 1 -t 2 "$PHYSGW" 2>&1)" "1 packets received"
-E_T=$(exitip https://www.cloudflare.com/cdn-cgi/trace)
-echo "  exit address now: ${E_T:-none} (before: ${BASE_EXIT:-none})"
-[[ -n "$E_T" ]] && ckne "the exit address is the tunnel's" "$E_T" "$BASE_EXIT" || fail "no exit address through the tunnel"
+# Traffic by address (no DNS): watched on the tunnel, and its counter. The
+# exit address may be the main VPN's anyway (a tunnel server that leaves the
+# same way): printed, not checked.
+tcpdump -l -n -i "$T" host 1.0.0.1 > "$TMPD/p1" 2>/dev/null & P1=$!
+sleep 2; B0=$(tj .bytes_in)
+E_T=$(exitip https://1.0.0.1/cdn-cgi/trace)
+sleep 1; B1=$(tj .bytes_in)
+kill $P1 2>/dev/null; wait $P1 2>/dev/null
+echo "  exit address by 1.0.0.1 now: ${E_T:-none} (before: ${BASE_EXIT:-none}); the tunnel took in $((B1 - B0)) bytes"
+[[ "$(grep -c "1.0.0.1" "$TMPD/p1")" -ge 2 ]] && pass "https://1.0.0.1 went through the tunnel" || fail "https://1.0.0.1 wasn't seen on $T"
+[[ $((B1 - B0)) -gt 0 ]] && pass "and the tunnel's counter grew" || fail "the tunnel took nothing in"
 [[ -n "$BASE_EXIT1" ]] && ckeq "1.1.1.1 still exits by $MAINIF" "$(exitip https://1.1.1.1/cdn-cgi/trace)" "$BASE_EXIT1"
 for a in 8.8.4.4 1.1.1.1 "$SERVER" $EXPROBE; do
   echo "  explain $a:"; rr route explain "$a" 2>&1 | sed 's/^/    /'
@@ -253,14 +270,14 @@ echo "-- 5. DNS: the tunnel's, through it, and nowhere else"
 TDNS=$(tj '(.dns // [])[0] // ""')
 CONF_DNS=$(awk -F= 'tolower($1) ~ /^[[:space:]]*dns[[:space:]]*$/ {print $2; exit}' "$CONF" | tr -d ' ' | cut -d, -f1)
 ckeq "the tunnel's DNS is its configuration's" "$TDNS" "$CONF_DNS"
-until_ok 10 dns_is "$TDNS"
-ckeq "the system's first resolver is the tunnel's" "$(ns1)" "$TDNS"
+until_ok 10 ours_up
 R1=$(scutil --dns | sed -n '/^resolver #1$/,/^$/p')
+ck "the system's first resolver is RiftRoute's, at its forwarder" "$R1" "nameserver[0] : 127.0.0.1"
+ck "for every domain" "$R1" "Supplemental"
 ck "and macOS takes it as reachable" "$R1" "(Reachable"
-ckne "not a supplemental resolver scoped to another interface" "$(echo "$R1" | grep -c Supplemental)" "1"
+ckne "the forwarder answers" "$(dig +short +time=3 +tries=1 -p "$(fwdport)" @127.0.0.1 example.com A 2>/dev/null | head -1)" ""
 SVC=$(primary)
-ck "the primary service ($SVC) has it" "$(svcdns "$SVC")" "$TDNS"
-ckeq "a backup and the applied record are in the dynamic store" "$(rrkeys)" "2"
+[[ "$SVC" == "$PSVC" ]] && ckeq "the primary service's own DNS isn't touched" "$(svcdns "$SVC")" "$BASE_SERVERS"
 ckeq "$TDNS is reached through the tunnel" "$(via "$TDNS")" "$T"
 ck "tunnel list says so" "$(rr tunnel list 2>&1)" "DNS goes through it, to $TDNS"
 ckne "names resolve (example.com)" "$(resolves example.com)" ""
@@ -283,17 +300,19 @@ for i in $PHYSIF $MAINIF; do
   ckeq "no query left by $i" "$(grep -c "$QN" "$TMPD/cap.$i")" "0"
 done
 HELD=0
-for n in 1 2 3 4 5 6 7 8 9 10; do dns_is "$TDNS" && HELD=$((HELD + 1)); sleep 2; done
-ckeq "the swap held for 20 s" "$HELD/10" "10/10"
-# The service's owner (DHCP, the main VPN's app) writing its DNS back: taken as
-# the backup, and swapped again within the 5 s recheck.
-if [[ "$(primary)" == "$SVC" && -n "$BASE_SERVERS" ]]; then
-  printf 'open\nget State:/Network/Service/%s/DNS\nd.add ServerAddresses * %s\nset State:/Network/Service/%s/DNS\nclose\n' \
-    "$SVC" "${BASE_SERVERS//,/ }" "$SVC" | scutil
-  echo "  rewrote $SVC's servers to $BASE_SERVERS: now $(svcdns "$SVC")"
-  until_ok 12 dns_is "$TDNS"
-  ckeq "swapped again after the owner's rewrite" "$(ns1)" "$TDNS"
-  ckeq "the owner's value is the backup now" "$(servers_of "State:/Network/RiftRoute/DNSBackup/$SVC")" "$BASE_SERVERS"
+for n in 1 2 3 4 5 6 7 8 9 10; do ours_up && HELD=$((HELD + 1)); sleep 2; done
+ckeq "it held for 20 s" "$HELD/10" "10/10"
+# The main VPN taking every domain back (reconnecting): set aside again
+# within the 5 s recheck. Only where it took every domain before, so the
+# restore leaves it as it was.
+if [[ "$(primary)" == "$SVC" && "$BASE_CLAIM" -ge 1 ]]; then
+  printf 'open\nget State:/Network/Service/%s/DNS\nd.add SupplementalMatchDomains * ""\nset State:/Network/Service/%s/DNS\nclose\n' "$SVC" "$SVC" | scutil
+  set_aside() { [[ "$(claims "$SVC")" == 0 ]]; }
+  until_ok 12 set_aside
+  ckeq "set aside again after it took every domain back" "$(claims "$SVC")" "0"
+  ckeq "and ours is still first" "$(ns1)" "127.0.0.1"
+else
+  note "the main VPN didn't take every domain before: its taking it back isn't simulated"
 fi
 
 if [[ "$MAINIF" != "$PHYSIF" ]] && ask "Optional: turn your main VPN OFF now, in its app"; then
@@ -303,22 +322,20 @@ if [[ "$MAINIF" != "$PHYSIF" ]] && ask "Optional: turn your main VPN OFF now, in
   OFFSVC=$(primary)
   echo "  primary service now: ${OFFSVC:-none} | default: $(defif)"
   ckeq "the tunnel stays connected" "$(tj .state)" "connected"
-  until_ok 12 dns_is "$TDNS"
-  ckeq "DNS is still the tunnel's" "$(ns1)" "$TDNS"
+  until_ok 12 ours_up
+  ckeq "DNS is still the tunnel's" "$(ns1)" "127.0.0.1"
   ck "and macOS takes it as reachable" "$(scutil --dns | sed -n '/^resolver #1$/,/^$/p')" "(Reachable"
   ckne "names resolve through it (a plain primary, DNS set by hand included)" "$(resolves www.example.com)" ""
   ckeq "1.1.1.1 moved to $PHYSIF" "$(via 1.1.1.1)" "$PHYSIF"
-  [[ -n "$E_T" ]] && ckeq "the exit address is still the tunnel's" "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" "$E_T"
   ck "WireGuard still sends to its server" "$(tj .server)" "$SERVER"
-  OFFBACKUP=$(servers_of "State:/Network/RiftRoute/DNSBackup/$OFFSVC")
   if ask "Now turn your main VPN back ON"; then
     back_now() { [[ -n "$(defif)" && "$(defif)" != "$PHYSIF" ]]; }
     until_ok 40 back_now; sleep 6
     NEWMAIN=$(defif)
     echo "  main VPN on $NEWMAIN | primary service: $(primary)"
-    until_ok 12 dns_is "$TDNS"
-    ckeq "DNS is still the tunnel's" "$(ns1)" "$TDNS"
-    [[ -n "$OFFSVC" && "$OFFSVC" != "$(primary)" ]] && ckeq "$OFFSVC got its DNS back" "$(svcdns "$OFFSVC")" "$OFFBACKUP"
+    until_ok 12 ours_up
+    ckeq "DNS is still the tunnel's" "$(ns1)" "127.0.0.1"
+    ckne "names resolve through it" "$(resolves www.example.com)" ""
     ckeq "1.1.1.1 is back on the main VPN" "$(via 1.1.1.1)" "$NEWMAIN"
     ck "WireGuard still sends to its server" "$(tj .server)" "$SERVER"
     if [[ "$NEWMAIN" != "$MAINIF" ]]; then
@@ -343,8 +360,8 @@ ckne "names resolve" "$(resolves example.com)" ""
 
 echo "-- 7. a daemon crash with the swap in place: its successor puts it all back"
 rr tunnel up "$NAME" 2>&1 | sed 's/^/    /'
-until_ok 30 up_now; until_ok 10 dns_is "$TDNS"
-ckeq "up again, with its DNS" "$(ns1)" "$TDNS"
+until_ok 30 up_now; until_ok 10 ours_up
+ckeq "up again, with its DNS" "$(ns1)" "127.0.0.1"
 OLDPID=$(pgrep -f /Library/PrivilegedHelperTools/riftrouted | head -1)
 launchctl kill 9 "$LABEL" >/dev/null 2>&1 || kill -9 "$OLDPID"
 new_daemon() { local p; p=$(pgrep -f /Library/PrivilegedHelperTools/riftrouted | head -1); [[ -n "$p" && "$p" != "$OLDPID" ]] && daemon_ok; }

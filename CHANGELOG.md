@@ -26,10 +26,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   server gives (OpenVPN's push, WireGuard's `DNS =`, IKEv2's), or ones you
   set for it (`--dns`, or "DNS servers" in the app). Your system's own come
   back when it disconnects, with a panic, and after a crash (at the next
-  start). On macOS the primary network service's DNS is swapped and
-  restored (DNS servers set by hand included), kept in place if Wi-Fi
-  changes or another VPN rewrites it (up to 5 times in 10 minutes), and
-  never put back over a value its owner wrote since. On Linux it's set on the tunnel's link through
+  start). On macOS, riftrouted forwards the system's lookups (a resolver
+  of RiftRoute's own for every domain, at a forwarder on loopback) to the
+  tunnel's servers, through the tunnel. Beside an NE VPN that captures
+  DNS, that's the only way the queries reach the tunnel. Another VPN's
+  claim on every domain is set aside meanwhile (up to 5 times in 10
+  minutes). On Linux it's set on the tunnel's link through
   systemd-resolved; without it, the system's DNS stays, and the tunnel's
   card says why, as it does when another link also takes every name.
   RiftRoute never rewrites `/etc/resolv.conf`. The DNS servers go into the

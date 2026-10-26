@@ -263,7 +263,7 @@ func run() error {
 	// is put back first, before any tunnel comes up.
 	var tunnelDNS tunneldns.Applier = &tunneldns.Fake{}
 	if providerName != "fake" {
-		tunnelDNS = tunneldns.New(filepath.Dir(dbPath), logger.Info)
+		tunnelDNS = tunneldns.New(filepath.Dir(dbPath), logger)
 	}
 	if tunnelDNS != nil {
 		rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)

@@ -173,6 +173,12 @@ var shutdownApplyWait = 5 * time.Second
 // from before it was raised).
 var stopGrace, killGrace = 6 * time.Second, 3 * time.Second
 
+// withdrawWait bounds how long a session's end waits for its routes (and a
+// full tunnel's DNS) to be withdrawn (finish): Disconnect waits that long
+// too, past killGrace, so a slow withdrawal isn't reported as a tunnel
+// that didn't stop.
+var withdrawWait = 10 * time.Second
+
 // Connection attempt limits.
 var (
 	// maxFailedAttempts: a tunnel that has never connected in this session
@@ -900,7 +906,7 @@ func (m *Manager) stop(ctx context.Context, name string, keepWant bool) error {
 	select {
 	case <-s.done:
 		return nil
-	case <-time.After(killGrace):
+	case <-time.After(killGrace + withdrawWait):
 		return fmt.Errorf("tunnel %s did not stop", name)
 	}
 }
@@ -1518,7 +1524,7 @@ func (m *Manager) finish(name string, s *session) {
 	if m.isClosed() {
 		m.requestApply()
 	} else {
-		_ = m.applyAndWait(context.Background(), 10*time.Second)
+		_ = m.applyAndWait(context.Background(), withdrawWait)
 	}
 	m.changed()
 }

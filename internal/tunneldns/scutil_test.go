@@ -3,6 +3,7 @@ package tunneldns
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -145,51 +146,106 @@ func tunnelCfg() Config {
 	return Config{Iface: "utun9", Servers: []netip.Addr{netip.MustParseAddr("10.8.0.1"), netip.MustParseAddr("10.8.0.2")}, Search: []string{"corp.example"}}
 }
 
-func storeWithPrimary(svc string) *fakeStore {
+const vpn = "33333333-AAAA-BBBB-CCCC-000000000003" // an NE VPN that takes every domain
+
+// storeWithVPN is Wi-Fi with its own DNS beside an NE VPN that takes DNS for
+// every domain, as the owner's Mac has it.
+func storeWithVPN() *fakeStore {
 	f := newFakeStore()
-	f.put(globalIPv4, nil)
-	f.keys[globalIPv4]["PrimaryService"] = []string{svc}
-	f.put(serviceDNS(svc), map[string][]string{"ServerAddresses": {"192.168.1.1"}, "SupplementalMatchDomains": {""}})
-	f.keys[serviceDNS(svc)]["InterfaceName"], f.arr[serviceDNS(svc)]["InterfaceName"] = []string{"utun8"}, false
+	f.put(serviceDNS(wifi), map[string][]string{"ServerAddresses": {"192.168.88.1"}})
+	f.put(serviceDNS(vpn), map[string][]string{"ServerAddresses": {"10.184.16.1"}, "SupplementalMatchDomains": {""}})
+	f.keys[serviceDNS(vpn)]["InterfaceName"], f.arr[serviceDNS(vpn)]["InterfaceName"] = []string{"utun8"}, false
 	return f
 }
 
-// The swap: the primary service's servers become the tunnel's, its old
-// dictionary is kept, and a revert puts it back and removes RiftRoute's keys.
-func TestScutilSwapAndRestore(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	s := newScutil(f.run, nil)
-	ctx := context.Background()
-	if err := s.Apply(ctx, tunnelCfg()); err != nil {
+// upstream is a DNS server on loopback that answers every query with the
+// query itself, marked a response: the tunnel's server, for the forwarder.
+func upstream(t *testing.T) (netip.Addr, int) {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Revert(ctx)
-	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[10.8.0.1 10.8.0.2]" {
-		t.Fatalf("primary's servers %v", got)
+	t.Cleanup(func() { pc.Close() })
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if n > 2 {
+				buf[2] |= 0x80 // QR
+				_, _ = pc.WriteTo(buf[:n], addr)
+			}
+		}
+	}()
+	return netip.MustParseAddr("127.0.0.1"), pc.LocalAddr().(*net.UDPAddr).Port
+}
+
+// newTestScutil is the applier on f, its forwarder asking up.
+func newTestScutil(t *testing.T, f *fakeStore) (*scutilApplier, Config) {
+	t.Helper()
+	a, port := upstream(t)
+	s := newScutil(f.run, nil)
+	s.upstreamPort = port
+	cfg := tunnelCfg()
+	cfg.Servers = []netip.Addr{a}
+	t.Cleanup(func() { _ = s.Revert(context.Background()) })
+	return s, cfg
+}
+
+// ask sends a DNS query to the forwarder and says whether it was answered.
+func ask(t *testing.T, port string) bool {
+	t.Helper()
+	c, err := net.Dial("udp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := f.keys[serviceDNS(wifi)]["SearchDomains"]; fmt.Sprint(got) != "[corp.example]" {
-		t.Errorf("search domains %v", got)
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(3 * time.Second))
+	q := []byte{0x12, 0x34, 0x01, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 3, 'c', 'o', 'm', 0, 0, 1, 0, 1}
+	if _, err := c.Write(q); err != nil {
+		t.Fatal(err)
 	}
-	// The plain default resolver, reached through the tunnel: a VPN's
-	// supplemental one, scoped to its interface, never sends to it.
-	if _, ok := f.keys[serviceDNS(wifi)]["SupplementalMatchDomains"]; ok || fmt.Sprint(f.keys[serviceDNS(wifi)]["InterfaceName"]) != "[utun9]" {
-		t.Errorf("not the plain default resolver through the tunnel: %v", f.keys[serviceDNS(wifi)])
+	buf := make([]byte, 512)
+	n, err := c.Read(buf)
+	return err == nil && n == len(q) && buf[0] == 0x12 && buf[1] == 0x34 && buf[2]&0x80 != 0
+}
+
+// Ours is a resolver for every domain at the forwarder on loopback, which
+// asks the tunnel's servers; the NE VPN's claim on every domain is set
+// aside, Wi-Fi's DNS isn't touched; and a revert puts it all back.
+func TestScutilResolverAtTheForwarder(t *testing.T) {
+	f := storeWithVPN()
+	s, cfg := newTestScutil(t, f)
+	ctx := context.Background()
+	if err := s.Apply(ctx, cfg); err != nil {
+		t.Fatal(err)
 	}
-	if got := f.servers(backupPrefix + wifi); fmt.Sprint(got) != "[192.168.1.1]" {
-		t.Errorf("backup %v", got)
+	ours := f.keys[ourKey]
+	port := fmt.Sprint(ours["ServerPort"][0])
+	if fmt.Sprint(ours["ServerAddresses"]) != "[127.0.0.1]" || fmt.Sprintf("%q", ours["SupplementalMatchDomains"]) != `[""]` ||
+		fmt.Sprint(ours["SearchDomains"]) != "[corp.example]" || port == "0" {
+		t.Fatalf("our resolver %q", ours)
+	}
+	if !ask(t, port) {
+		t.Fatal("the forwarder didn't answer from the tunnel's server")
+	}
+	if _, ok := f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"]; ok {
+		t.Errorf("the VPN still takes every domain: %v", f.keys[serviceDNS(vpn)])
+	}
+	if fmt.Sprint(f.keys[serviceDNS(vpn)]["ServerAddresses"]) != "[10.184.16.1]" || fmt.Sprint(f.keys[serviceDNS(wifi)]) != "map[ServerAddresses:[192.168.88.1]]" {
+		t.Errorf("servers touched: VPN %v, Wi-Fi %v", f.keys[serviceDNS(vpn)], f.keys[serviceDNS(wifi)])
 	}
 	if err := s.Revert(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.1]" {
-		t.Fatalf("restored %v", got)
+	if _, ok := f.keys[ourKey]; ok {
+		t.Error("our resolver stayed")
 	}
-	if _, ok := f.keys[serviceDNS(wifi)]["SearchDomains"]; ok {
-		t.Error("the tunnel's search domains stayed")
-	}
-	if dns := f.keys[serviceDNS(wifi)]; fmt.Sprintf("%q %v", dns["SupplementalMatchDomains"], f.arr[serviceDNS(wifi)]["SupplementalMatchDomains"]) != `[""] true` ||
-		fmt.Sprint(dns["InterfaceName"]) != "[utun8]" {
-		t.Errorf("the interface and match domains aren't back: %q", dns)
+	if fmt.Sprintf("%q", f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"]) != `[""]` || fmt.Sprint(f.keys[serviceDNS(vpn)]["InterfaceName"]) != "[utun8]" {
+		t.Errorf("the VPN's claim isn't back: %q", f.keys[serviceDNS(vpn)])
 	}
 	for k := range f.keys {
 		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
@@ -199,81 +255,98 @@ func TestScutilSwapAndRestore(t *testing.T) {
 	if !slices.Contains(f.ran, "killall -HUP mDNSResponder") {
 		t.Errorf("caches not flushed: %v", f.ran)
 	}
-}
-
-// A value the service's owner wrote while the swap was in place (a DHCP
-// renewal, a VPN reconnecting) is theirs: a revert leaves it.
-func TestScutilRestoreLeavesTheOwnersNewValue(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	s := newScutil(f.run, nil)
-	ctx := context.Background()
-	_ = s.Apply(ctx, tunnelCfg())
-	f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.254"}
-	_ = s.Revert(ctx)
-	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.254]" {
-		t.Fatalf("the owner's value was overwritten: %v", got)
-	}
-	if _, ok := f.keys[backupPrefix+wifi]; ok {
-		t.Error("the backup stayed")
+	if ask(t, port) {
+		t.Error("the forwarder still answers after the revert")
 	}
 }
 
-// A service with no DNS of its own gets one for the swap, removed again.
-func TestScutilServiceWithoutDNS(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	delete(f.keys, serviceDNS(wifi))
-	s := newScutil(f.run, nil)
-	ctx := context.Background()
-	_ = s.Apply(ctx, tunnelCfg())
-	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.1 10.8.0.2]" {
-		t.Fatalf("not swapped: %v", f.keys)
-	}
-	_ = s.Revert(ctx)
-	if _, ok := f.keys[serviceDNS(wifi)]; ok {
-		t.Fatal("the DNS created for the swap stayed")
-	}
-}
-
-// A daemon that crashed with the swap in place: its successor's Recover
-// puts the backup back before anything comes up.
+// A daemon that crashed with ours in place: its successor's Recover removes
+// it (its forwarder went with the crash) and gives the VPN its claim back.
 func TestScutilRecoverAfterACrash(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	_ = newScutil(f.run, nil).Apply(context.Background(), tunnelCfg()) // and the daemon dies
+	f := storeWithVPN()
+	s, cfg := newTestScutil(t, f)
+	_ = s.Apply(context.Background(), cfg) // and the daemon dies
 	if err := newScutil(f.run, nil).Recover(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.servers(serviceDNS(wifi)); fmt.Sprint(got) != "[192.168.1.1]" {
-		t.Fatalf("not recovered: %v", got)
+	if _, ok := f.keys[ourKey]; ok || fmt.Sprintf("%q", f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"]) != `[""]` {
+		t.Fatalf("not recovered: ours %v, VPN %q", f.keys[ourKey], f.keys[serviceDNS(vpn)])
 	}
 	if _, ok := f.keys[appliedKey]; ok {
 		t.Error("the applied record stayed")
 	}
 }
 
-// While the swap is in place: a new primary service gets it (the old one
-// restored), and an owner's rewrite is backed up and swapped again.
+// While ours is in place: the VPN taking every domain back (it reconnected)
+// is set aside again, its new DNS the backup; ours, gone, is put back.
 func TestScutilRecheck(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"10.0.0.1"}})
-	s := newScutil(f.run, nil)
+	f := storeWithVPN()
+	s, cfg := newTestScutil(t, f)
 	ctx := context.Background()
-	_ = s.Apply(ctx, tunnelCfg())
-	defer s.Revert(ctx)
-
-	f.keys[globalIPv4]["PrimaryService"] = []string{eth} // Ethernet plugged in
+	_ = s.Apply(ctx, cfg)
+	f.put(serviceDNS(vpn), map[string][]string{"ServerAddresses": {"10.184.16.9"}, "SupplementalMatchDomains": {""}}) // reconnected
+	delete(f.keys, ourKey)
 	s.recheck(ctx)
-	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" || fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.8.0.1 10.8.0.2]" {
-		t.Fatalf("after the primary changed: wifi %v, eth %v", f.servers(serviceDNS(wifi)), f.servers(serviceDNS(eth)))
+	if _, ok := f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"]; ok || f.keys[ourKey] == nil {
+		t.Fatalf("after the VPN reconnected: VPN %q, ours %v", f.keys[serviceDNS(vpn)], f.keys[ourKey])
 	}
-
-	f.keys[serviceDNS(eth)]["ServerAddresses"] = []string{"10.0.0.2"} // DHCP renewed it
-	s.recheck(ctx)
-	if fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.8.0.1 10.8.0.2]" || fmt.Sprint(f.servers(backupPrefix+eth)) != "[10.0.0.2]" {
-		t.Fatalf("after the owner's rewrite: %v, backup %v", f.servers(serviceDNS(eth)), f.servers(backupPrefix+eth))
+	if fmt.Sprint(f.servers(backupPrefix+vpn)) != "[10.184.16.9]" {
+		t.Errorf("backup %v", f.servers(backupPrefix+vpn))
 	}
 	_ = s.Revert(ctx)
-	if fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.0.0.2]" {
-		t.Fatalf("restored the stale value: %v", f.servers(serviceDNS(eth)))
+	if fmt.Sprint(f.servers(serviceDNS(vpn))) != "[10.184.16.9]" || fmt.Sprintf("%q", f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"]) != `[""]` {
+		t.Fatalf("restored %q", f.keys[serviceDNS(vpn)])
+	}
+}
+
+// A restore leaves a service that took every domain back by itself, or went
+// away, as it is; one that takes other domains beside every one loses ""
+// alone, and gets it back.
+func TestScutilRestoreLeavesWhatChanged(t *testing.T) {
+	f := storeWithVPN()
+	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"10.30.0.53"}, "SupplementalMatchDomains": {"", "corp.example"}})
+	s, cfg := newTestScutil(t, f)
+	ctx := context.Background()
+	_ = s.Apply(ctx, cfg)
+	if fmt.Sprintf("%q", f.keys[serviceDNS(eth)]["SupplementalMatchDomains"]) != `["corp.example"]` {
+		t.Fatalf("set aside: %q", f.keys[serviceDNS(eth)])
+	}
+	delete(f.keys, serviceDNS(vpn)) // the VPN disconnected
+	_ = s.Revert(ctx)
+	if _, ok := f.keys[serviceDNS(vpn)]; ok {
+		t.Error("a service that went came back")
+	}
+	if fmt.Sprintf("%q", f.keys[serviceDNS(eth)]["SupplementalMatchDomains"]) != `["" "corp.example"]` {
+		t.Errorf("restored %q", f.keys[serviceDNS(eth)])
+	}
+}
+
+// A service that keeps taking every domain back is let have it after
+// maxRewrites: ours goes, its claim stays, the note says why, and the
+// card's servers aren't in effect.
+func TestScutilLetsAKeenClaimantHaveIt(t *testing.T) {
+	f := storeWithVPN()
+	s, cfg := newTestScutil(t, f)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	ctx := context.Background()
+	_ = s.Apply(ctx, cfg)
+	for i := 1; i <= maxRewrites; i++ {
+		f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"], f.arr[serviceDNS(vpn)]["SupplementalMatchDomains"] = []string{""}, true
+		clock = clock.Add(time.Minute)
+		s.recheck(ctx)
+		if _, inEffect := s.Note(); i < maxRewrites && !inEffect {
+			t.Fatalf("let go after %d", i)
+		}
+	}
+	n, inEffect := s.Note()
+	if !strings.Contains(n, "keeps taking DNS for every domain back") || inEffect || f.keys[ourKey] != nil ||
+		fmt.Sprintf("%q", f.keys[serviceDNS(vpn)]["SupplementalMatchDomains"]) != `[""]` {
+		t.Fatalf("let go: note %q (in effect %v), ours %v, VPN %q", n, inEffect, f.keys[ourKey], f.keys[serviceDNS(vpn)])
+	}
+	s.recheck(ctx)
+	if f.keys[ourKey] != nil {
+		t.Error("put back after letting it go")
 	}
 }
 
@@ -346,118 +419,6 @@ func TestResolvedAnotherLinkTakesEveryName(t *testing.T) {
 	}
 }
 
-// A restore puts back what the swap changed — the servers, and search
-// domains it set — into the service's DNS as it is, so what else its owner
-// changed meanwhile stays.
-func TestScutilRestoreKeepsTheOwnersOtherChanges(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	f.keys[serviceDNS(wifi)]["SearchDomains"], f.arr[serviceDNS(wifi)]["SearchDomains"] = []string{"home.example"}, true
-	s := newScutil(f.run, nil)
-	ctx := context.Background()
-	_ = s.Apply(ctx, tunnelCfg())
-	f.keys[serviceDNS(wifi)]["DomainName"], f.arr[serviceDNS(wifi)]["DomainName"] = []string{"lan.example"}, false
-	_ = s.Revert(ctx)
-	dns := f.keys[serviceDNS(wifi)]
-	if fmt.Sprint(dns["ServerAddresses"]) != "[192.168.1.1]" || fmt.Sprint(dns["SearchDomains"]) != "[home.example]" || fmt.Sprint(dns["DomainName"]) != "[lan.example]" {
-		t.Fatalf("restored %v", dns)
-	}
-}
-
-// An owner that keeps rewriting the service's DNS is let have it after
-// maxRewrites: the swap stops, the note says why, and RiftRoute's keys go.
-func TestScutilLetsAKeenOwnerHaveIt(t *testing.T) {
-	f := storeWithPrimary(wifi)
-	s := newScutil(f.run, nil)
-	clock := time.Now()
-	s.now = func() time.Time { return clock }
-	ctx := context.Background()
-	_ = s.Apply(ctx, tunnelCfg())
-	defer s.Revert(ctx)
-	for i := 1; i <= maxRewrites; i++ {
-		f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.1"}
-		clock = clock.Add(time.Minute)
-		s.recheck(ctx)
-		swapped := fmt.Sprint(f.servers(serviceDNS(wifi))) == "[10.8.0.1 10.8.0.2]"
-		if i < maxRewrites && (!swapped || noteOf(s) != "") {
-			t.Fatalf("rewrite %d: swapped %v, note %q", i, swapped, noteOf(s))
-		}
-	}
-	if _, inEffect := s.Note(); fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" || !strings.Contains(noteOf(s), "keeps rewriting") || inEffect {
-		t.Fatalf("after %d rewrites: %v, note %q (in effect %v)", maxRewrites, f.servers(serviceDNS(wifi)), noteOf(s), inEffect)
-	}
-	for k := range f.keys {
-		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
-			t.Errorf("left %s", k)
-		}
-	}
-	s.recheck(ctx)
-	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[192.168.1.1]" {
-		t.Error("swapped again after letting it go")
-	}
-	// Rewrites far apart are each held.
-	_ = s.Apply(ctx, Config{Iface: "utun9", Servers: []netip.Addr{netip.MustParseAddr("10.8.0.9")}})
-	for i := 0; i < 2*maxRewrites; i++ {
-		f.keys[serviceDNS(wifi)]["ServerAddresses"] = []string{"192.168.1.1"}
-		clock = clock.Add(rewriteWindow / 2)
-		s.recheck(ctx)
-	}
-	if fmt.Sprint(f.servers(serviceDNS(wifi))) != "[10.8.0.9]" || noteOf(s) != "" {
-		t.Fatalf("slow rewrites: %v, note %q", f.servers(serviceDNS(wifi)), noteOf(s))
-	}
-}
-
-// DNS servers set by hand are the service's Setup: DNS, which outranks its
-// State: one: both are swapped, and both restored. When the preferences are
-// applied again (configd puts the saved Setup: back), the recheck swaps it
-// again, keeping State's backup as it was before the swap.
-func TestScutilSwapsDNSSetByHand(t *testing.T) {
-	f := storeWithPrimary(eth)
-	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"192.168.88.1"}})
-	f.put(setupDNS(eth), map[string][]string{"ServerAddresses": {"1.1.1.1"}})
-	f.keys[globalIPv4]["PrimaryService"] = []string{eth}
-	s := newScutil(f.run, nil)
-	ctx := context.Background()
-	if err := s.Apply(ctx, tunnelCfg()); err != nil {
-		t.Fatal(err)
-	}
-	ours := "[10.8.0.1 10.8.0.2]"
-	if fmt.Sprint(f.servers(serviceDNS(eth))) != ours || fmt.Sprint(f.servers(setupDNS(eth))) != ours {
-		t.Fatalf("swapped: State %v, Setup %v", f.servers(serviceDNS(eth)), f.servers(setupDNS(eth)))
-	}
-	f.keys[setupDNS(eth)]["ServerAddresses"] = []string{"1.1.1.1"} // the preferences applied
-	s.recheck(ctx)
-	if fmt.Sprint(f.servers(setupDNS(eth))) != ours || fmt.Sprint(f.servers(backupPrefix+eth)) != "[192.168.88.1]" ||
-		fmt.Sprint(f.servers(setupBackupPrefix+eth)) != "[1.1.1.1]" {
-		t.Fatalf("after the preferences were applied: Setup %v, backups %v %v", f.servers(setupDNS(eth)),
-			f.servers(backupPrefix+eth), f.servers(setupBackupPrefix+eth))
-	}
-	_ = newScutil(f.run, nil).Recover(ctx) // a crash, then the next start
-	_ = s.Revert(ctx)
-	if fmt.Sprint(f.servers(serviceDNS(eth))) != "[192.168.88.1]" || fmt.Sprint(f.servers(setupDNS(eth))) != "[1.1.1.1]" {
-		t.Fatalf("restored: State %v, Setup %v", f.servers(serviceDNS(eth)), f.servers(setupDNS(eth)))
-	}
-	for k := range f.keys {
-		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
-			t.Errorf("left %s", k)
-		}
-	}
-
-	// Let go after the preferences keep coming back: State's goes back too.
-	_ = s.Apply(ctx, tunnelCfg())
-	for i := 0; i < maxRewrites; i++ {
-		f.keys[setupDNS(eth)]["ServerAddresses"] = []string{"1.1.1.1"}
-		s.recheck(ctx)
-	}
-	if _, inEffect := s.Note(); inEffect || fmt.Sprint(f.servers(serviceDNS(eth))) != "[192.168.88.1]" || fmt.Sprint(f.servers(setupDNS(eth))) != "[1.1.1.1]" {
-		t.Fatalf("let go: State %v, Setup %v, in effect %v", f.servers(serviceDNS(eth)), f.servers(setupDNS(eth)), inEffect)
-	}
-	for k := range f.keys {
-		if strings.HasPrefix(k, "State:/Network/RiftRoute/") {
-			t.Errorf("let go, left %s", k)
-		}
-	}
-}
-
 // A link that takes every name after the tunnel's DNS was applied
 // (Tailscale started later) is said too, and no longer once it's gone; the
 // looking stops with the revert.
@@ -501,31 +462,5 @@ func TestResolvedNotesALinkThatTakesEveryNameLater(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if count() != n || noteOf(r) != "" {
 		t.Fatalf("still looking after the revert (%d → %d), note %q", n, count(), noteOf(r))
-	}
-}
-
-// A plain primary (Wi-Fi, Ethernet: servers only) gets the servers alone —
-// no interface named, nothing dropped — and a recheck takes it as held.
-func TestScutilPlainPrimaryKeepsItsShape(t *testing.T) {
-	f := storeWithPrimary(eth)
-	f.put(serviceDNS(eth), map[string][]string{"ServerAddresses": {"192.168.88.1"}})
-	f.keys[globalIPv4]["PrimaryService"] = []string{eth}
-	s := newScutil(f.run, nil)
-	ctx := context.Background()
-	if err := s.Apply(ctx, tunnelCfg()); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := f.keys[serviceDNS(eth)]["InterfaceName"]; ok || fmt.Sprint(f.servers(serviceDNS(eth))) != "[10.8.0.1 10.8.0.2]" {
-		t.Fatalf("plain primary reshaped: %v", f.keys[serviceDNS(eth)])
-	}
-	for i := 0; i < maxRewrites+1; i++ {
-		s.recheck(ctx)
-	}
-	if n, inEffect := s.Note(); n != "" || !inEffect || len(s.rewrites) != 0 {
-		t.Fatalf("held taken as rewritten: %q %v %d", n, inEffect, len(s.rewrites))
-	}
-	_ = s.Revert(ctx)
-	if fmt.Sprint(f.keys[serviceDNS(eth)]) != "map[ServerAddresses:[192.168.88.1]]" {
-		t.Fatalf("restored %v", f.keys[serviceDNS(eth)])
 	}
 }
