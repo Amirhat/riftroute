@@ -73,6 +73,10 @@ PLUGINS=(
   --enable-openssl --enable-nonce --enable-kdf
   --enable-x509 --enable-pubkey --enable-pkcs1 --enable-pkcs8 --enable-pem --enable-constraints
   --enable-eap-identity --enable-eap-mschapv2 --enable-md4 --enable-des
+  # resolve: writes a server's DNS to the session's own file (charon-cmd.
+  # plugins.resolve.file), which the daemon reads for a full tunnel; its
+  # resolvconf path is set to nothing, so it never touches the system's DNS.
+  --enable-resolve
 )
 
 # ---------------------------------------------------------------- args

@@ -97,7 +97,7 @@ func ikeEnv(goos, conf string) []string {
 // ikeMinMajor.ikeMinMinor is the oldest strongSwan IKEv2 tunnels run on.
 const ikeMinMajor, ikeMinMinor = 5, 9
 
-var reIKEVersion = regexp.MustCompile(`strongSwan (\d+)\.(\d+)(?:\.\d+)?`)
+var reIKEVersion = regexp.MustCompile(`strongSwan (\d+)\.(\d+)(?:\.(\d+))?`)
 
 // probeIKEVersion runs `charon-cmd --version` as nobody: it prints the version
 // before reading any configuration or loading anything.

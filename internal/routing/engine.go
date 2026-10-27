@@ -36,9 +36,14 @@ const (
 	// to its table before main is looked up, so RiftRoute's routes are
 	// looked up first, at BypassRulePrio — after Tailscale's rules for its
 	// own packets (5210–5250), so its connection is never touched.
-	BypassTable      = "5253"
-	BypassRulePrio   = 5260
-	modelBProfileTag = "model-b"
+	BypassTable    = "5253"
+	BypassRulePrio = 5260
+	// FullTunnelMainRulePrio: with a full tunnel copied past Tailscale's
+	// exit node, main is looked up just before the copies, all but what's
+	// /2 or wider — so the LAN's connected route, and every other narrower
+	// route in main, keeps winning over the quarters' copies (BesideTailscale).
+	FullTunnelMainRulePrio = BypassRulePrio - 1
+	modelBProfileTag       = "model-b"
 )
 
 // DesiredInput is everything the builder needs to derive desired managed state.
@@ -248,7 +253,8 @@ func BuildDesired(in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule,
 func BesideTailscale(routes []domain.ManagedRoute, rules []domain.ManagedRule, in DesiredInput) ([]domain.ManagedRoute, []domain.ManagedRule) {
 	routes = slices.DeleteFunc(slices.Clone(routes), func(r domain.ManagedRoute) bool { return r.Table == BypassTable })
 	rules = slices.DeleteFunc(slices.Clone(rules), func(r domain.ManagedRule) bool {
-		return r.Table == BypassTable || r.Priority == TailscaleRulePrio && r.Table != "" // PF's pass has no table
+		return r.Table == BypassTable || r.Priority == TailscaleRulePrio && r.Table != "" || // PF's pass has no table
+			r.Priority == FullTunnelMainRulePrio && r.Table == "main"
 	})
 	if in.TailscaleTable == "" || in.Platform == "darwin" {
 		return routes, rules
@@ -266,7 +272,7 @@ func BesideTailscale(routes []domain.ManagedRoute, rules []domain.ManagedRule, i
 	if !in.TailscaleExitNode {
 		return routes, rules
 	}
-	families := map[domain.Family]bool{}
+	families, full := map[domain.Family]bool{}, map[domain.Family]bool{}
 	for _, r := range slices.Clone(routes) {
 		if r.Table != "" {
 			continue
@@ -277,8 +283,18 @@ func BesideTailscale(routes []domain.ManagedRoute, rules []domain.ManagedRule, i
 		c.Table = BypassTable
 		routes = append(routes, c)
 		families[r.Family] = true
+		if strings.HasPrefix(r.ProfileID, TunnelProfilePrefix) && slices.Contains(FullTunnelQuarters, r.DstCIDR) {
+			full[r.Family] = true
+		}
 	}
 	for _, fam := range []domain.Family{domain.FamilyV4, domain.FamilyV6} {
+		if full[fam] {
+			// A quarter's copy would otherwise beat what main routes more
+			// narrowly that isn't RiftRoute's: the LAN's connected route
+			// above all (the router, a DNS server on it).
+			pr := domain.PolicyRule{Priority: FullTunnelMainRulePrio, Selector: "from all suppress_prefixlength 2", Table: "main", Family: fam, Proto: protoFor(in.Platform)}
+			rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: tailscaleTag, CreatedAt: in.Now})
+		}
 		if families[fam] {
 			pr := domain.PolicyRule{Priority: BypassRulePrio, Selector: "from all", Table: BypassTable, Family: fam, Proto: protoFor(in.Platform)}
 			rules = append(rules, domain.ManagedRule{PolicyRule: pr, ProfileID: tailscaleTag, CreatedAt: in.Now})

@@ -570,6 +570,45 @@ func TestWireGuardFollowsEveryPeer(t *testing.T) {
 	}
 }
 
+// A server that answers from inside the tunnel — its network, its DNS
+// server — isn't followed there: the device would send into its own
+// interface. It's set back to the configured endpoint, and the address
+// never joins the tunnel's servers.
+func TestWireGuardNeverFollowsIntoTheTunnel(t *testing.T) {
+	client, server := newWGKeys(t), newWGKeys(t)
+	c, err := ParseWG("[Interface]\nPrivateKey = " + client.b64(true) + "\nAddress = 10.72.242.2/30\nDNS = 10.72.242.1\n" +
+		"[Peer]\nPublicKey = " + server.b64(false) + "\nEndpoint = 198.51.100.1:7177\nAllowedIPs = 0.0.0.0/0\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := netip.MustParseAddrPort("198.51.100.1:7177")
+	tn := tuntest.NewChannelTUN()
+	dev := device.NewDevice(tn.TUN(), conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	t.Cleanup(dev.Close)
+	uapi, err := c.UAPI([]netip.AddrPort{ep})
+	if err != nil || dev.IpcSet(uapi) != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	m := &Manager{o: Options{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}, rt: map[string]*live{
+		"wg1": {state: domain.TunnelConnected, servers: []netip.Addr{ep.Addr()}},
+	}, ap: newApplier(func(context.Context) error { return nil }, slog.New(slog.NewTextHandler(io.Discard, nil)))}
+	t.Cleanup(m.ap.close)
+	w := &wgSession{m: m, name: "wg1", d: &def{Via: domain.TunnelViaDirect}, c: c, dev: dev, eps: []netip.AddrPort{ep}}
+	key := hex.EncodeToString(server.pub[:])
+	for _, bad := range []string{"10.72.242.1:7177", "10.72.242.1:40000"} {
+		if err := dev.IpcSet("public_key=" + key + "\nupdate_only=true\nendpoint=" + bad + "\n"); err != nil {
+			t.Fatal(err)
+		}
+		w.follow(readWGStats(dev))
+		if got := readWGStats(dev).peers[0].endpoint; got != ep.String() {
+			t.Fatalf("followed into the tunnel (%s): endpoint now %s", bad, got)
+		}
+	}
+	if r := m.rt["wg1"]; slices.Contains(r.servers, netip.MustParseAddr("10.72.242.1")) {
+		t.Errorf("an address inside the tunnel joined its servers: %v", r.servers)
+	}
+}
+
 // A client from before WireGuard sends no type: an edit keeps the tunnel's.
 func TestWireGuardEditWithoutATypeKeepsIt(t *testing.T) {
 	client, server := newWGKeys(t), newWGKeys(t)

@@ -472,7 +472,7 @@ func TestRenderIKE(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := "/run/rr"
-	st, err := renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", true, false)
+	st, err := renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", true, false, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,12 +512,27 @@ func TestRenderIKE(t *testing.T) {
 			t.Errorf("config lacks %q:\n%s", s, conf)
 		}
 	}
-	for _, s := range []string{"resolve", "updown", "attr"} {
+	for _, s := range []string{"updown", "attr"} {
 		if strings.Contains(conf, " "+s+" ") {
 			t.Errorf("config loads %s:\n%s", s, conf)
 		}
 	}
-	if darwin, linux := ikeConf("darwin", "/s", false), ikeConf("linux", "/s", false); strings.Contains(darwin, "routing_table") ||
+	// A full tunnel's: resolve logs the server's DNS and installs it
+	// nowhere — its resolvconf a shell's no-op, its file the session's own,
+	// never the system's resolv.conf.
+	for _, s := range []string{" resolve\n", "file = /run/rr/office.dns\n", "path = :\n"} {
+		if !strings.Contains(conf, s) {
+			t.Errorf("config lacks %q:\n%s", s, conf)
+		}
+	}
+	if st.DNSFile != "/run/rr/office.dns" {
+		t.Errorf("DNS file %q", st.DNSFile)
+	}
+	// Any other: no resolve plugin at all.
+	if other := ikeConf("linux", "/s", "", false); strings.Contains(other, "resolve") {
+		t.Errorf("a tunnel that doesn't carry all traffic loads resolve:\n%s", other)
+	}
+	if darwin, linux := ikeConf("darwin", "/s", "/d", false), ikeConf("linux", "/s", "/d", false); strings.Contains(darwin, "routing_table") ||
 		!strings.Contains(darwin, " kernel-pfroute ") || !strings.Contains(linux, "routing_table = 52520\n") ||
 		!strings.Contains(linux, "routing_table_prio = 52520\n") || !strings.Contains(linux, " kernel-netlink ") ||
 		!strings.Contains(linux, "stderr {") || strings.Contains(linux, "pem!") ||
@@ -527,7 +542,7 @@ func TestRenderIKE(t *testing.T) {
 
 	// An older charon-cmd (strongSwan 5.x, as Debian and Ubuntu ship) takes
 	// the login as a PKCS#12, whose password it reads from stdin.
-	st, err = renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", false, true)
+	st, err = renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", false, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,40 +572,58 @@ func TestRenderIKE(t *testing.T) {
 	}
 
 	// v4 only: no IPv6 asked for.
-	if st, _ := renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", false, false); slices.Contains(st.Args, "::/0") {
+	if st, _ := renderIKE(c, ikeLogin{}, nil, "192.0.2.44", dir, "office", false, false, false); slices.Contains(st.Args, "::/0") {
 		t.Errorf("v4-only args: %q", st.Args)
 	}
 	// No CA in the profile: the system's, or a refusal.
 	c.CAs = nil
-	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "no certificate authority") {
+	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false, false); err == nil || !strings.Contains(err.Error(), "no certificate authority") {
 		t.Errorf("no CA = %v", err)
 	}
-	st, err = renderIKE(c, ikeLogin{}, []*x509.Certificate{pki.caCert, pki.caCert}, "h", dir, "office", false, false)
+	st, err = renderIKE(c, ikeLogin{}, []*x509.Certificate{pki.caCert, pki.caCert}, "h", dir, "office", false, false, false)
 	if err != nil || argAfter(st.Args, "--cert") != dir+"/office.cert.pem" || !slices.Contains(st.Args, dir+"/office.ca1.pem") {
 		t.Errorf("system roots: %v %q", err, st.Args)
 	}
 	// A shared secret: on stdin, no certificates; one too long for getpass
 	// is refused rather than cut short.
 	c.Auth = IKEv2PSK
-	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "shared secret is missing") {
+	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false, false); err == nil || !strings.Contains(err.Error(), "shared secret is missing") {
 		t.Errorf("no secret: %v", err)
 	}
 	c.PSK = strings.Repeat("k", ikeSecretMax)
-	if st, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err != nil || st.Stdin != c.PSK+"\n" ||
+	if st, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false, false); err != nil || st.Stdin != c.PSK+"\n" ||
 		slices.Contains(st.Args, "--cert") || len(st.Files) != 1 {
 		t.Errorf("PSK: %v %q %d files", err, st.Args, len(st.Files))
 	}
 	c.PSK += "k"
-	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false); err == nil || !strings.Contains(err.Error(), "longer than 128") {
+	if _, err := renderIKE(c, ikeLogin{}, nil, "h", dir, "office", false, false, false); err == nil || !strings.Contains(err.Error(), "longer than 128") {
 		t.Errorf("long secret: %v", err)
 	}
 	c.Auth = IKEv2EAP
-	if _, err := renderIKE(c, ikeLogin{User: "alice", Password: "a\nb"}, nil, "h", dir, "office", false, false); err == nil {
+	if _, err := renderIKE(c, ikeLogin{User: "alice", Password: "a\nb"}, nil, "h", dir, "office", false, false, false); err == nil {
 		t.Error("a password with a line break rendered")
 	}
 	for v, want := range map[string]bool{"5.9.8": false, "6.0.2": false, "6.1.0": true, "6.2": true, "7.0.0": true, "": true} {
 		if ikePSKSupported(v) != want {
 			t.Errorf("ikePSKSupported(%q) != %v", v, want)
+		}
+	}
+}
+
+// A full tunnel's DNS is read where the resolve plugin can't hand it to the
+// system: from 5.9.9, which runs the no-op it's given; before, only without
+// a /sbin/resolvconf, which it would run whatever it's told.
+func TestIKEDNSCapture(t *testing.T) {
+	for _, c := range []struct {
+		version   string
+		resolvcnf bool
+		want      bool
+	}{
+		{"5.9.8", true, false}, {"5.9.8", false, true}, {"5.9", true, false},
+		{"5.9.9", true, true}, {"5.9.13", true, true}, {"6.0.1", true, true}, {"6.1.0", true, true}, {"", true, true},
+	} {
+		if got := ikeDNSCapture(c.version, c.resolvcnf); got != c.want {
+			t.Errorf("ikeDNSCapture(%q, resolvconf %v) = %v", c.version, c.resolvcnf, got)
 		}
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -34,20 +35,27 @@ type ikeSetup struct {
 	// password, the shared secret).
 	Args                []string
 	Conf, Socket, Stdin string
+	// DNSFile is the file charon-cmd's resolve plugin is given (a full
+	// tunnel's session only, ikeConf) — never the system's resolv.conf.
+	DNSFile string
 }
 
 // ikePlugins are what a session loads: IKEv2 with userspace ESP over a TUN
 // (kernel-libipsec) — the interface the tunnel's routes go into — the OS's
 // routing (addresses only: charon-cmd installs no routes), VICI (how the
 // daemon follows it), keys and certificates (OpenSSL's crypto: GCM, the
-// elliptic curves), EAP-MSCHAPv2. No DNS plugin, so the server's DNS is
-// never applied; no updown, no attr. A plugin that's missing is left out
+// elliptic curves), EAP-MSCHAPv2. The resolve plugin only for a tunnel that
+// carries all traffic (dns), and only where it can't reach the system's DNS
+// (ikeDNSCapture): it logs the server's DNS servers, which the daemon reads
+// (ikeDNS), and installs them nowhere (ikeConf). Otherwise there's no DNS
+// plugin, so the server's DNS is never applied; no updown, no attr. A
+// plugin that's missing is left out
 // (a distribution's packages may not have them all), and the log says so
 // (ikeEssential names the ones a session can't do without). Only the ones
 // whose every feature always loads are marked critical (!), which makes
 // charon-cmd refuse to start without them: pem's DSA or PGP keys, or
 // kernel-netlink's IPsec (kernel-libipsec's instead), would fail it.
-func ikePlugins(goos string, p12 bool) string {
+func ikePlugins(goos string, p12, dns bool) string {
 	net := "kernel-netlink"
 	if goos == "darwin" {
 		net = "kernel-pfroute"
@@ -60,7 +68,43 @@ func ikePlugins(goos string, p12 bool) string {
 	if p12 {
 		ps = append(ps, "pkcs7", "pkcs12")
 	}
+	if dns {
+		ps = append(ps, "resolve")
+	}
 	return strings.Join(ps, " ")
+}
+
+// systemResolvconf is the resolvconf(8) a resolve plugin before
+// ikeResolvconfPathSince runs whenever it exists.
+var systemResolvconf = "/sbin/resolvconf"
+
+// ikeResolvconfPathSince is the strongSwan release whose resolve plugin
+// takes resolvconf.path (and, given one, runs it instead of writing its
+// file). Before it, the plugin runs /sbin/resolvconf whenever that exists,
+// whatever it's told, and writes its file only when it doesn't.
+var ikeResolvconfPathSince = [3]int{5, 9, 9}
+
+// ikeDNSCapture reports whether a charon-cmd of this version can read the
+// server's DNS servers without handing them to the system: one that takes
+// resolvconf.path is given a command that does nothing; an older one only
+// where there's no system resolvconf (haveResolvconf) to run. An unknown
+// version is taken to be new.
+func ikeDNSCapture(version string, haveResolvconf bool) bool {
+	return ikeAtLeast(version, ikeResolvconfPathSince) || !haveResolvconf
+}
+
+// ikeAtLeast reports whether version (x.y or x.y.z) is v or later; an
+// unknown one is taken to be new.
+func ikeAtLeast(version string, v [3]int) bool {
+	m := reIKEVersion.FindStringSubmatch("strongSwan " + version)
+	if m == nil {
+		return true
+	}
+	var got [3]int
+	for i, s := range m[1:] {
+		got[i], _ = strconv.Atoi(s)
+	}
+	return slices.Compare(got[:], v[:]) >= 0
 }
 
 // ikeEssential are the plugins no session connects without: a failed
@@ -102,14 +146,18 @@ const ikeSecretMax = 128
 // server with when the profile carries none (the system's). v6 asks the
 // server for IPv6 too (the tunnel routes some). p12 hands charon-cmd the
 // login certificate and key as a PKCS#12 (an older charon-cmd:
-// ikeKeyAsP12) rather than as PEM files.
+// ikeKeyAsP12) rather than as PEM files. dns has charon-cmd log the
+// server's DNS servers (a full tunnel's, where ikeDNSCapture allows it).
 //
 // Secrets go on charon-cmd's stdin, never in its arguments: it asks for
 // them (getpass, which reads stdin when there's no terminal, as the daemon
 // runs it), one line each, in the order it needs them.
-func renderIKE(c *IKEv2Config, login ikeLogin, roots []*x509.Certificate, host, dir, name string, v6, p12 bool) (ikeSetup, error) {
+func renderIKE(c *IKEv2Config, login ikeLogin, roots []*x509.Certificate, host, dir, name string, v6, p12, dns bool) (ikeSetup, error) {
 	path := func(f string) string { return filepath.Join(dir, name+"."+f) }
 	st := ikeSetup{Conf: path("conf"), Socket: path("vici")}
+	if dns {
+		st.DNSFile = path("dns")
+	}
 	pemOf := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
 	secret := func(what, v string) error {
 		switch {
@@ -201,7 +249,7 @@ func renderIKE(c *IKEv2Config, login ikeLogin, roots []*x509.Certificate, host, 
 	for i, ca := range trust {
 		st.Files = append(st.Files, ikeFile{Name: path(fmt.Sprintf("ca%d.pem", i)), Data: pemOf("CERTIFICATE", ca.Raw)})
 	}
-	st.Files = append(st.Files, ikeFile{Name: st.Conf, Data: []byte(ikeConf(runtime.GOOS, st.Socket, usesP12))})
+	st.Files = append(st.Files, ikeFile{Name: st.Conf, Data: []byte(ikeConf(runtime.GOOS, st.Socket, st.DNSFile, usesP12))})
 
 	st.Args = []string{
 		"--debug", "1",
@@ -252,11 +300,21 @@ func orString(s, or string) string {
 // (ikeRuleMark). Its priority, after main's and default's, is a second
 // line: a rule after main alone still catches every lookup main can't
 // answer — a host's IPv6 on a v4-only network, say.
-func ikeConf(goos, socket string, p12 bool) string {
-	linux, linuxPlugins := "", ""
+//
+// With a dnsFile (a full tunnel's session), the resolve plugin: it logs
+// each DNS server the server gives ("installing DNS server …", ikeDNS) and
+// installs it nowhere. One that takes resolvconf.path runs that, through a
+// shell, instead of resolvconf(8) (which would change the system's DNS):
+// ":" does nothing. An older one, loaded only where there's no resolvconf to
+// run (ikeDNSCapture), writes dnsFile instead of /etc/resolv.conf.
+func ikeConf(goos, socket, dnsFile string, p12 bool) string {
+	linux, plugins := "", ""
 	if goos == "linux" {
 		linux = fmt.Sprintf("    routing_table = %d\n    routing_table_prio = %d\n", ikeRoutingTable, ikeRoutingTable)
-		linuxPlugins = fmt.Sprintf("        kernel-netlink {\n            fwmark = %s\n        }\n", ikeRuleMark)
+		plugins = fmt.Sprintf("        kernel-netlink {\n            fwmark = %s\n        }\n", ikeRuleMark)
+	}
+	if dnsFile != "" {
+		plugins += fmt.Sprintf("        resolve {\n            file = %s\n            resolvconf {\n                path = :\n            }\n        }\n", dnsFile)
 	}
 	return fmt.Sprintf(`# written by riftrouted for one charon-cmd session; not read by anything else
 charon-cmd {
@@ -284,7 +342,7 @@ charon-cmd {
         }
 %s    }
 }
-`, ikePlugins(goos, p12), linux, socket, linuxPlugins)
+`, ikePlugins(goos, p12, dnsFile != ""), linux, socket, plugins)
 }
 
 // ikeRuleMark is the firewall mark (value/mask) charon's routing rule on

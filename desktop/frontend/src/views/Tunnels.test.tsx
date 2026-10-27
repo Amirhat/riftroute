@@ -154,9 +154,56 @@ describe('Tunnels view', () => {
         routes: ['192.168.70.0/24', '192.168.72.11'],
         auto_connect: false,
         when_down: 'fallback',
+        all_traffic: false,
       }),
     )
     await waitFor(() => expect(mockApi.connectTunnel).toHaveBeenCalledWith('office'))
+  })
+
+  it('saves a tunnel that carries all traffic, and says so on its card', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      path: '/Users/me/home.ovpn',
+      name: 'home.ovpn',
+      config: 'client\nremote 198.51.100.7\n',
+      servers: ['198.51.100.7:1194/udp'],
+      needs_auth: false,
+      ignored: [],
+      username: '',
+      password: '',
+      error: '',
+    })
+    mockApi.saveTunnel.mockResolvedValue({
+      tunnel: { ...connected, name: 'home', state: 'disconnected', all_traffic: true, routes: [] },
+    })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose a file…'))
+    expect(await screen.findByText('home.ovpn')).toBeInTheDocument()
+    expect(screen.queryByLabelText('DNS servers')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('All traffic, like an ordinary VPN'))
+    expect(screen.getByText('Networks through this tunnel (optional)')).toBeInTheDocument()
+    expect(screen.getByText('Block traffic')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('DNS servers'), { target: { value: '1.1.1.1, 9.9.9.9' } })
+    fireEvent.click(screen.getByText('Save'))
+    await waitFor(() =>
+      expect(mockApi.saveTunnel).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'home', all_traffic: true, routes: [], dns: ['1.1.1.1', '9.9.9.9'] }),
+      ),
+    )
+    withTunnels([{ ...connected, name: 'home', all_traffic: true, routes: [], dns: ['10.8.0.1'] }])
+    renderView()
+    expect(await screen.findByText('all traffic')).toBeInTheDocument()
+    expect(screen.getByText('10.8.0.1')).toBeInTheDocument()
+    expect(screen.getByText("(its server's)")).toBeInTheDocument()
+  })
+
+  it('shows what keeps a full tunnel’s DNS from working beside the servers in use', async () => {
+    const note = 'DNS also goes to tailscale0, which takes every name too: systemd-resolved asks both'
+    withTunnels([{ ...connected, name: 'home', all_traffic: true, routes: [], dns: ['10.8.0.1'], dns_note: note }])
+    renderView()
+    expect(await screen.findByText('10.8.0.1')).toBeInTheDocument()
+    expect(screen.getByText(note)).toBeInTheDocument()
   })
 
   it('renders the daemon’s field errors inline', async () => {

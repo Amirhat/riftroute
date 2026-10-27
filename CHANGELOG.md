@@ -4,6 +4,62 @@ All notable changes to RiftRoute are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A tunnel can carry all traffic** (`riftroute tunnel add … --all-traffic`,
+  or "All traffic, like an ordinary VPN" in the app), except what's routed
+  elsewhere on purpose. Profiles, other VPNs' networks, your local network,
+  the tunnel's own server and other tunnels keep their path. They're more
+  specific than the tunnel's four /2 routes, which take over from the main
+  VPN's catch-all (a default or two /1 halves). Exclude routes don't yield
+  to it and include rules aren't cut around it, as they would be for a
+  tunnel's own networks. IPv6 is blocked while it's connected without an
+  IPv6 address. With "block when down", nothing else leaves while it's
+  down. Only one tunnel carries all traffic at a time. What mustn't go into
+  it (a tunnel's server, the addresses the watchdog probes) is pinned to
+  its usual path (docs/tunnels-full.md). While its own server has no path
+  outside it (between networks), nothing goes in, and WireGuard never
+  follows its server to an address inside the tunnel. One that's connected
+  but passes nothing (its server shakes hands but forwards nothing) is
+  reconnected after 30 s, waiting longer each time it dies again, so it
+  never cuts the machine off. A blip of your own network doesn't count.
+- **…and its DNS.** While a tunnel that carries all traffic is connected,
+  your system resolves names through it. It uses the DNS servers its
+  server gives (OpenVPN's push, WireGuard's `DNS =`, IKEv2's), or ones you
+  set for it (`--dns`, or "DNS servers" in the app). Your system's own come
+  back when it disconnects, with a panic, and after a crash (at the next
+  start). On macOS, riftrouted forwards the system's lookups (a resolver
+  of RiftRoute's own for every domain, at a forwarder on loopback) to the
+  tunnel's servers, through the tunnel. Beside an NE VPN that captures
+  DNS, that's the only way the queries reach the tunnel. Another VPN's
+  claim on every domain is set aside meanwhile (up to 5 times in 10
+  minutes). On Linux it's set on the tunnel's link through
+  systemd-resolved; without it, the system's DNS stays, and the tunnel's
+  card says why, as it does when another link also takes every name.
+  RiftRoute never rewrites `/etc/resolv.conf`. The DNS servers go into the
+  tunnel by routes of their own, and a change that fails is tried again.
+  For IKEv2, strongSwan's resolve plugin is loaded only for a tunnel that
+  carries all traffic, and only where it can't touch the system's DNS: a
+  strongSwan before 5.9.9 beside resolvconf (Debian 12's) would run it, so
+  there the server's DNS isn't read, and the card says to set some. The
+  macOS strongSwan RiftRoute ships now includes the plugin.
+
+### Changed
+- **A route wider than your local network may hold the router.** The
+  safety guardrail refused any route containing the router's address. A
+  profile listing 192.168.0.0/16 on a 192.168.1.x network was always
+  refused, though the network's own route keeps the router reachable. It's
+  allowed now when a narrower connected route holds the router, and still
+  refused otherwise.
+- **A main VPN that takes everything with two /1 halves** (OpenVPN's
+  `redirect-gateway def1`) is recognized as the VPN, as one with a default
+  route is: include profiles find it.
+
+### Fixed
+- `route explain` said "via tunnel X" for a tunnel's server pin, which keeps
+  that traffic *out* of the tunnel. It now says "kept out of tunnel X".
+
 ## [0.8.0] — 2026-10-04
 
 RiftRoute lives beside Tailscale, and puts back a route another program

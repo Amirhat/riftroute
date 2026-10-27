@@ -20,7 +20,7 @@ RUN cd /src && curl -fsSL --proto '=https' -o strongswan.tar.bz2 \
          --enable-kernel-libipsec --enable-kernel-netlink --enable-socket-default \
          --enable-openssl --enable-nonce --enable-kdf \
          --enable-x509 --enable-pubkey --enable-pkcs1 --enable-pkcs8 --enable-pem --enable-constraints \
-         --enable-eap-identity --enable-eap-mschapv2 --enable-md4 --enable-des \
+         --enable-eap-identity --enable-eap-mschapv2 --enable-md4 --enable-des --enable-resolve \
          --enable-monolithic --enable-static --disable-shared >/dev/null \
     && make -j"$(nproc)" >/dev/null && cp src/charon-cmd/charon-cmd /charon-cmd
 

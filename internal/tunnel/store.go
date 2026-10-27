@@ -28,9 +28,18 @@ type def struct {
 	AutoConnect bool              `json:"auto_connect"`
 	// WhenDown is block or fallback; empty (a definition from before it) is
 	// fallback.
-	WhenDown  domain.TunnelWhenDown `json:"when_down,omitempty"`
-	UpdatedAt time.Time             `json:"updated_at"`
+	WhenDown domain.TunnelWhenDown `json:"when_down,omitempty"`
+	// AllTraffic: a full tunnel (domain.TunnelSpec.AllTraffic).
+	AllTraffic bool `json:"all_traffic,omitempty"`
+	// DNS overrides the DNS its server gives, for a full tunnel.
+	DNS       []string  `json:"dns,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// needsIPv6 reports whether the tunnel takes an IPv6 address when its
+// server offers one: a v6 route listed, or all traffic (IPv6 goes in then,
+// rather than being blocked).
+func (d *def) needsIPv6() bool { return d.AllTraffic || RoutesNeedIPv6(d.Routes) }
 
 // blocks reports whether the tunnel refuses its destinations while it's
 // down.

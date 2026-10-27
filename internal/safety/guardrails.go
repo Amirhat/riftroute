@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -72,8 +73,13 @@ func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []dom
 	}
 
 	// 1. Never capture the physical gateway inside a bypass — it can break the
-	//    on-link path to the gateway and strand everything.
+	//    on-link path to the gateway and strand everything. A route wider than
+	//    the network the gateway is on (its connected route: 192.168.0.0/16, a
+	//    full tunnel's 192.0.0.0/2, around a 192.168.1.0/24 LAN) can't: the
+	//    narrower route keeps winning for the gateway.
 	if physGW.IsValid() {
+		var onLink []netip.Prefix
+		read := false
 		for _, d := range desired {
 			if d.Table != "" {
 				continue // Model B table routes are isolated; not a main-table capture
@@ -82,12 +88,19 @@ func checkGuardrails(ctx context.Context, prov provider.RouteProvider, all []dom
 			if err != nil {
 				continue
 			}
-			if pfx.Contains(physGW) {
-				vs = append(vs, Violation{
-					Rule:   "gateway-capture",
-					Detail: fmt.Sprintf("route %s would capture the physical gateway %s", d.DstCIDR, physGW),
-				})
+			if !pfx.Contains(physGW) {
+				continue
 			}
+			if !read {
+				onLink, read = gatewayNetworks(ctx, prov, physGW), true
+			}
+			if slices.ContainsFunc(onLink, func(n netip.Prefix) bool { return n.Bits() > pfx.Bits() }) {
+				continue
+			}
+			vs = append(vs, Violation{
+				Rule:   "gateway-capture",
+				Detail: fmt.Sprintf("route %s would capture the physical gateway %s", d.DstCIDR, physGW),
+			})
 		}
 	}
 
@@ -184,4 +197,30 @@ func sshPeer() netip.Addr {
 		return netip.Addr{}
 	}
 	return a
+}
+
+// gatewayNetworks are the on-link networks that hold the physical gateway:
+// connected routes (no next hop) in the main table that aren't RiftRoute's,
+// a VPN's, refusals, cloned entries or interface-scoped. A read error gives
+// none, so the guard refuses as before.
+func gatewayNetworks(ctx context.Context, prov provider.RouteProvider, gw netip.Addr) []netip.Prefix {
+	fam := domain.FamilyV4
+	if gw.Is6() {
+		fam = domain.FamilyV6
+	}
+	routes, err := prov.ListRoutes(ctx, fam)
+	if err != nil {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, r := range routes {
+		if r.Table != "" || r.Gateway != "" || r.Reject || r.Cloned || r.Scoped ||
+			r.Owner == domain.OwnerRiftRoute || r.Owner == domain.OwnerVPN {
+			continue
+		}
+		if p, err := netip.ParsePrefix(r.DstCIDR); err == nil && p.Contains(gw) {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
 }

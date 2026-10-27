@@ -9,6 +9,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/Amirhat/riftroute/internal/config"
+	"github.com/Amirhat/riftroute/internal/tunneldns"
 )
 
 // WGConfig is a WireGuard tunnel's configuration: the standard wg-quick file
@@ -21,6 +24,12 @@ type WGConfig struct {
 	Addresses  []netip.Prefix
 	MTU        int // 0: the default
 	Peers      []WGPeer
+	// DNS and DNSSearch are the Interface's DNS = (its addresses, and the
+	// names wg-quick takes for search domains): applied only while the
+	// tunnel carries all traffic, and otherwise ignored (still listed in
+	// Ignored).
+	DNS       []netip.Addr
+	DNSSearch []string
 	// Ignored lists what was dropped because RiftRoute owns its job,
 	// deduplicated and sorted.
 	Ignored []string
@@ -101,6 +110,11 @@ func ParseWG(text string) (*WGConfig, error) {
 		}
 		if section == "interface" && wgIgnored[key] {
 			ignored[strings.TrimSpace(strings.SplitN(line, "=", 2)[0])] = true
+			if key == "dns" {
+				if err := c.addDNS(value); err != nil {
+					return nil, &ProfileError{Line: n, Msg: err.Error()}
+				}
+			}
 			continue
 		}
 		var err error
@@ -306,4 +320,25 @@ func hostPrefix(s string) (netip.Prefix, error) {
 		return netip.Prefix{}, fmt.Errorf("%q is not an address or CIDR", s)
 	}
 	return netip.PrefixFrom(a, a.BitLen()), nil
+}
+
+// addDNS reads one DNS = line: addresses, and names (search domains, as
+// wg-quick takes them).
+func (c *WGConfig) addDNS(value string) error {
+	for _, v := range strings.Split(value, ",") {
+		v = strings.TrimSpace(v)
+		switch a, err := netip.ParseAddr(v); {
+		case v == "":
+		case err == nil:
+			c.DNS = append(c.DNS, a)
+		case config.IsValidDomain(v):
+			if !slices.Contains(c.DNSSearch, v) && len(c.DNSSearch) < 8 {
+				c.DNSSearch = append(c.DNSSearch, v)
+			}
+		default:
+			return fmt.Errorf("DNS = %q is neither an address nor a domain", v)
+		}
+	}
+	c.DNS = tunneldns.Clean(c.DNS)
+	return nil
 }

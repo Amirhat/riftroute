@@ -219,6 +219,7 @@ export interface RouteDecision {
   // VPN's too.
   tunnel?: string
   tunnel_type?: string
+  kept_out_of?: string // a host route keeping this out of that tunnel (its server pin, a full tunnel's keep-out)
   reachable: boolean
   // A reject route refuses it. With tunnel set: that tunnel is down and set
   // to block (absent from daemons before 0.5.0).
@@ -443,6 +444,13 @@ export interface TunnelStatus {
   auto_connect: boolean
   // Absent from daemons before 0.5.0 (fallback).
   when_down?: TunnelWhenDown
+  // It carries all traffic but what's routed elsewhere on purpose.
+  all_traffic?: boolean
+  // DNS servers set for it; the ones the system uses through it now; why
+  // none are, while it carries all traffic.
+  dns_override?: string[]
+  dns?: string[]
+  dns_note?: string
   // Its destinations are refused right now: set to block, and down while
   // it should be up.
   blocking?: boolean
@@ -502,6 +510,10 @@ export interface TunnelSpec {
   routes: string[]
   auto_connect: boolean
   when_down?: TunnelWhenDown
+  // Unset keeps the tunnel's (a daemon from before it ignores it).
+  all_traffic?: boolean
+  // DNS servers to use through it instead of its server's (empty clears).
+  dns?: string[]
 }
 
 // TunnelProfileRef is a tunnel-mode profile routed into a tunnel: its toggle
