@@ -50,8 +50,9 @@ const (
 var ourKey = serviceDNS(ourService)
 
 // recheckEvery is how often, while ours is in place, the services are looked
-// at again: an NE VPN that reconnects takes every domain again.
-var recheckEvery = 5 * time.Second
+// at again: an NE VPN that reconnects takes every domain again. After a
+// write fails, the next waits quietAfterFailure.
+var recheckEvery, quietAfterFailure = 5 * time.Second, 30 * time.Second
 
 // A service that takes every domain back maxRewrites times in rewriteWindow
 // is let have it: set aside again and again, DNS would flip between its
@@ -88,6 +89,9 @@ type scutilApplier struct {
 	rewrites []time.Time
 	held     bool
 	note     noteBox
+	// quietUntil: a recheck whose writes failed (configd not answering)
+	// waits this long before writing again — no flush every few seconds.
+	quietUntil time.Time
 }
 
 func newScutil(run runner, log *slog.Logger) *scutilApplier {
@@ -400,11 +404,14 @@ func (s *scutilApplier) watch(stop chan struct{}) {
 func (s *scutilApplier) recheck(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.applied.Empty() || !s.held {
+	if s.applied.Empty() || !s.held || s.now().Before(s.quietUntil) {
 		return
 	}
 	if _, port := s.fwd.Active(); !s.ours(ctx, port) {
-		_ = s.putLocked(ctx, port, s.applied)
+		if err := s.putLocked(ctx, port, s.applied); err != nil {
+			s.quietUntil = s.now().Add(quietAfterFailure)
+			return
+		}
 		s.flush(ctx)
 	}
 	back := s.claimants(ctx)

@@ -485,3 +485,32 @@ func TestScutilRecoverSaysWhatsLeft(t *testing.T) {
 		t.Fatalf("answering: %v", err)
 	}
 }
+
+// A recheck whose write fails (configd not answering) waits before writing
+// again: no write and cache flush every few seconds.
+func TestScutilRecheckWaitsAfterAFailedWrite(t *testing.T) {
+	f := storeWithVPN()
+	s, cfg := newTestScutil(t, f)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+	ctx := context.Background()
+	_ = s.Apply(ctx, cfg)
+	delete(f.keys, ourKey)
+	broken := func(context.Context, string, string, ...string) (string, error) {
+		return "", fmt.Errorf("signal: killed")
+	}
+	s.run = broken
+	s.recheck(ctx)
+	s.run = f.run
+	before := len(f.ran)
+	clock = clock.Add(quietAfterFailure / 2)
+	s.recheck(ctx)
+	if f.keys[ourKey] != nil || len(f.ran) != before {
+		t.Fatalf("wrote again too soon: ours %v, ran %v", f.keys[ourKey], f.ran[before:])
+	}
+	clock = clock.Add(quietAfterFailure)
+	s.recheck(ctx)
+	if f.keys[ourKey] == nil {
+		t.Fatal("not put back after the quiet time")
+	}
+}

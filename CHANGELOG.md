@@ -20,7 +20,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it (a tunnel's server, the addresses the watchdog probes) is pinned to
   its usual path (docs/tunnels-full.md). While its own server has no path
   outside it (between networks), nothing goes in, and WireGuard never
-  follows its server to an address inside the tunnel.
+  follows its server to an address inside the tunnel. One that's connected
+  but passes nothing (its server shakes hands but forwards nothing) is
+  ended after 30 s, so it never cuts the machine off.
 - **…and its DNS.** While a tunnel that carries all traffic is connected,
   your system resolves names through it. It uses the DNS servers its
   server gives (OpenVPN's push, WireGuard's `DNS =`, IKEv2's), or ones you

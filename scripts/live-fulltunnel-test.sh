@@ -59,7 +59,10 @@ ck()   { if [[ "$2" == *"$3"* ]]; then pass "$1"; else fail "$1 -> got [${2:0:20
 ckeq() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 -> got [${2:0:200}] want [$3]"; fi; }
 ckne() { if [[ "$2" != "$3" ]]; then pass "$1"; else fail "$1 -> [$3] unexpectedly"; fi; }
 note() { echo "  NOTE: $*"; }
-rr()   { ./bin/riftroute --socket /var/run/riftroute.sock "$@"; }
+# to N cmd…: cmd, killed after N seconds — nothing here may hang the run
+# (a dead tunnel makes every lookup wait).
+to()   { perl -e 'alarm shift @ARGV; exec @ARGV' "$@"; }
+rr()   { to 90 ./bin/riftroute --socket /var/run/riftroute.sock "$@"; }
 # until_ok N cmd…: runs cmd once a second until it succeeds, N times at most.
 until_ok() { local n=$1 i; shift; for ((i = 0; i < n; i++)); do "$@" && return 0; sleep 1; done; return 1; }
 # ask: an optional step for you; false when skipped, timed out or not on a terminal.
@@ -84,7 +87,7 @@ fwdport() { echo "show $OURS" | scutil 2>/dev/null | awk '$1 == "ServerPort" {pr
 # ours_up: the first resolver is ours, at the forwarder on loopback.
 ours_up() { [[ "$(ns1)" == 127.0.0.1 && -n "$(fwdport)" ]]; }
 claims() { echo "show State:/Network/Service/$1/DNS" | scutil 2>/dev/null | grep -c "SupplementalMatchDomains"; }
-resolves() { dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address/{print $2; exit}'; }
+resolves() { to 10 dscacheutil -q host -a name "$1" 2>/dev/null | awk '/^ip_address/{print $2; exit}'; }
 # After a change of path, the main VPN may need a moment (one that shares the
 # tunnel's server rode its pin): these wait up to 30 s.
 names_ok() { [[ -n "$(resolves www.example.com)" ]]; }
@@ -158,6 +161,7 @@ trap finish EXIT
 trap 'echo "  interrupted"; exit 130' INT TERM
 
 echo "==== live full-tunnel test (reversible; the trap cleans up) ===="
+echo "  if anything looks wrong, press Ctrl-C: the tunnel goes and the app's daemon comes back within a minute"
 echo "  if this is killed hard: sudo ./bin/riftroute tunnel rm $NAME, then"
 echo "  sudo $BUNDLE_CLI daemon install --allow-downgrade"
 
@@ -215,6 +219,14 @@ ckeq "connected" "$(tj .state)" "connected"
 T=$(tj .iface)
 echo "  interface: ${T:-none} | server: $(tj '.server // .servers[0] // ""') (its configuration's: ${SERVER:-none})"
 [[ -n "$T" ]] || { fail "no interface: nothing more to test"; rr tunnel log "$NAME" 2>&1 | tail -20 | sed 's/^/    /'; exit 1; }
+# A tunnel that's connected but passes nothing would cut this Mac off for
+# the whole run: stop at once (the trap cleans up).
+through() { [[ "$(via 1.0.0.1)" == "$T" ]] && curl -s -o /dev/null -m 6 https://1.0.0.1; }
+if ! until_ok 20 through; then
+  fail "nothing gets through the tunnel (https://1.0.0.1 by address): stopping here"
+  exit 1
+fi
+pass "traffic gets through the tunnel"
 rr tunnel list 2>&1 | sed 's/^/    /'
 ck "tunnel list says all traffic" "$(rr tunnel list 2>&1)" "all traffic"
 

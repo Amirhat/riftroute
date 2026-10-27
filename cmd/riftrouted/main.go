@@ -262,8 +262,12 @@ func run() error {
 	// connected (never under -provider fake). What a run that crashed left
 	// is put back first, before any tunnel comes up.
 	var tunnelDNS tunneldns.Applier = &tunneldns.Fake{}
+	var tunnelProbe tunnel.Prober // nil: the real one, through the tunnel
 	if providerName != "fake" {
 		tunnelDNS = tunneldns.New(filepath.Dir(dbPath), logger)
+	} else {
+		// A fake tunnel carries nothing to ask through.
+		tunnelProbe = func(context.Context, []netip.Addr) bool { return true }
 	}
 	if tunnelDNS != nil {
 		rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -305,6 +309,7 @@ func run() error {
 		OnChange: broadcastSoon,
 		Count:    counts.Inc,
 		DNS:      tunnelDNS,
+		Probe:    tunnelProbe,
 		Log:      logger,
 	})
 	if err != nil {

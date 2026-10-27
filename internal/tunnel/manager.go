@@ -65,7 +65,10 @@ type Options struct {
 	// DNS applies a full tunnel's DNS to the system while it's connected
 	// (tunneldns). nil: the system's DNS is never changed.
 	DNS tunneldns.Applier
-	Log *slog.Logger
+	// Probe asks whether traffic gets through a connected full tunnel
+	// (alive.go); nil is probeThrough, the real one.
+	Probe Prober
+	Log   *slog.Logger
 }
 
 // Manager runs the daemon's tunnels: it stores their definitions, runs one
@@ -147,6 +150,9 @@ type live struct {
 	// why it's not, for a full tunnel that's connected.
 	dnsInUse []netip.Addr
 	dnsNote  string
+	// misses are the probes in a row nothing got through (a full tunnel's:
+	// alive.go).
+	misses int
 	// want: someone asked for the tunnel to be up (Connect, auto-connect, a
 	// resume) and nobody has taken it down since (Disconnect, a panic,
 	// Delete). A session that ends on its own leaves it set. While it's
@@ -203,6 +209,9 @@ var (
 func New(o Options) (*Manager, error) {
 	if o.Log == nil {
 		o.Log = slog.Default()
+	}
+	if o.Probe == nil {
+		o.Probe = probeThrough
 	}
 	st, err := openDefStore(o.Dir)
 	if err != nil {
@@ -262,6 +271,7 @@ func New(o Options) (*Manager, error) {
 			m.rt[n].want = true
 		}
 	}
+	go m.watchAlive()
 	return m, nil
 }
 

@@ -61,6 +61,22 @@ quarters while it's connected, so IPv6 doesn't go around it. More specific v6
 routes still win: the LAN's, link-local, other VPNs'. The tunnel's card says
 so.
 
+## Connected, but passing nothing
+
+A full tunnel whose server shakes hands but forwards nothing would cut the
+machine off: the handshake (or openvpn's and charon's "connected") doesn't
+show it, and the watchdog's anchors are kept out of the tunnel. The owner's
+Mac needed a restart once (2026-10-27).
+
+So while a full tunnel is connected, something is asked through it every
+10 s (`alive.go`):
+- its DNS servers in use (a query for the root's servers: any answer, even a refusal, came back through the tunnel);
+- else a connection to `1.0.0.1:443` or `8.8.4.4:443`, which its quarters carry (not 1.1.1.1, the anchor).
+
+After 3 misses in a row (30 s), its session ends, failed: "connected, but
+nothing got through it". Its routes leave (fallback) or are refused (block:
+still wanted, so it keeps blocking), and the system's DNS comes back.
+
 ## When it's down
 
 - **fallback** (default): the quarters go, and traffic takes its usual path, usually the main VPN.
