@@ -64,18 +64,24 @@ so.
 ## Connected, but passing nothing
 
 A full tunnel whose server shakes hands but forwards nothing would cut the
-machine off: the handshake (or openvpn's and charon's "connected") doesn't
+machine off. The handshake (or openvpn's and charon's "connected") doesn't
 show it, and the watchdog's anchors are kept out of the tunnel. The owner's
 Mac needed a restart once (2026-10-27).
 
-So while a full tunnel is connected, something is asked through it every
-10 s (`alive.go`):
-- its DNS servers in use (a query for the root's servers: any answer, even a refusal, came back through the tunnel);
-- else a connection to `1.0.0.1:443` or `8.8.4.4:443`, which its quarters carry (not 1.1.1.1, the anchor).
+So every 10 s, for each connected full tunnel (`alive.go`):
+- **Proof of life:** traffic coming back (1 KiB since the last look). Nothing is asked.
+- **Otherwise its DNS servers are asked through it** (any answer, even a refusal). These are the ones in use, its server's, or the ones set for it. Each was given by the tunnel itself, not the internet beyond it, so a full tunnel into an intranet passes too. Their host routes take the questions in, unless an exclude profile holds that very host.
+- **With none known**, it's judged by its counters alone: 3 KiB going in and nothing coming back. An idle one isn't judged.
 
-After 3 misses in a row (30 s), its session ends, failed: "connected, but
-nothing got through it". Its routes leave (fallback) or are refused (block:
-still wanted, so it keeps blocking), and the system's DNS comes back.
+A miss counts only while this machine's own way out is up: a default route
+that isn't a tunnel's. Asleep, rejoining Wi-Fi or between networks, nothing
+gets through anything (the review of 41ed0ab proved that a blip had ended
+the tunnel for good).
+
+After 3 misses in a row, the session is **reconnected**, as a dropped one
+is:
+- it ends, still wanted, so block keeps blocking;
+- it starts again after a wait that doubles from 5 s to 5 min while it keeps dying, and starts over after 2 minutes of life.
 
 ## When it's down
 
@@ -124,7 +130,8 @@ tunnel does, while it's connected, and puts it back when it isn't.
   - **Every domain, ours alone:** another service that also takes every domain (an NE VPN's `SupplementalMatchDomains ""`) would rank ahead of ours. While ours is in place, that claim is set aside: its `SupplementalMatchDomains`/`Orders` come off its State: DNS (only `""`, when other domains are beside it), after a backup to `State:/Network/RiftRoute/DNSBackup/<service>`. A claim that can't be taken apart cleanly (orders beside other domains) is left, and logged.
   - **Holding:** every 5 s, ours is put back if it's gone, and a service that took every domain back (the NE VPN reconnecting) is set aside again, its new DNS the backup. One that does so 5 times in 10 minutes is let have it: ours goes, and the card shows only why, until the tunnel connects again.
   - **Restore** (the tunnel down, disconnected, panic, the daemon stopping): ours goes, the forwarder stops, and each set-aside service gets its claim back while it's still set aside. One that took every domain back by itself, or went away, is left as it is. Orders, which a script can't write, come back with the whole backup while the service's servers are as they were. mDNSResponder's cache is flushed after each change.
-  - **Split DNS and wildcard learning** keep their domains: their resolvers (`/etc/resolver`) match narrower.
+  - **Split DNS and wildcard learning** keep their domains: their resolvers (`/etc/resolver`) match narrower. The wildcard learner keeps asking the system's own resolvers, outside the tunnel. Its domains are usually an exclude profile's, whose local answers are the ones wanted.
+  - **The forwarder** is every name's resolver while the tunnel is up: it takes 1024 queries at once (each bounded at 3 s), so one local process holding slow ones can't stall everyone's.
   - The keys live in State:, so they survive a daemon crash (until reboot, when they're gone too). The daemon removes them at start, before tunnels come up: the forwarder they point at went with the crash. The live test's crash once found configd not answering then: Recover waited out its 15 s and left our resolver, pointing at a dead forwarder. Now each tool run has 5 s of its own; Recover says what's left; and the manager starts "dirty": its first DNS sync reverts even with nothing wanted, and tries again until that works.
 - **A change that fails** (macOS between networks has no primary service; systemd-resolved restarting) is tried again on its own: in 5 s, doubling up to a minute, until it works or isn't wanted any more. Not where nothing will change (no systemd-resolved), and each failure is logged once.
 - **Crash safety:** the keys and links are RiftRoute's by name.

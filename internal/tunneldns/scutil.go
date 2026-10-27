@@ -195,7 +195,7 @@ func (s *scutilApplier) Apply(ctx context.Context, cfg Config) error {
 		}
 	}
 	if s.fwd == nil {
-		s.fwd = dnsproxy.New(s.log, nil).Named("full tunnel's DNS forwarder")
+		s.fwd = dnsproxy.New(s.log, nil).Named("full tunnel's DNS forwarder").Limit(1024)
 	}
 	ups := make([]string, len(cfg.Servers))
 	for i, a := range cfg.Servers {
@@ -427,6 +427,7 @@ func (s *scutilApplier) recheck(ctx context.Context) {
 			"stopped setting it aside: your system's own DNS is in use", len(s.rewrites), int(rewriteWindow/time.Minute)))
 		s.log.Info("letting the network service keep DNS for every domain", "services", strings.Join(back, ","))
 		s.recoverLocked(ctx)
+		s.fwd.Stop() // nothing points at it now
 		return
 	}
 	for _, svc := range back { // its new DNS is the backup now

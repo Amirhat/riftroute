@@ -115,6 +115,7 @@ type Manager struct {
 	logins  map[string]string
 	closed  chan struct{}
 	shut    sync.Once
+	at      aliveTimes // a full tunnel's liveness times (alive.go)
 }
 
 type live struct {
@@ -150,9 +151,8 @@ type live struct {
 	// why it's not, for a full tunnel that's connected.
 	dnsInUse []netip.Addr
 	dnsNote  string
-	// misses are the probes in a row nothing got through (a full tunnel's:
-	// alive.go).
-	misses int
+	// alive is a full tunnel's liveness (alive.go).
+	alive liveness
 	// want: someone asked for the tunnel to be up (Connect, auto-connect, a
 	// resume) and nobody has taken it down since (Disconnect, a panic,
 	// Delete). A session that ends on its own leaves it set. While it's
@@ -271,7 +271,8 @@ func New(o Options) (*Manager, error) {
 			m.rt[n].want = true
 		}
 	}
-	go m.watchAlive()
+	m.at = defaultAlive
+	go m.watchAlive(m.at.every)
 	return m, nil
 }
 
@@ -853,7 +854,8 @@ func (m *Manager) Connect(name string) error {
 	// The last session's addresses stay the tunnel's servers until this
 	// one resolves its own: a block-mode tunnel's reject routes must not
 	// hold them meanwhile.
-	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers}
+	// The reconnect wait of a full tunnel that keeps dying carries over.
+	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers, alive: liveness{wait: r.alive.wait}}
 	m.mu.Unlock()
 	if d.blocks() {
 		m.requestApply() // refuse its networks from now, not from the session's first apply

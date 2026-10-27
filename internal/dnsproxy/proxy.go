@@ -70,6 +70,14 @@ func (p *Proxy) Named(name string) *Proxy {
 	return p
 }
 
+// Limit sets how many queries it handles at once (maxInFlight by default),
+// before Start: a full tunnel's forwarder is every name's resolver, so one
+// local process holding slow queries mustn't stall everyone's.
+func (p *Proxy) Limit(n int) *Proxy {
+	p.sem = make(chan struct{}, n)
+	return p
+}
+
 // SetUpstreams installs the REAL resolvers to forward to (":53" added when no
 // port is given). Invalid addresses are dropped; the proxy's own address is
 // filtered at forward time (self-loop guard) so a legitimate local resolver

@@ -341,6 +341,7 @@ if [[ "$MAINIF" != "$PHYSIF" ]] && ask "Optional: turn your main VPN OFF now, in
   until_ok 12 ours_up
   ckeq "DNS is still the tunnel's" "$(ns1)" "127.0.0.1"
   ck "and macOS takes it as reachable" "$(scutil --dns | sed -n '/^resolver #1$/,/^$/p')" "(Reachable"
+  until_ok 15 names_ok
   ckne "names resolve through it (a plain primary, DNS set by hand included)" "$(resolves www.example.com)" ""
   ckeq "1.1.1.1 moved to $PHYSIF" "$(via 1.1.1.1)" "$PHYSIF"
   ck "WireGuard still sends to its server" "$(tj .server)" "$SERVER"
