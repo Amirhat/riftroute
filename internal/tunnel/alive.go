@@ -274,6 +274,12 @@ func (m *Manager) reconnectDead(name string) {
 	if again {
 		if err := m.connect(name, true); err != nil {
 			m.o.Log.Warn("full tunnel not reconnected", "tunnel", name, "err", err)
+			m.mu.Lock()
+			if r := m.rt[name]; r != nil && r.sess == nil {
+				r.lastErr, r.alive.revive = "not reconnected: "+err.Error(), false // the card says why it stopped coming back
+			}
+			m.mu.Unlock()
+			m.changed()
 		}
 	}
 }

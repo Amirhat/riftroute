@@ -342,3 +342,33 @@ func TestReviveSkipsATunnelNoLongerFull(t *testing.T) {
 		t.Fatal("still reviving")
 	}
 }
+
+// A reconnect that can't start (the login no longer complete) ends the
+// cycle, and the card says why.
+func TestReviveThatCantStartSaysWhy(t *testing.T) {
+	var alive, outside atomic.Bool
+	alive.Store(true)
+	outside.Store(true)
+	h := newHarness(t)
+	fastAlive(t, h, &alive, &outside)
+	h.m.at.first = 300 * time.Millisecond
+	if _, err := h.m.Save(context.Background(), fullSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.m.Connect("infra")
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	alive.Store(false)
+	waitState(t, h.m, "infra", domain.TunnelFailed)
+	h.m.mu.Lock()
+	d := *h.m.defs["infra"]
+	d.Password = ""
+	h.m.defs["infra"] = &d
+	h.m.mu.Unlock()
+	waitFor(t, "why it stopped", func() bool {
+		st, _ := h.m.Status("infra")
+		return strings.Contains(st.LastError, "not reconnected: ") && strings.Contains(st.LastError, "needs a username and password")
+	})
+	if reviving(h, "infra") {
+		t.Fatal("still reviving")
+	}
+}
