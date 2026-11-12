@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-12
+
+A tunnel can carry all your traffic, like an ordinary VPN, except what's
+routed elsewhere on purpose, and resolve names through it.
+
 ### Added
 - **A tunnel can carry all traffic** (`riftroute tunnel add … --all-traffic`,
   or "All traffic, like an ordinary VPN" in the app), except what's routed
@@ -56,6 +61,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A main VPN that takes everything with two /1 halves** (OpenVPN's
   `redirect-gateway def1`) is recognized as the VPN, as one with a default
   route is: include profiles find it.
+
+- **Go 1.26 and Wails 2.13.** Wails 2.13 fixes an origin check
+  (GHSA wildcardPatternToRegex); RiftRoute sets no allowed origins, so it
+  wasn't exposed.
 
 ### Fixed
 - `route explain` said "via tunnel X" for a tunnel's server pin, which keeps
