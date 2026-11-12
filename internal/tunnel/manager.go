@@ -787,7 +787,12 @@ func normalizeRoutes(in []string) ([]string, []string) {
 
 // Connect starts a tunnel (asynchronously; watch its status). Connecting a
 // tunnel that is already up is a no-op.
-func (m *Manager) Connect(name string) error {
+func (m *Manager) Connect(name string) error { return m.connect(name, false) }
+
+// connect is Connect; revive is reconnectDead's: the tunnel stays in its
+// reconnect cycle (see aliveTimes), unless it left it meanwhile. A user's
+// Connect starts clean.
+func (m *Manager) connect(name string, revive bool) error {
 	m.mu.Lock()
 	d, p, perr := m.defs[name], m.parsed[name], m.perrs[name]
 	if _, bad := m.broken[name]; bad {
@@ -846,7 +851,8 @@ func (m *Manager) Connect(name string) error {
 		m.mu.Unlock()
 		cancel()
 		return fmt.Errorf("tunnel %s changed while connecting; try again", name)
-	case r.sess != nil: // lost a race with another Connect
+	case r.sess != nil, // lost a race with another Connect
+		revive && (!r.want || !r.alive.revive): // disconnected, or out of its cycle, meanwhile
 		m.mu.Unlock()
 		cancel()
 		return nil
@@ -855,8 +861,11 @@ func (m *Manager) Connect(name string) error {
 	// one resolves its own: a block-mode tunnel's reject routes must not
 	// hold them meanwhile.
 	// The reconnect wait of a full tunnel that keeps dying carries over.
-	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers,
-		alive: liveness{wait: r.alive.wait, revive: r.alive.revive}}
+	var a liveness
+	if revive {
+		a = liveness{wait: r.alive.wait, revive: true}
+	}
+	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers, alive: a}
 	m.mu.Unlock()
 	if d.blocks() {
 		m.requestApply() // refuse its networks from now, not from the session's first apply
@@ -894,6 +903,7 @@ func (m *Manager) stop(ctx context.Context, name string, keepWant bool) error {
 	s := r.sess
 	if s == nil {
 		r.state, r.lastErr, r.detail = domain.TunnelDisconnected, "", ""
+		r.alive = liveness{} // a reconnect it was waiting for is off
 		m.mu.Unlock()
 		if wasBlocking && !keepWant {
 			_ = m.applyAndWait(ctx, 10*time.Second) // lift its block

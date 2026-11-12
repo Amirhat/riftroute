@@ -36,9 +36,15 @@ import (
 // openvpn being killed takes as long as the first wait), and again each
 // time a reconnected session ends without connecting. The server may still
 // be down, and a fresh session gives up as a first connect does. The wait
-// doubles from first to max, and both reset after settled of life. Until
-// then the tunnel is revived: wanted, and connected again whenever its
-// session ends without a Disconnect.
+// doubles from first to max, and resets after settled of life. Until a
+// reconnected session connects (the first look at it), the tunnel is
+// revived: connected again whenever its session ends, unless
+//   - it was disconnected, deleted, or no longer carries everything;
+//   - it ended on a failure a reconnect can't fix (lasting): a rejected
+//     login tried again and again locks the account (#37's lockout).
+//
+// An established session retries on its own; one that dies again is
+// liveness's again, with the wait it kept.
 type aliveTimes struct {
 	every      time.Duration
 	misses     int
@@ -98,6 +104,14 @@ type liveness struct {
 	lifeSince time.Time     // when it was last seen alive after a miss
 	wait      time.Duration // before the next reconnect (doubling)
 	revive    bool          // in a reconnect cycle: finish connects it again
+}
+
+// lasting are the failure codes (failureCode) a reconnect can't fix: the
+// server refused this login, certificate or configuration, or this machine
+// can't run or place it. A reconnect cycle stops at one.
+var lasting = map[string]bool{
+	"auth": true, "cert": true, "identity": true, "proposal": true, "eku": true,
+	"web_login": true, "plugin": true, "engine": true, "addressing": true, "no_address": true,
 }
 
 // watchAlive looks at every connected full tunnel, every every, until the
@@ -247,14 +261,18 @@ func (m *Manager) lookAlive(now time.Time) {
 }
 
 // reconnectDead connects a full tunnel again after its dead session ended,
-// unless it's no longer wanted, or something else connected it meanwhile.
+// unless it's no longer wanted or in its cycle, no longer carries
+// everything, or something else connected it meanwhile.
 func (m *Manager) reconnectDead(name string) {
 	m.mu.Lock()
-	r := m.rt[name]
-	again := r != nil && r.want && r.sess == nil && !r.deleting && !m.isClosed()
+	r, d := m.rt[name], m.defs[name]
+	again := r != nil && r.want && r.alive.revive && r.sess == nil && !r.deleting && d != nil && d.AllTraffic && !m.isClosed()
+	if r != nil && !again {
+		r.alive.revive = false
+	}
 	m.mu.Unlock()
 	if again {
-		if err := m.Connect(name); err != nil {
+		if err := m.connect(name, true); err != nil {
 			m.o.Log.Warn("full tunnel not reconnected", "tunnel", name, "err", err)
 		}
 	}
@@ -263,10 +281,15 @@ func (m *Manager) reconnectDead(name string) {
 // reviveLocked says whether a session that just ended (finish) belongs to a
 // reconnect cycle, and after how long it's connected again. A session that
 // never connected waits twice as long as the last; the dead one liveness
-// cancelled waits what it set.
+// cancelled waits what it set. One that ended on a lasting failure ends the
+// cycle: it stays failed, saying why, as a first connect does.
 func (m *Manager) reviveLocked(name string, s *session) (bool, time.Duration) {
-	r := m.rt[name]
+	r, d := m.rt[name], m.defs[name]
 	if r == nil || r.sess != nil || !r.alive.revive || !r.want || s.stopping.Load() || r.deleting {
+		return false, 0
+	}
+	if lasting[failureCode(r.lastErr)] || d == nil || !d.AllTraffic {
+		r.alive.revive, r.alive.wait = false, 0
 		return false, 0
 	}
 	if r.alive.sess != s {

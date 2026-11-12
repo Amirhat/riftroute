@@ -52,6 +52,7 @@ refused ("list the networks behind it instead").
 - **A gateway outside the LAN** (an `onlink` default): no connected route holds it, so the gateway guardrail refuses the quarter that contains it. The tunnel is left out, which fails closed.
 - **A main VPN on the tunnel's own server** (the owner's: the WireGuard app's tunnel and RiftRoute's to the same address, as different peers): the tunnel's server pin carries the main VPN's connection too while it's up. When the tunnel goes, the main VPN may need a moment to find its way back.
 - **An IPv6-only network** (NAT64, some carriers) with a dual-stack WireGuard server: WireGuard prefers the v4 endpoint, which has no path there, so its handshakes fall into the v4 quarters and it doesn't connect. Without a full tunnel it couldn't either (no v4 route); choosing the endpoint's family by the paths would lift it.
+- **An uplink whose default has no gateway** (PPPoE's `default dev ppp0`, some LTE modems): it never counts as this machine's way out, so liveness never judges a tunnel there, and a tunnel that passes nothing isn't reconnected (as before liveness).
 - **To check on a Mac:** link-local and multicast IPv6 (`fe80::/10`, `ff02::/16`) sit inside `c000::/2`, which is refused while a tunnel without IPv6 carries all traffic. macOS sends them by scoped routes, so they should be unaffected. Check `ping6 fe80::1%en0`, `dns-sd -B _airplay._tcp`, and AirDrop.
 
 ## IPv6 when the tunnel has none: blocked **(chosen)**
@@ -83,9 +84,11 @@ the tunnel for good).
 After 3 misses in a row, the session is **reconnected**, as a dropped one
 is:
 - it ends, still wanted, so block keeps blocking;
-- it starts again after a wait that doubles from 5 s to 5 min while it keeps dying, and starts over after 2 minutes of life;
+- it starts again after a wait that doubles from 5 s to 5 min while it keeps dying, and resets after 2 minutes of life;
 - the wait starts when the session has really ended (an openvpn being killed takes 5 s), from `finish`;
-- while the server stays down, a fresh session gives up as a first connect does (6 attempts, WireGuard's 90 s): each time, it's connected again after the next wait, so it comes back once the server does. Only a Disconnect ends the cycle.
+- while the server stays down, a fresh session gives up as a first connect does (6 attempts, WireGuard's 90 s): each time, it's connected again after the next wait, so it comes back once the server does.
+- **The cycle ends** once a reconnected session connects (the first look at it, within 10 s; an established session retries on its own, and one that dies again is liveness's again, with the wait it kept). It also ends on a Disconnect, on a delete, when the tunnel comes to list networks, and when a session ends on a **failure a reconnect can't fix**: a rejected login, certificate, identity or proposal, an EKU, a web login, a missing plugin or engine, an addressing refusal, no address (`lasting`, by the failure codes). The tunnel then stays failed, saying why, as a first connect does. Retrying a rejected login every few minutes would lock the account, the lockout #37 prevents (the review of 6c8941d proved 31 attempts in 3 s of test time).
+- A user's own Connect starts clean: only liveness's reconnect carries the cycle and its wait.
 
 ## When it's down
 

@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -185,5 +186,159 @@ func TestOutsideUpIsPhysical(t *testing.T) {
 		if got := h.m.outsideUp(context.Background(), []string{"utun9"}, v4); got != c.want {
 			t.Errorf("%+v: %v", c.r, got)
 		}
+	}
+}
+
+// reviving reports whether name is in a reconnect cycle.
+func reviving(h *harness, name string) bool {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	r := h.m.rt[name]
+	return r != nil && r.alive.revive
+}
+
+// stillAt waits a while and fails if the engine was started again.
+func stillAt(t *testing.T, starts func() int, n int, wait time.Duration) {
+	t.Helper()
+	time.Sleep(wait)
+	if got := starts(); got != n {
+		t.Fatalf("%d more attempts after the cycle should have stopped", got-n)
+	}
+}
+
+// The stored password stops working while the tunnel is up; then liveness
+// reconnects it. The rejected login isn't tried again and again (an
+// account lockout): the cycle stops at it, failed, saying why.
+func TestFullTunnelRevivalStopsAtARejectedLogin(t *testing.T) {
+	var alive, outside atomic.Bool
+	alive.Store(true)
+	outside.Store(true)
+	h := newHarness(t)
+	fastAlive(t, h, &alive, &outside)
+	if _, err := h.m.Save(context.Background(), fullSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.m.Connect("infra")
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+
+	h.m.mu.Lock() // changed elsewhere (the company's portal), not here
+	d := *h.m.defs["infra"]
+	d.Password = "wrong"
+	h.m.defs["infra"] = &d
+	h.m.mu.Unlock()
+	starts := h.fl.Starts()
+	alive.Store(false)
+	waitFor(t, "a reconnect", func() bool { return h.fl.Starts() > starts })
+	st := waitState(t, h.m, "infra", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "rejected the username or password") {
+		t.Fatalf("failed with %q", st.LastError)
+	}
+	n := h.fl.Starts()
+	stillAt(t, h.fl.Starts, n, 20*h.m.at.first)
+	if n != starts+1 || reviving(h, "infra") {
+		t.Fatalf("%d logins after the password changed; reviving %v", n-starts, reviving(h, "infra"))
+	}
+}
+
+// IKEv2: the login had worked, so the reconnected session tries it a few
+// times and gives up; the cycle stops there.
+func TestFullTunnelRevivalStopsAtARejectedIKEv2Login(t *testing.T) {
+	var alive, outside atomic.Bool
+	alive.Store(true)
+	outside.Store(true)
+	h, fi := newIKEHarness(t)
+	fi.DNS = []string{"10.30.0.53"} // asked through it: the fake's counters stay at 0
+	fastAlive(t, h, &alive, &outside)
+	on := true
+	spec := domain.TunnelSpec{Name: "eap", Type: domain.TunnelIKEv2, AllTraffic: &on,
+		Config: profile("IKEv2", `
+        <key>RemoteAddress</key><string>203.0.113.9</string>
+        <key>AuthenticationMethod</key><string>None</string>
+        <key>ExtendedAuthEnabled</key><true/>
+        <key>AuthName</key><string>alice</string>
+        <key>AuthPassword</key><string>right</string>`, dataPayload(payloadRoot, "CA-UUID", newTestPKI(t).caDER, ""))}
+	if _, err := h.m.Save(t.Context(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.m.Connect("eap"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, h.m, "eap", domain.TunnelConnected)
+
+	fi.Fail = []string{"10[IKE] received AUTHENTICATION_FAILED notify error"}
+	alive.Store(false)
+	st := waitState(t, h.m, "eap", domain.TunnelFailed)
+	waitFor(t, "the rejected login given up on", func() bool {
+		st, _ = h.m.Status("eap")
+		return st.State == domain.TunnelFailed && strings.Contains(st.LastError, "rejected the username or password")
+	})
+	n := len(fi.Started())
+	stillAt(t, func() int { return len(fi.Started()) }, n, 20*h.m.at.first)
+	if reviving(h, "eap") {
+		t.Fatal("still in its reconnect cycle")
+	}
+}
+
+// A Disconnect while a reconnect waits ends the cycle: the tunnel isn't
+// connected by the timer, and the user's next Connect starts clean.
+func TestDisconnectDuringARevive(t *testing.T) {
+	var alive, outside atomic.Bool
+	alive.Store(true)
+	outside.Store(true)
+	h := newHarness(t)
+	fastAlive(t, h, &alive, &outside)
+	h.m.at.first = time.Second // the wait the Disconnect lands in
+	if _, err := h.m.Save(context.Background(), fullSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.m.Connect("infra")
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	alive.Store(false)
+	waitState(t, h.m, "infra", domain.TunnelFailed)
+	if !reviving(h, "infra") {
+		t.Fatal("not in a reconnect cycle")
+	}
+	if err := h.m.Disconnect(t.Context(), "infra"); err != nil {
+		t.Fatal(err)
+	}
+	if reviving(h, "infra") {
+		t.Fatal("still reviving after a Disconnect")
+	}
+	n := h.fl.Starts()
+	stillAt(t, h.fl.Starts, n, 3*time.Second/2)
+
+	alive.Store(true)
+	_ = h.m.Connect("infra")
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	if reviving(h, "infra") {
+		t.Fatal("a user's Connect carried the cycle")
+	}
+}
+
+// A tunnel that comes to list networks while a reconnect waits is still
+// the user's to connect: the timer doesn't, and the cycle ends.
+func TestReviveSkipsATunnelNoLongerFull(t *testing.T) {
+	var alive, outside atomic.Bool
+	alive.Store(true)
+	outside.Store(true)
+	h := newHarness(t)
+	fastAlive(t, h, &alive, &outside)
+	h.m.at.first = 300 * time.Millisecond
+	if _, err := h.m.Save(context.Background(), fullSpec()); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.m.Connect("infra")
+	waitState(t, h.m, "infra", domain.TunnelConnected)
+	alive.Store(false)
+	waitState(t, h.m, "infra", domain.TunnelFailed)
+	h.m.mu.Lock()
+	d := *h.m.defs["infra"]
+	d.AllTraffic = false
+	h.m.defs["infra"] = &d
+	h.m.mu.Unlock()
+	n := h.fl.Starts()
+	stillAt(t, h.fl.Starts, n, time.Second)
+	if reviving(h, "infra") {
+		t.Fatal("still reviving")
 	}
 }

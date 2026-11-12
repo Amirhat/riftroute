@@ -23,7 +23,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   follows its server to an address inside the tunnel. One that's connected
   but passes nothing (its server shakes hands but forwards nothing) is
   reconnected after 30 s, waiting longer each time it dies again, so it
-  never cuts the machine off. A blip of your own network doesn't count.
+  never cuts the machine off. A blip of your own network doesn't count, and
+  a login the server now rejects isn't tried again.
 - **…and its DNS.** While a tunnel that carries all traffic is connected,
   your system resolves names through it. It uses the DNS servers its
   server gives (OpenVPN's push, WireGuard's `DNS =`, IKEv2's), or ones you
