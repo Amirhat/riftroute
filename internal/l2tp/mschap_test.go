@@ -54,8 +54,8 @@ func TestMSCHAPv2Vectors(t *testing.T) {
 func TestMSCHAPv2Failure(t *testing.T) {
 	for msg, want := range map[string]string{
 		"E=691 R=0 C=00 V=3 M=Authentication failure": "the server rejected the username or password",
-		"E=648 R=0 V=3":                              "expired",
-		"garbage":                                    "the server rejected the username or password",
+		"E=648 R=0 V=3": "expired",
+		"garbage":       "the server rejected the username or password",
 	} {
 		err := msFailure([]byte(msg))
 		if !errors.Is(err, errRejected) || !strings.Contains(err.Error(), want) {
