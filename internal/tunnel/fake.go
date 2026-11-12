@@ -44,6 +44,14 @@ type FakeLauncher struct {
 	starts   int
 }
 
+// SetHangUp sets HangUp for the attempts started from now (a test's
+// server going down, or back).
+func (f *FakeLauncher) SetHangUp(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.HangUp = v
+}
+
 // Starts is how many fake openvpn processes were started.
 func (f *FakeLauncher) Starts() int {
 	f.mu.Lock()
@@ -108,6 +116,7 @@ func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
 	p := &fakeProcess{done: make(chan struct{}), ln: ln, f: f}
 	f.mu.Lock()
 	f.running++
+	hangUp := f.HangUp
 	f.mu.Unlock()
 	remote := Remote{Host: "203.0.113.1", Port: 1194}
 	if len(spec.Profile.Remotes) > 0 {
@@ -123,7 +132,7 @@ func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
 			}
 		}
 	}
-	go p.serve(spec.Profile.NeedsAuth, f.HangUp, f.HoldSeconds, f.PushDNS, iface, ip, remote, f.OnUp, f.OnDown)
+	go p.serve(spec.Profile.NeedsAuth, hangUp, f.HoldSeconds, f.PushDNS, iface, ip, remote, f.OnUp, f.OnDown)
 	return p, nil
 }
 

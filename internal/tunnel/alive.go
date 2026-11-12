@@ -25,12 +25,20 @@ import (
 //   - with none known, it's judged by its counters alone: traffic going in
 //     (at.tx) and nothing coming back.
 //
-// A miss counts only while this machine's own path out is up (a default
-// route that isn't a tunnel's): asleep, rejoining Wi-Fi or between
+// A miss counts only while this machine's own path out is up: a main-table
+// default with a gateway, on an interface that isn't a VPN's or a tunnel's,
+// in a family of the tunnel's servers. Asleep, rejoining Wi-Fi or between
 // networks, nothing gets through anything. After at.misses in a row, the
 // session is reconnected, as a dropped one is. It ends, still wanted, so
-// block keeps blocking. It starts again after a wait that doubles from
-// first to max while it keeps dying, and is reset by settled of life.
+// block keeps blocking.
+//
+// It's reconnected from finish, once the session has really ended (an
+// openvpn being killed takes as long as the first wait), and again each
+// time a reconnected session ends without connecting. The server may still
+// be down, and a fresh session gives up as a first connect does. The wait
+// doubles from first to max, and both reset after settled of life. Until
+// then the tunnel is revived: wanted, and connected again whenever its
+// session ends without a Disconnect.
 type aliveTimes struct {
 	every      time.Duration
 	misses     int
@@ -84,12 +92,12 @@ func askDNS(ctx context.Context, server netip.Addr) bool {
 
 // liveness is a full tunnel's, kept with its live state.
 type liveness struct {
-	sess          *session // the session it's about
-	in, out       uint64   // the counters at the last look
-	misses        int
-	lifeSince     time.Time     // when it was last seen alive after a miss
-	wait          time.Duration // before the next reconnect (doubling)
-	reconnectHint string        // why it's reconnecting, for the card
+	sess      *session // the session it's about
+	in, out   uint64   // the counters at the last look
+	misses    int
+	lifeSince time.Time     // when it was last seen alive after a miss
+	wait      time.Duration // before the next reconnect (doubling)
+	revive    bool          // in a reconnect cycle: finish connects it again
 }
 
 // watchAlive looks at every connected full tunnel, every every, until the
@@ -107,10 +115,12 @@ func (m *Manager) watchAlive(every time.Duration) {
 	}
 }
 
-// outsideUp reports whether this machine has a way out of its own: a
-// default route that isn't into one of RiftRoute's tunnels. Without one
-// (asleep, between networks) a probe proves nothing.
-func (m *Manager) outsideUp(ctx context.Context, tunnels []string) bool {
+// outsideUp reports whether this machine has a physical way out in a
+// family of servers: a main-table default with a gateway, not RiftRoute's,
+// on an interface that's neither a VPN's nor one of its tunnels'. A main
+// VPN's default stays while Wi-Fi is down, and RiftRoute's Model-B one is
+// into it. Without one (asleep, between networks) a probe proves nothing.
+func (m *Manager) outsideUp(ctx context.Context, tunnels []string, servers []netip.Addr) bool {
 	if m.o.Routes == nil {
 		return true
 	}
@@ -118,8 +128,21 @@ func (m *Manager) outsideUp(ctx context.Context, tunnels []string) bool {
 	if err != nil {
 		return true // can't tell: judge by the probe
 	}
+	vpn := map[string]bool{}
+	if m.o.Ifaces != nil {
+		if ifs, err := m.o.Ifaces(ctx); err == nil {
+			for _, i := range ifs {
+				vpn[i.Name] = i.IsVPN
+			}
+		}
+	}
 	for _, r := range rs {
-		if p, err := netip.ParsePrefix(r.DstCIDR); err == nil && p.Bits() == 0 && !r.Reject && !slices.Contains(tunnels, r.Iface) {
+		p, err := netip.ParsePrefix(r.DstCIDR)
+		if err != nil || p.Bits() != 0 || r.Reject || r.Table != "" || r.Gateway == "" || r.Owner == domain.OwnerRiftRoute ||
+			vpn[r.Iface] || slices.Contains(tunnels, r.Iface) {
+			continue
+		}
+		if len(servers) == 0 || slices.ContainsFunc(servers, func(a netip.Addr) bool { return a.Is4() == p.Addr().Is4() }) {
 			return true
 		}
 	}
@@ -133,6 +156,7 @@ func (m *Manager) lookAlive(now time.Time) {
 		name    string
 		s       *session
 		dns     []netip.Addr
+		servers []netip.Addr
 		in, out uint64
 		a       liveness
 	}
@@ -154,7 +178,7 @@ func (m *Manager) lookAlive(now time.Time) {
 		dns := slices.Clone(r.dnsInUse)
 		dns = addAddrs(dns, r.dns.Servers...)
 		dns = addAddrs(dns, parseAddrs(d.DNS)...)
-		ts = append(ts, target{name, r.sess, dns, r.in, r.out, r.alive})
+		ts = append(ts, target{name, r.sess, dns, slices.Clone(r.servers), r.in, r.out, r.alive})
 	}
 	m.mu.Unlock()
 
@@ -182,7 +206,7 @@ func (m *Manager) lookAlive(now time.Time) {
 		}
 		if !alive && judged && up < 0 {
 			up = 0
-			if m.outsideUp(ctx, ifaces) {
+			if m.outsideUp(ctx, ifaces, t.servers) {
 				up = 1
 			}
 		}
@@ -191,7 +215,7 @@ func (m *Manager) lookAlive(now time.Time) {
 		case alive:
 			a.misses = 0
 			if now.Sub(a.lifeSince) >= at.settled {
-				a.wait = 0 // it's stayed alive: the next death starts the waits over
+				a.wait, a.revive = 0, false // it's stayed alive: the next death starts over
 			}
 		case !judged, up == 0:
 			// Nothing to judge, or this machine's own way out is down.
@@ -199,7 +223,7 @@ func (m *Manager) lookAlive(now time.Time) {
 			a.lifeSince = now
 			if a.misses++; a.misses >= at.misses {
 				reconnect = true
-				a.misses = 0
+				a.misses, a.revive = 0, true
 				a.wait = min(max(a.wait*2, at.first), at.max)
 			}
 		}
@@ -210,16 +234,14 @@ func (m *Manager) lookAlive(now time.Time) {
 			continue
 		}
 		if reconnect {
-			a.reconnectHint = "connected, but nothing got through it for " + (time.Duration(at.misses) * at.every).String() +
+			r.lastErr = "connected, but nothing got through it for " + (time.Duration(at.misses) * at.every).String() +
 				" (its server shakes hands but forwards nothing?); reconnecting in " + a.wait.String()
-			r.lastErr = a.reconnectHint
 		}
 		r.alive = a
 		m.mu.Unlock()
 		if reconnect {
 			m.o.Log.Warn("full tunnel passes no traffic; reconnecting it", "tunnel", t.name, "in", a.wait)
-			t.s.cancel() // not stopping: it ends failed, still wanted (block keeps blocking)
-			time.AfterFunc(a.wait, func() { m.reconnectDead(t.name) })
+			t.s.cancel() // not stopping: it ends failed, still wanted (block keeps blocking); finish reconnects it
 		}
 	}
 }
@@ -236,4 +258,19 @@ func (m *Manager) reconnectDead(name string) {
 			m.o.Log.Warn("full tunnel not reconnected", "tunnel", name, "err", err)
 		}
 	}
+}
+
+// reviveLocked says whether a session that just ended (finish) belongs to a
+// reconnect cycle, and after how long it's connected again. A session that
+// never connected waits twice as long as the last; the dead one liveness
+// cancelled waits what it set.
+func (m *Manager) reviveLocked(name string, s *session) (bool, time.Duration) {
+	r := m.rt[name]
+	if r == nil || r.sess != nil || !r.alive.revive || !r.want || s.stopping.Load() || r.deleting {
+		return false, 0
+	}
+	if r.alive.sess != s {
+		r.alive.wait = min(max(r.alive.wait*2, m.at.first), m.at.max)
+	}
+	return true, r.alive.wait
 }

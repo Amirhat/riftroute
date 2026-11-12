@@ -855,7 +855,8 @@ func (m *Manager) Connect(name string) error {
 	// one resolves its own: a block-mode tunnel's reject routes must not
 	// hold them meanwhile.
 	// The reconnect wait of a full tunnel that keeps dying carries over.
-	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers, alive: liveness{wait: r.alive.wait}}
+	*r = live{state: domain.TunnelConnecting, detail: "starting", sess: s, want: true, servers: r.servers,
+		alive: liveness{wait: r.alive.wait, revive: r.alive.revive}}
 	m.mu.Unlock()
 	if d.blocks() {
 		m.requestApply() // refuse its networks from now, not from the session's first apply
@@ -1521,6 +1522,7 @@ func (m *Manager) finish(name string, s *session) {
 		r.in, r.out = 0, 0
 		if s.stopping.Load() {
 			r.state, r.lastErr, r.since = domain.TunnelDisconnected, "", nil
+			r.alive.revive = false
 		} else {
 			r.state = domain.TunnelFailed
 			if r.lastErr == "" {
@@ -1528,7 +1530,11 @@ func (m *Manager) finish(name string, s *session) {
 			}
 		}
 	}
+	revive, wait := m.reviveLocked(name, s)
 	m.mu.Unlock()
+	if revive {
+		time.AfterFunc(wait, func() { m.reconnectDead(name) })
+	}
 	for _, f := range []string{m.sockPath(name), m.cfgPath(name), m.pidPath(name)} {
 		_ = os.Remove(f)
 	}

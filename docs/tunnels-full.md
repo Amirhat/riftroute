@@ -73,15 +73,19 @@ So every 10 s, for each connected full tunnel (`alive.go`):
 - **Otherwise its DNS servers are asked through it** (any answer, even a refusal). These are the ones in use, its server's, or the ones set for it. Each was given by the tunnel itself, not the internet beyond it, so a full tunnel into an intranet passes too. Their host routes take the questions in, unless an exclude profile holds that very host.
 - **With none known**, it's judged by its counters alone: 3 KiB going in and nothing coming back. An idle one isn't judged.
 
-A miss counts only while this machine's own way out is up: a default route
-that isn't a tunnel's. Asleep, rejoining Wi-Fi or between networks, nothing
+A miss counts only while this machine's own way out is up: a main-table
+default with a gateway, on an interface that's neither a VPN's nor a
+tunnel's, in a family of the tunnel's servers. A main VPN's default stays
+while Wi-Fi is down, and RiftRoute's Model-B default is into it. Asleep, rejoining Wi-Fi or between networks, nothing
 gets through anything (the review of 41ed0ab proved that a blip had ended
 the tunnel for good).
 
 After 3 misses in a row, the session is **reconnected**, as a dropped one
 is:
 - it ends, still wanted, so block keeps blocking;
-- it starts again after a wait that doubles from 5 s to 5 min while it keeps dying, and starts over after 2 minutes of life.
+- it starts again after a wait that doubles from 5 s to 5 min while it keeps dying, and starts over after 2 minutes of life;
+- the wait starts when the session has really ended (an openvpn being killed takes 5 s), from `finish`;
+- while the server stays down, a fresh session gives up as a first connect does (6 attempts, WireGuard's 90 s): each time, it's connected again after the next wait, so it comes back once the server does. Only a Disconnect ends the cycle.
 
 ## When it's down
 
