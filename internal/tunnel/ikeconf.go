@@ -156,7 +156,10 @@ func renderIKE(c *IKEv2Config, login ikeLogin, roots []*x509.Certificate, host, 
 	path := func(f string) string { return filepath.Join(dir, name+"."+f) }
 	st := ikeSetup{Conf: path("conf"), Socket: path("vici")}
 	if dns {
+		// One of the session's files, created empty (an old charon writes it,
+		// one that takes resolvconf.path never does), and removed with them.
 		st.DNSFile = path("dns")
+		st.Files = append(st.Files, ikeFile{Name: st.DNSFile})
 	}
 	pemOf := func(typ string, der []byte) []byte { return pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}) }
 	secret := func(what, v string) error {

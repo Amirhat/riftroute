@@ -252,7 +252,7 @@ func (k *ikeSession) attempt(ctx context.Context, host string) (wasUp bool, err 
 		r.detail = "starting strongSwan"
 	})
 	m.changed()
-	proc, err := k.l.Start(IKESpec{Name: k.name, Args: setup.Args, Conf: setup.Conf, Socket: setup.Socket, Stdin: setup.Stdin, Config: k.c})
+	proc, err := k.l.Start(IKESpec{Name: k.name, Args: setup.Args, Conf: setup.Conf, Socket: setup.Socket, Stdin: setup.Stdin, Config: k.c, Resolve: k.dns})
 	if err != nil {
 		return false, errFatal{err.Error()}
 	}
@@ -617,7 +617,4 @@ func removeIKEFiles(st ikeSetup) {
 		_ = os.Remove(f.Name)
 	}
 	_ = os.Remove(st.Socket)
-	if st.DNSFile != "" {
-		_ = os.Remove(st.DNSFile)
-	}
 }

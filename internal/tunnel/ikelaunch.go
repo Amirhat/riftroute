@@ -38,6 +38,9 @@ type IKESpec struct {
 	// with no terminal): one line per secret, in the order it asks.
 	Stdin  string
 	Config *IKEv2Config // the profile (the fake reads it)
+	// Resolve: the session loads the resolve plugin (a full tunnel's), so
+	// it logs the server's DNS servers (the fake does as charon would).
+	Resolve bool
 }
 
 // IKEStatus is a session's connection as charon reports it.

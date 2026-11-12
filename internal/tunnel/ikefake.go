@@ -5,7 +5,6 @@ import (
 	"io/fs"
 	"net/netip"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/Amirhat/riftroute/internal/domain"
@@ -64,7 +63,7 @@ func (f *FakeIKE) Start(spec IKESpec) (IKEProcess, error) {
 		p.vip = netip.MustParseAddr(f.VIP)
 	}
 	p.log("Starting charon-cmd IKE client (strongSwan 6.1.0, fake)")
-	if conf, err := os.ReadFile(spec.Conf); err == nil && strings.Contains(string(conf), " resolve\n") {
+	if spec.Resolve {
 		for _, s := range f.DNS {
 			p.log("[IKE] installing DNS server " + s + " via resolvconf")
 		}
