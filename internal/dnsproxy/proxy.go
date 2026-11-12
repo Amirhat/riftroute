@@ -38,6 +38,7 @@ type Learner func(rule, fqdn string, addrs []netip.Addr)
 type Proxy struct {
 	log   *slog.Logger
 	learn Learner
+	name  string // what the log calls it
 
 	mu        sync.RWMutex
 	upstreams []string          // "ip:53"
@@ -59,7 +60,22 @@ func New(log *slog.Logger, learn Learner) *Proxy {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Proxy{log: log, learn: learn, apexes: map[string]string{}, sem: make(chan struct{}, maxInFlight)}
+	return &Proxy{log: log, learn: learn, name: "wildcard DNS learner", apexes: map[string]string{}, sem: make(chan struct{}, maxInFlight)}
+}
+
+// Named sets what the log calls the proxy (a full tunnel's DNS forwarder is
+// one too).
+func (p *Proxy) Named(name string) *Proxy {
+	p.name = name
+	return p
+}
+
+// Limit sets how many queries it handles at once (maxInFlight by default),
+// before Start: a full tunnel's forwarder is every name's resolver, so one
+// local process holding slow queries mustn't stall everyone's.
+func (p *Proxy) Limit(n int) *Proxy {
+	p.sem = make(chan struct{}, n)
+	return p
 }
 
 // SetUpstreams installs the REAL resolvers to forward to (":53" added when no
@@ -184,7 +200,7 @@ func (p *Proxy) Start() (int, error) {
 	p.done = make(chan struct{})
 	go p.serveUDP(p.pc, p.done)
 	go p.serveTCP(p.tln, p.done)
-	p.log.Info("wildcard DNS learner listening", "addr", p.pc.LocalAddr().String())
+	p.log.Info(p.name+" listening", "addr", p.pc.LocalAddr().String())
 	return p.port, nil
 }
 

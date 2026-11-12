@@ -38,6 +38,9 @@ type IKESpec struct {
 	// with no terminal): one line per secret, in the order it asks.
 	Stdin  string
 	Config *IKEv2Config // the profile (the fake reads it)
+	// Resolve: the session loads the resolve plugin (a full tunnel's), so
+	// it logs the server's DNS servers (the fake does as charon would).
+	Resolve bool
 }
 
 // IKEStatus is a session's connection as charon reports it.
@@ -97,7 +100,7 @@ func ikeEnv(goos, conf string) []string {
 // ikeMinMajor.ikeMinMinor is the oldest strongSwan IKEv2 tunnels run on.
 const ikeMinMajor, ikeMinMinor = 5, 9
 
-var reIKEVersion = regexp.MustCompile(`strongSwan (\d+)\.(\d+)(?:\.\d+)?`)
+var reIKEVersion = regexp.MustCompile(`strongSwan (\d+)\.(\d+)(?:\.(\d+))?`)
 
 // probeIKEVersion runs `charon-cmd --version` as nobody: it prints the version
 // before reading any configuration or loading anything.

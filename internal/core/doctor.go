@@ -114,6 +114,10 @@ func (s *Service) Doctor(ctx context.Context) domain.DoctorReport {
 			case t.State == domain.TunnelConnected:
 				status, detail, fix := connectedTunnelCheck(t, expected[t.Name], installed)
 				add(name, status, detail, fix)
+				if t.AllTraffic && t.DNSNote != "" {
+					// Its DNS: none in use, or not working as it should.
+					add(name+":dns", domain.CheckWarn, t.DNSNote, "DNS servers for it: `riftroute tunnel edit "+t.Name+" --dns <servers>`")
+				}
 			case t.Blocking:
 				add(name, domain.CheckWarn, string(t.State)+"; "+blockingDetail(expected[t.Name], installed),
 					"it's set to block when down: they're back once it connects, or `riftroute tunnel down "+t.Name+"` stops blocking")

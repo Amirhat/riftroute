@@ -60,6 +60,8 @@ export function TunnelEditor({
   const [via, setVia] = useState<TunnelVia>(existing?.via || 'direct')
   const [autoConnect, setAutoConnect] = useState(existing?.auto_connect ?? false)
   const [whenDown, setWhenDown] = useState<TunnelWhenDown>(existing?.when_down || 'fallback')
+  const [allTraffic, setAllTraffic] = useState(existing?.all_traffic ?? false)
+  const [dnsText, setDnsText] = useState((existing?.dns_override ?? []).join(', '))
   const [issues, setIssues] = useState<ConfigIssue[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -90,7 +92,7 @@ export function TunnelEditor({
   const errorFor = (field: string) => issuesFor(field).find((i) => i.severity === 'error')?.msg ?? null
   // Issues for a field this form doesn't show (or doesn't show right now)
   // go under the form, so a refused save never looks like a no-op.
-  const shownFields = ['config', 'name', 'routes', 'when_down', ...(needsAuth ? ['username', 'password'] : [])]
+  const shownFields = ['config', 'name', 'routes', 'when_down', 'dns', ...(needsAuth ? ['username', 'password'] : [])]
   const otherIssues = issues.filter((i) => !i.field || !shownFields.includes(i.field))
   const parsed = parseRoutes(routesText)
   const files = profile?.files ?? []
@@ -130,6 +132,15 @@ export function TunnelEditor({
         routes: parsed.routes,
         auto_connect: autoConnect,
         when_down: whenDown,
+        all_traffic: allTraffic,
+        // Only with all traffic, where it means something: otherwise the
+        // tunnel keeps what it has.
+        dns: allTraffic
+          ? dnsText
+              .split(/[\s,]+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined,
       })
       const errs = (res.issues ?? []).filter((i) => i.severity === 'error')
       if (errs.length > 0 || !res.tunnel) {
@@ -287,8 +298,55 @@ export function TunnelEditor({
           </div>
         )}
 
+        <fieldset className="space-y-2">
+          <legend className="text-[11px] font-medium uppercase tracking-wider text-muted">What goes through it</legend>
+          {(
+            [
+              [false, 'Only the networks below', 'Everything else stays on your main VPN.'],
+              [
+                true,
+                'All traffic, like an ordinary VPN',
+                "Except what's routed elsewhere on purpose: your profiles, other VPNs' networks, your local network and the tunnel's own server keep their path. IPv6 is blocked if the tunnel has none.",
+              ],
+            ] as const
+          ).map(([v, title, hint]) => (
+            <label key={String(v)} className="flex cursor-pointer items-start gap-2.5">
+              <input
+                type="radio"
+                name="all_traffic"
+                checked={allTraffic === v}
+                onChange={() => setAllTraffic(v)}
+                className="mt-1"
+              />
+              <span>
+                <span className="text-sm text-default">{title}</span>
+                <span className="block text-xs text-muted">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        {allTraffic && (
+          <div className="space-y-1.5">
+            <Label>DNS servers (optional)</Label>
+            <input
+              value={dnsText}
+              onChange={(e) => setDnsText(e.target.value)}
+              spellCheck={false}
+              placeholder="the ones its server gives"
+              aria-label="DNS servers"
+              className={`ltr font-mono ${fieldCls(errorFor('dns'))}`}
+            />
+            <p className="text-xs text-muted">
+              While it's connected, your system resolves names through it: with the DNS servers its server gives, or these
+              (comma-separated). Your system's own come back when it disconnects.
+            </p>
+            <IssueList issues={issuesFor('dns')} />
+          </div>
+        )}
+
         <div className="space-y-1.5">
-          <Label>Networks through this tunnel</Label>
+          <Label>{allTraffic ? 'Networks through this tunnel (optional)' : 'Networks through this tunnel'}</Label>
           <textarea
             value={routesText}
             onChange={(e) => setRoutesText(e.target.value)}
@@ -299,7 +357,11 @@ export function TunnelEditor({
             aria-invalid={parsed.errors.length > 0 || !!errorFor('routes')}
             className={`ltr font-mono ${fieldCls(parsed.errors[0]?.msg ?? errorFor('routes'))}`}
           />
-          <p className="text-xs text-muted">One IP or CIDR per line. Everything else stays on your main VPN.</p>
+          <p className="text-xs text-muted">
+            {allTraffic
+              ? 'One IP or CIDR per line. All traffic goes through it already; list networks only to keep them on it ahead of other routes.'
+              : 'One IP or CIDR per line. Everything else stays on your main VPN.'}
+          </p>
           {parsed.errors.map((e) => (
             <p key={`${e.line}:${e.value}`} className="text-sm text-danger">
               Line {e.line}: <span className="ltr font-mono">{e.value}</span> — {e.msg}
@@ -352,8 +414,10 @@ export function TunnelEditor({
               ],
               [
                 'block',
-                'Block its networks',
-                "Refused while it's connecting, reconnecting or failed — until it's back, or you disconnect it — so nothing meant for it leaves another way.",
+                allTraffic ? 'Block traffic' : 'Block its networks',
+                allTraffic
+                  ? "Nothing leaves while it's connecting, reconnecting or failed, except what's routed elsewhere on purpose — until it's back, or you disconnect it. A kill switch for this tunnel."
+                  : "Refused while it's connecting, reconnecting or failed — until it's back, or you disconnect it — so nothing meant for it leaves another way.",
               ],
             ] as const
           ).map(([v, title, hint]) => (

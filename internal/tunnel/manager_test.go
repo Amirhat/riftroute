@@ -17,6 +17,7 @@ import (
 
 	"github.com/Amirhat/riftroute/internal/domain"
 	"github.com/Amirhat/riftroute/internal/routing"
+	"github.com/Amirhat/riftroute/internal/tunneldns"
 )
 
 type harness struct {
@@ -27,11 +28,12 @@ type harness struct {
 	ifaces  []domain.Iface
 	applies [][]routing.TunnelInput
 	bits    int // prefix length of the fake tunnel's address (default 24)
+	dns     *tunneldns.Fake
 }
 
 func newHarness(t *testing.T, opts ...func(*FakeLauncher)) *harness {
 	t.Helper()
-	h := &harness{dir: filepath.Join(t.TempDir(), "tunnels"), bits: 24}
+	h := &harness{dir: filepath.Join(t.TempDir(), "tunnels"), bits: 24, dns: &tunneldns.Fake{}}
 	fl := &FakeLauncher{
 		OnUp: func(iface, ip string) {
 			h.mu.Lock()
@@ -63,6 +65,7 @@ func newHarness(t *testing.T, opts ...func(*FakeLauncher)) *harness {
 		// takes it) deadlocks one.
 		Count: func(string) {},
 		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DNS:   h.dns,
 	})
 	if err != nil {
 		t.Fatal(err)

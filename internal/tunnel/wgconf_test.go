@@ -3,7 +3,9 @@ package tunnel
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -213,5 +215,26 @@ func TestIsWireGuard(t *testing.T) {
 	}
 	if IsWireGuard("client\ndev tun\nremote vpn.example.com 1194\n") {
 		t.Error("an OpenVPN profile was taken for WireGuard")
+	}
+}
+
+// DNS = gives the tunnel's DNS servers (used only while it carries all
+// traffic) and wg-quick's search domains; it's still listed as ignored, and
+// what isn't an address or a name is refused.
+func TestWGConfigDNS(t *testing.T) {
+	peer := "[Peer]\nPublicKey = " + key(2) + "\nEndpoint = 198.51.100.7:51820\nAllowedIPs = 0.0.0.0/0\n"
+	base := "[Interface]\nPrivateKey = " + key(1) + "\nAddress = 10.0.0.2/32\n"
+	c, err := ParseWG(base + "DNS = 10.64.0.1, fd00::1, corp.example, 127.0.0.1, 10.64.0.1\n" + peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(c.DNS) != "[10.64.0.1 fd00::1]" || fmt.Sprint(c.DNSSearch) != "[corp.example]" {
+		t.Fatalf("DNS %v, search %v", c.DNS, c.DNSSearch)
+	}
+	if !slices.Contains(c.Ignored, "DNS") {
+		t.Errorf("ignored = %v", c.Ignored)
+	}
+	if _, err := ParseWG(base + "DNS = 10.64.0.1, not a name!\n" + peer); err == nil {
+		t.Error("a DNS entry that's neither was accepted")
 	}
 }

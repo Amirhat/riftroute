@@ -576,6 +576,7 @@ function TunnelCard({
             {t.state}
             {detail && t.state !== 'connected' ? ` · ${detail.replace(/_/g, ' ')}` : ''}
           </Badge>
+          {t.all_traffic && <Badge tone="accent">all traffic</Badge>}
           {t.auto_connect && <Badge tone="muted">auto-connect</Badge>}
           {t.when_down === 'block' && <Badge tone="muted">blocks when down</Badge>}
         </div>
@@ -682,6 +683,18 @@ function TunnelCard({
             )}
           </Field>
         </div>
+        {t.all_traffic && live && (t.dns?.length || t.dns_note) && (
+          <div className="text-sm">
+            <Label>DNS</Label>
+            {t.dns?.length ? (
+              <p className="mt-1">
+                Through it, to <Addr>{t.dns.join(', ')}</Addr>{' '}
+                <span className="text-muted">({t.dns_override?.length ? 'set for it' : "its server's"})</span>
+              </p>
+            ) : null}
+            {t.dns_note && <p className="mt-1 text-muted">{t.dns_note}</p>}
+          </div>
+        )}
         <div>
           <Label>Routed through this tunnel</Label>
           {routes.length === 0 && profilesOn ? (

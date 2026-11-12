@@ -34,10 +34,29 @@ type FakeLauncher struct {
 	ExitAtStart bool
 	// HoldSeconds is the backoff openvpn reports when a restart holds.
 	HoldSeconds int
+	// PushDNS is the DNS server the server's PUSH_REPLY gives (default
+	// 10.99.0.1; "-" for none).
+	PushDNS string
 
 	mu       sync.Mutex
 	commands []string
 	running  int
+	starts   int
+}
+
+// SetHangUp sets HangUp for the attempts started from now (a test's
+// server going down, or back).
+func (f *FakeLauncher) SetHangUp(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.HangUp = v
+}
+
+// Starts is how many fake openvpn processes were started.
+func (f *FakeLauncher) Starts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.starts
 }
 
 // Commands returns every management command the fake received, in order.
@@ -70,6 +89,9 @@ func (f *FakeLauncher) Engine() domain.TunnelEngine {
 
 // Start implements Launcher.
 func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
+	f.mu.Lock()
+	f.starts++
+	f.mu.Unlock()
 	if e := f.Engine(); !e.Available {
 		return nil, &EngineError{Engine: e}
 	}
@@ -94,6 +116,7 @@ func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
 	p := &fakeProcess{done: make(chan struct{}), ln: ln, f: f}
 	f.mu.Lock()
 	f.running++
+	hangUp := f.HangUp
 	f.mu.Unlock()
 	remote := Remote{Host: "203.0.113.1", Port: 1194}
 	if len(spec.Profile.Remotes) > 0 {
@@ -109,7 +132,7 @@ func (f *FakeLauncher) Start(spec LaunchSpec) (Process, error) {
 			}
 		}
 	}
-	go p.serve(spec.Profile.NeedsAuth, f.HangUp, f.HoldSeconds, iface, ip, remote, f.OnUp, f.OnDown)
+	go p.serve(spec.Profile.NeedsAuth, hangUp, f.HoldSeconds, f.PushDNS, iface, ip, remote, f.OnUp, f.OnDown)
 	return p, nil
 }
 
@@ -164,7 +187,7 @@ func (p *fakeProcess) logf(format string, a ...any) {
 	p.mu.Unlock()
 }
 
-func (p *fakeProcess) serve(needsAuth, hangUp bool, holdSeconds int, iface, ip string, remote Remote, onUp, onDown func(string, string)) {
+func (p *fakeProcess) serve(needsAuth, hangUp bool, holdSeconds int, pushDNS, iface, ip string, remote Remote, onUp, onDown func(string, string)) {
 	defer p.exit()
 	c, err := p.ln.Accept()
 	if err != nil {
@@ -197,6 +220,15 @@ func (p *fakeProcess) serve(needsAuth, hangUp bool, holdSeconds int, iface, ip s
 			onUp(iface, ip)
 		}
 		up = true
+		push := "PUSH_REPLY,route-gateway 10.99.0.1,topology subnet,ping 10"
+		switch dns := pushDNS; dns {
+		case "-":
+		case "":
+			push += ",dhcp-option DNS 10.99.0.1"
+		default:
+			push += ",dhcp-option DNS " + dns
+		}
+		p.logf("PUSH: Received control message: '%s,ifconfig %s 255.255.255.0'", push, ip)
 		p.logf("Initialization Sequence Completed")
 		state("CONNECTED", "SUCCESS", ip)
 	}

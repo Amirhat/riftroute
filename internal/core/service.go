@@ -119,7 +119,7 @@ func (s *Service) TunnelStatuses(ctx context.Context) []domain.TunnelStatus {
 	}
 	for _, t := range ts {
 		if !running[t.Name] {
-			tunnels = append(tunnels, routing.TunnelInput{Name: t.Name, Routes: t.Routes})
+			tunnels = append(tunnels, routing.TunnelInput{Name: t.Name, Routes: t.Routes, AllTraffic: t.AllTraffic})
 		}
 	}
 	refs, extra := s.tunnelProfiles(ctx)
@@ -203,6 +203,9 @@ func (s *Service) networkInput(ctx context.Context, tunnels []routing.TunnelInpu
 		}
 		in.Occupied = s.occupied(ctx, owned)
 		in.DNSServers = s.systemResolvers(ctx)
+		// The main VPN: where a full tunnel's pins go (its usual path).
+		in.VPNGatewayV4, in.VPNIfaceV4 = s.resolveVPN(ctx, domain.FamilyV4)
+		in.VPNGatewayV6, in.VPNIfaceV6 = s.resolveVPN(ctx, domain.FamilyV6)
 		if hasTS {
 			// Its networks are someone else's routes (on Linux they're in
 			// its own table, which the main table's reading doesn't show),
@@ -914,27 +917,46 @@ func (s *Service) actualManagedRules(ctx context.Context) []domain.ManagedRule {
 	return out
 }
 
-// resolveVPN finds the active tunnel next-hop+iface for a family — the current
-// default route that egresses a VPN interface (spec §5.4 include mode). Returns
-// a zero gateway for an on-link (point-to-point) tunnel default.
+// resolveVPN finds the active tunnel next-hop+iface for a family — the main
+// VPN's catch-all: the default route, or the two /1 halves (OpenVPN's
+// redirect-gateway def1), that egress a VPN interface (spec §5.4 include
+// mode; a full tunnel's pins). Never one of RiftRoute's own tunnels. Returns a
+// zero gateway for an on-link (point-to-point) tunnel default.
 func (s *Service) resolveVPN(ctx context.Context, fam domain.Family) (netip.Addr, string) {
 	ifaces, _ := s.prov.Interfaces(ctx)
+	ours := map[string]bool{}
+	for _, t := range s.tunnels() {
+		if t.Iface != "" {
+			ours[t.Iface] = true
+		}
+	}
 	vpn := map[string]bool{}
 	for _, ifc := range ifaces {
-		if ifc.IsVPN && ifc.Up {
+		if ifc.IsVPN && ifc.Up && !ours[ifc.Name] {
 			vpn[ifc.Name] = true
 		}
 	}
-	def := "0.0.0.0/0"
+	def, halves := "0.0.0.0/0", [2]string{"0.0.0.0/1", "128.0.0.0/1"}
 	if fam == domain.FamilyV6 {
-		def = "::/0"
+		def, halves = "::/0", [2]string{"::/1", "8000::/1"}
 	}
 	routes, _ := s.prov.ListRoutes(ctx, fam)
+	half := map[string]domain.Route{}
 	for _, r := range routes {
-		if r.Table == "" && !r.Scoped && r.DstCIDR == def && vpn[r.Iface] {
+		if r.Table != "" || r.Scoped || !vpn[r.Iface] || r.Owner == domain.OwnerRiftRoute {
+			continue
+		}
+		switch r.DstCIDR {
+		case def:
 			gw, _ := netip.ParseAddr(r.Gateway) // zero if on-link
 			return gw, r.Iface
+		case halves[0], halves[1]:
+			half[r.DstCIDR] = r
 		}
+	}
+	if lo, hi := half[halves[0]], half[halves[1]]; lo.Iface != "" && lo.Iface == hi.Iface {
+		gw, _ := netip.ParseAddr(lo.Gateway)
+		return gw, lo.Iface
 	}
 	return netip.Addr{}, ""
 }
@@ -1243,6 +1265,11 @@ func markTunnel(d *domain.RouteDecision, ts []domain.TunnelStatus) {
 	name, tagged := strings.CutPrefix(d.Profile, routing.TunnelProfilePrefix)
 	for _, t := range ts {
 		live := d.Reachable && t.Iface != "" && (t.State == domain.TunnelConnected || t.State == domain.TunnelReconnecting)
+		if tagged && t.Name == name && !d.Rejected && d.Iface != "" && d.Iface != t.Iface {
+			// The tunnel's route, but not into it: a pin keeping this out.
+			d.KeptOutOf = name
+			return
+		}
 		if (tagged && t.Name == name) || (!tagged && live && t.Iface == d.Iface) {
 			d.Tunnel, d.TunnelType = t.Name, t.Type
 			return

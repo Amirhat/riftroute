@@ -77,6 +77,16 @@ type TunnelSpec struct {
 	// WhenDown: fallback (default) or block. A client that doesn't send it
 	// (one from before it) keeps the tunnel's.
 	WhenDown TunnelWhenDown `json:"when_down,omitempty"`
+	// AllTraffic: the tunnel carries everything, like an ordinary VPN,
+	// except what's routed more specifically on purpose — profile routes,
+	// other VPNs' networks, other tunnels, the LAN, its own server — and
+	// IPv6 it can't carry is blocked. Routes may still be listed. Unset (a
+	// client from before it) keeps the tunnel's.
+	AllTraffic *bool `json:"all_traffic,omitempty"`
+	// DNS are DNS servers to use while it carries all traffic, instead of
+	// the ones its server (or configuration) gives. Unset (nil) keeps the
+	// tunnel's; empty clears it.
+	DNS *[]string `json:"dns,omitempty"`
 }
 
 // TunnelStatus is a tunnel as reported over the API. It never carries the
@@ -88,6 +98,17 @@ type TunnelStatus struct {
 	Routes      []string       `json:"routes"`
 	AutoConnect bool           `json:"auto_connect"`
 	WhenDown    TunnelWhenDown `json:"when_down"`
+	// AllTraffic: it carries everything but what's routed more specifically
+	// on purpose (TunnelSpec.AllTraffic).
+	AllTraffic bool `json:"all_traffic,omitempty"`
+	// DNSOverride are the DNS servers the user set for it (TunnelSpec.DNS).
+	DNSOverride []string `json:"dns_override,omitempty"`
+	// DNS are the DNS servers the system uses through it right now (a full
+	// tunnel, connected); DNSNote says why there are none when it carries
+	// all traffic but the system's own DNS is still in use, or what keeps
+	// them from working as they should (another link taking every name).
+	DNS     []string `json:"dns,omitempty"`
+	DNSNote string   `json:"dns_note,omitempty"`
 	// Blocking: its destinations are refused right now — it's set to block
 	// and is down while it should be up.
 	Blocking    bool   `json:"blocking,omitempty"`

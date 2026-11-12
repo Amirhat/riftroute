@@ -155,6 +155,7 @@ connections {
 pools {
   rw4 {
     addrs = 10.9.0.0/24
+    dns = 10.9.0.53, 10.9.0.54
   }
 }
 secrets {
@@ -249,6 +250,12 @@ cx sh -euc '
   ip route add 0.0.0.0/1 dev wg0 && ip route add 128.0.0.0/1 dev wg0
   mkdir -p /var/lib/riftroute
   cp /etc/resolv.conf /tmp/resolv.before
+  # A resolvconf, as Debian systems with resolvconf or openresolv have, that
+  # only says it was called: charon-cmd must never run it. And a resolvectl
+  # that only says what it was asked: a full tunnel applies its DNS there.
+  printf "#!/bin/sh\necho \"\$@\" >> /tmp/resolvconf.calls\ncat >> /tmp/resolvconf.calls\n" > /usr/sbin/resolvconf
+  printf "#!/bin/sh\necho \"\$@\" >> /tmp/resolvectl.calls\n" > /usr/local/bin/resolvectl
+  chmod 755 /usr/sbin/resolvconf /usr/local/bin/resolvectl
 '
 if cx ping -c1 -W1 10.78.2.20 >/dev/null 2>&1; then
   fail "the main VPN should swallow the server path before RiftRoute pins it"
@@ -321,6 +328,10 @@ if [ "${SWAN:-}" = 6 ]; then
   [ -z "$table" ] && pass "the patched charon-cmd installed no route anywhere" || fail "routes despite the patch: $table"
 fi
 cx cmp -s /etc/resolv.conf /tmp/resolv.before && pass "DNS untouched (the profile's DNS ignored)" || fail "resolv.conf changed"
+cx test -e /tmp/resolvconf.calls && fail "resolvconf was run: $(cx cat /tmp/resolvconf.calls)" || pass "resolvconf never run, though the server gives DNS"
+loads_resolve() { cx sh -c 'ls /var/lib/riftroute/tunnels/office.conf >/dev/null && grep -q resolve /var/lib/riftroute/tunnels/office.conf'; }
+cx sh -c 'ls /var/lib/riftroute/tunnels/office.conf' >/dev/null 2>&1 || fail "no session config to look at"
+loads_resolve && fail "a tunnel that lists networks loads the resolve plugin" || pass "and no resolve plugin loaded"
 # strongSwan 6 takes the key as PEM, 5.x (Debian's) as a PKCS#12.
 keyfile=$(cx sh -c 'ls /var/lib/riftroute/tunnels/office.key.pem /var/lib/riftroute/tunnels/office.p12 2>/dev/null | head -1')
 cx stat -c "%a" "${keyfile:-none}" 2>/dev/null | grep -q "^600$" && pass "the key ($(basename "$keyfile")) is 0600 while connected" || fail "key file mode: ${keyfile:-none}"
@@ -364,6 +375,40 @@ sleep 1
 files=$(cx ls /var/lib/riftroute/tunnels | grep -Ev '\.(json|login)$' | tr '\n' ' ' || true)
 [ -z "$files" ] && pass "and leaves no key or config behind" || fail "files left: $files"
 sx swanctl --list-sas 2>/dev/null | grep -q "rw:" && fail "the server still holds an SA after down" || pass "the connection was deleted with the server"
+
+echo "== all traffic: the server's DNS read from charon-cmd's log, never given to resolvconf"
+# On strongSwan 6.1 the resolve plugin runs the no-op it's given; on Debian's
+# 5.9.8 it would run /sbin/resolvconf whatever it's told, so it isn't loaded
+# beside one — and writes its own file without one.
+full_up() {
+  cx riftroute tunnel up office >"$WORK/full.out" 2>&1 || { fail "full tunnel: $(tail -3 "$WORK/full.out")"; cx riftroute tunnel log office | tail -30; }
+  sleep 2
+}
+cx riftroute tunnel edit office --all-traffic >/dev/null && pass "office now carries all traffic" || fail "edit --all-traffic"
+full_up
+out=$(cx riftroute tunnel list 2>&1)
+if [ "${SWAN:-}" = 6 ]; then
+  loads_resolve && pass "a full tunnel's session loads the resolve plugin" || fail "no resolve plugin for a full tunnel"
+  grep -q "DNS goes through it, to 10.9.0.53, 10.9.0.54" <<<"$out" && pass "the server's DNS, read from the log, is in use" || fail "no DNS: $out"
+  cx grep -q "dns $iface 10.9.0.53 10.9.0.54" /tmp/resolvectl.calls && pass "applied on the tunnel's link (resolvectl dns)" || fail "resolvectl: $(cx cat /tmp/resolvectl.calls 2>&1)"
+else
+  grep -q "would hand its server's DNS servers to resolvconf" <<<"$out" && pass "5.9.8 beside resolvconf: not read, and the card says why" || fail "5.9.8 note: $out"
+  loads_resolve && fail "5.9.8 beside resolvconf loads the resolve plugin" || pass "and the plugin isn't loaded"
+  cx riftroute tunnel down office >/dev/null
+  cx mv /usr/sbin/resolvconf /usr/sbin/resolvconf.off
+  full_up
+  out=$(cx riftroute tunnel list 2>&1)
+  grep -q "DNS goes through it, to 10.9.0.53, 10.9.0.54" <<<"$out" && pass "5.9.8 without resolvconf: read from the log (its own file written)" || fail "5.9.8 file mode: $out"
+  cx mv /usr/sbin/resolvconf.off /usr/sbin/resolvconf
+fi
+cx test -e /tmp/resolvconf.calls && fail "resolvconf was run: $(cx cat /tmp/resolvconf.calls)" || pass "resolvconf never run"
+cx cmp -s /etc/resolv.conf /tmp/resolv.before && pass "resolv.conf untouched" || fail "resolv.conf changed"
+get=$(cx ip route get 8.8.8.8 | head -1)
+grep -q "dev ${iface:-none}" <<<"$get" && pass "everything goes into the tunnel: $get" || fail "not into the tunnel: $get"
+cx ping -c2 -W2 10.99.9.1 >/dev/null && pass "10.99.9.1 answers through the full tunnel" || fail "ping through the full tunnel"
+cx riftroute tunnel down office >/dev/null
+sleep 1
+cx grep -q "revert $iface" /tmp/resolvectl.calls && pass "the tunnel's DNS reverted when it went down" || fail "not reverted: $(cx cat /tmp/resolvectl.calls 2>&1)"
 
 echo "== a username and password (EAP), and a shared secret"
 cx riftroute tunnel rm office >/dev/null
