@@ -180,6 +180,14 @@ BASE_CLAIM=$(claims "$PSVC")
 BASE_EXIT=$(exitip https://www.cloudflare.com/cdn-cgi/trace)
 BASE_EXIT1=$(exitip https://1.1.1.1/cdn-cgi/trace)
 BASE_REACH=$(reach https://1.0.0.1)
+# Some routers don't answer ping: the LAN is then checked by its route only.
+lan_ok() { ping -c 1 -t 2 "$PHYSGW" 2>&1 | grep -q "1 packets received"; }
+BASE_LAN=no; lan_ok && BASE_LAN=yes
+# Why names don't resolve: the resolver's path, and whether it answers.
+why_names() {
+  note "the first resolver now: $(ns1) | its path: $(via "$(ns1)") | it answers: $(to 5 dig +short +tries=1 +time=3 @"$(ns1)" example.com A 2>/dev/null | head -1)"
+  note "$MAINIF: $(ifconfig "$MAINIF" 2>/dev/null | awk '/inet /{print $2}') | 1.1.1.1 by address: $(reach https://1.1.1.1)"
+}
 EXNET=$(netstat -rn -f inet | awk -v gw="$PHYSGW" '$2 == gw && $1 != "default" && $3 ~ /S/ && $3 !~ /[HW]/ {print $1; exit}')
 EXPROBE=""; [[ -n "$EXNET" ]] && EXPROBE=$(probe_of "$EXNET")
 CLONE=$(netstat -rn -f inet | awk -v i="$MAINIF" '$4 == i && $3 ~ /W/ && $3 ~ /H/ && $1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $1 != "1.1.1.1" {print $1; exit}')
@@ -244,7 +252,11 @@ done
 ckeq "the tunnel's server goes direct ($SERVER via $PHYSGW)" "$(gwof "$SERVER")" "$PHYSGW"
 ckeq "1.1.1.1 (the watchdog's anchor) stays on $MAINIF" "$(via 1.1.1.1)" "$MAINIF"
 [[ -n "$CLONE" ]] && ckeq "$CLONE, cloned onto $MAINIF before, now goes into the tunnel" "$(via "$CLONE")" "$T"
-ck "the LAN answers ($PHYSGW)" "$(ping -c 1 -t 2 "$PHYSGW" 2>&1)" "1 packets received"
+if [[ "$BASE_LAN" == yes ]]; then
+  ck "the LAN answers ($PHYSGW)" "$(ping -c 1 -t 2 "$PHYSGW" 2>&1)" "1 packets received"
+else
+  note "the router ($PHYSGW) didn't answer ping before the test either: its route is what's checked"
+fi
 # Traffic by address (no DNS): watched on the tunnel, and its counter. The
 # exit address may be the main VPN's anyway (a tunnel server that leaves the
 # same way): printed, not checked.
@@ -372,7 +384,7 @@ ckeq "no RiftRoute keys left" "$(rrkeys)" "0"
 for a in $Q4; do ckeq "$a takes its usual path again" "$(via "$a")" "$MAINIF"; done
 ckeq "IPv6 is as before" "$(via6 2001:db8::1)" "$B6"
 ckeq "the server's pin is gone" "$(gwof "$SERVER")" "$B_SRV"
-until_ok 30 names_ok
+until_ok 30 names_ok || why_names
 ckne "names resolve" "$(resolves www.example.com)" ""
 exit_back() { [[ "$(exitip https://www.cloudflare.com/cdn-cgi/trace)" == "$BASE_EXIT" ]]; }
 [[ -n "$BASE_EXIT" ]] && until_ok 30 exit_back
@@ -409,11 +421,15 @@ ckeq "blocking" "$(tj .blocking)" "true"
 ck "8.8.4.4 is refused" "$(flg 8.8.4.4)" "REJECT"
 ck "route explain says why" "$(rr route explain 8.8.4.4 2>&1)" "blocked"
 [[ "$BASE_REACH" == ok ]] && ckeq "https://1.0.0.1 can't be reached" "$(reach https://1.0.0.1)" "blocked"
-ck "the LAN still answers" "$(ping -c 1 -t 2 "$PHYSGW" 2>&1)" "1 packets received"
+if [[ "$BASE_LAN" == yes ]]; then
+  ck "the LAN still answers" "$(ping -c 1 -t 2 "$PHYSGW" 2>&1)" "1 packets received"
+else
+  ckeq "the LAN still goes by $PHYSIF" "$(via "$PHYSGW")" "$PHYSIF"
+fi
 [[ -n "$EXPROBE" ]] && ckeq "the excluded network still goes direct" "$(via "$EXPROBE")" "$PHYSIF"
 ckeq "1.1.1.1 still goes by $MAINIF" "$(via 1.1.1.1)" "$MAINIF"
 ckeq "DNS isn't the tunnel's while it's down" "$(ns1)" "$BASE_NS"
-until_ok 30 names_ok
+until_ok 30 names_ok || why_names
 ckne "names still resolve, so it can connect again" "$(resolves www.example.com)" ""
 rr tunnel down "$NAME" 2>&1 | sed 's/^/    /'
 sleep 2
