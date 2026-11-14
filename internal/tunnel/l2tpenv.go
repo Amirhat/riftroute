@@ -26,6 +26,11 @@ import (
 // strongSwan). One charon carries every tunnel's IPsec.
 func SystemL2TP(log *slog.Logger) *L2TPEnv {
 	r := &charonRunner{log: log}
+	// A charon a crashed daemon left (macOS: nothing ended it) goes now, with
+	// its SAs and policies, not when the next tunnel connects.
+	if os.Geteuid() == 0 {
+		ipsec.StopLeftover(charonDir(runtime.GOOS), log)
+	}
 	return &L2TPEnv{IPsec: r, IPsecEngine: r.Engine}
 }
 

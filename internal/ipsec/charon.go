@@ -167,6 +167,13 @@ func (c *Charon) stopLocked() {
 	c.reset()
 }
 
+// StopLeftover ends a charon an earlier daemon left running in dir (see
+// stopLeftover): the daemon calls it as it starts, so a crash's charon
+// doesn't hold its SAs and policies until the next tunnel connects.
+func StopLeftover(dir string, log *slog.Logger) {
+	stopLeftover(filepath.Join(dir, "charon.pid"), log)
+}
+
 // stopLeftover ends a charon an earlier daemon left running (it crashed;
 // on macOS nothing ended its children). Its PID file (RiftRoute's charon is
 // built with its PID directory in Dir) would keep a new one from starting,
