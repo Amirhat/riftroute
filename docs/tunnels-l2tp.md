@@ -171,25 +171,78 @@ There's no standard L2TP file. A tunnel is made from:
 The secrets are kept as the other tunnels' are (the store, 0600, never in
 status or logs).
 
+## The driver (as built)
+
+- `l2tpDriver` (`internal/tunnel/l2tp.go`) runs an attempt at a time, as
+  IKEv2's does:
+  1. the server pinned (via direct);
+  2. IPsec up (unless `IPsec = none`), and down again when the attempt
+     ends, whatever happened;
+  3. a UDP socket from port 1701 (`SO_REUSEPORT`: other L2TP tunnels'
+     sockets share it, each connected to its own server);
+  4. `l2tp.Dial`;
+  5. a TUN (`utunN`; `rrl2tpN` on Linux) with PPP's address, vetted as
+     WireGuard's is;
+  6. its counters followed until the session ends.
+- **Retries back off.** What ends a session at once (no retry):
+  - a lasting IPsec failure (the key, a certificate, the proposals, the
+    selectors: `ipsec.Lasting`);
+  - a lasting L2TP failure (PAP in the clear, a tunnel secret, no
+    address, a server that can't prove the password: `l2tp.Lasting`);
+  - a rejected login that has never worked. One that had worked is
+    retried after 5, 15 and 30 minutes, then given up (#37's rule, as for
+    IKEv2).
+- **A full tunnel** takes IPCP's DNS servers.
+- **Configuration** (`l2tpconf.go`): the `[L2TP]` file, or a
+  `.mobileconfig` (`PPP`: `CommRemoteAddress`, `AuthName`, `AuthPassword`;
+  `IPSec`: `SharedSecret` as data or string, `AuthenticationMethod`
+  Certificate with a PKCS#12 payload, `LocalIdentifier`). The CLI and the
+  app tell it apart from IKEv2 profiles by the VPN's type.
+- **charon** (`l2tpenv.go`):
+  - macOS: the shipped one, checked as charon-cmd is (root-owned, the
+    same file at start), its version read with an empty `strongswan.conf`;
+  - Linux: `charon-systemd`, which takes no arguments, so its version
+    isn't asked.
+  - Either way: one instance, its own session, ending with the daemon on
+    Linux (it deletes its SAs and policies when it gets SIGTERM).
+  - `socket-default` and `vici` are critical plugins: without either it
+    stops at once, naming it.
+- **-provider fake** (`FakeL2TP`): every attempt gets an in-process L2TP
+  server, `FakeIPsec` and TUNs that carry nothing; any password but
+  "wrong" logs in.
+- **Telemetry** doesn't count L2TP tunnels: its tunnel types are a fixed
+  list, and the schema doesn't change.
+
+## Known limits
+
+- **macOS's `net.inet.ipsec.esp_port` is system-wide.** While an L2TP/IPsec
+  tunnel is up, charon owns it. A macOS L2TP or Cisco IPsec VPN from System
+  Settings (`racoon`) at the same time may not work.
+- **Linux:** installing `charon-systemd` (Debian) also enables the system's
+  strongSwan service. It runs beside RiftRoute's (different ports and
+  sockets), and RiftRoute never uses or changes it.
+- **IKEv1 signs both ways with the same kind of key:** an RSA certificate
+  against a server whose key is ECDSA fails.
+- **No IPv6 over PPP** (IPV6CP is refused): a full tunnel blocks IPv6, as
+  for the other tunnels without it.
+
 ## Steps
 
-1. **The L2TP and PPP engine** (`internal/l2tp`), no IPsec yet:
+1. **The L2TP and PPP engine** (`internal/l2tp`). Done:
    - codecs and state machines, with unit tests;
    - MS-CHAPv2 against RFC 2759's vectors;
-   - a Docker test: an `xl2tpd` + `pppd` server and the engine as client,
-     over a Linux TUN.
+   - a Docker test against `xl2tpd` + `pppd` over a Linux TUN.
 2. **IPsec:**
    - charon over VICI, transport mode, PSK and certificates
      (`internal/ipsec`). Done: the Docker test runs IKEv1 with a PSK,
      IKEv1 and IKEv2 with certificates, and a wrong PSK, and checks that
      no L2TP crosses the wire unencrypted, before and after the server cuts
-     the SA (42 checks, ALL PASSED);
+     the SA;
    - the macOS build gains `charon` (kernel-pfkey, ikev1, its PID
-     directory RiftRoute's).
-3. **The driver:**
-   - `TunnelL2TP` in the manager;
-   - `.mobileconfig` L2TP and the flags;
-   - the app's form and card (the "no IPsec" warning);
-   - doctor;
-   - full-tunnel support.
+     directory RiftRoute's). Done (built and checked for arm64; CI builds
+     the rest).
+3. **The driver, the CLI and the app.** Done. The Docker test runs the real
+   daemon end to end: connect, the route, no plaintext, the SA cut, a
+   Disconnect, a wrong PSK, a wrong password tried once, the daemon killed
+   (58 checks). It found a deadlock (charon's log reader and Down), fixed.
 4. **Review, the live test** against the owner's server, and the release.

@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **L2TP/IPsec tunnels.** Import a configuration profile with an L2TP VPN,
+  or RiftRoute's own `[L2TP]` file (the server and the IPsec key or
+  certificate, so nothing secret goes on a command line), and it runs next
+  to your main VPN like the other tunnels, or carries all traffic. L2TP and
+  PPP run inside the daemon; IPsec, in transport mode, is strongSwan's
+  `charon` (shipped with RiftRoute on macOS; your distribution's
+  `charon-systemd` on Linux), one for every tunnel. Its packets never leave
+  unencrypted, even while an SA is being renegotiated. The server's login
+  methods: MS-CHAPv2 (whose server must prove it knows the password),
+  CHAP, and PAP only under IPsec. A login the server rejects isn't tried
+  again and again, and a wrong pre-shared key says so. L2TP without IPsec
+  runs only when the file says `IPsec = none`, with a warning.
+
 ## [0.9.0] — 2026-11-12
 
 A tunnel can carry all your traffic, like an ordinary VPN, except what's
