@@ -1,10 +1,16 @@
 package ipsec
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/strongswan/govici/vici"
 )
@@ -136,5 +142,43 @@ func TestExplain(t *testing.T) {
 		if retry := strings.Contains(c.log, "retransmit") || c.log == "something else"; Lasting(err) == retry {
 			t.Errorf("%q: lasting %v", c.log, Lasting(err))
 		}
+	}
+}
+
+// A charon that prints and never opens its VICI socket: Up gives up, saying
+// what it printed, and stops it — without waiting on its own lock (the log
+// reader once took the lock Up held, so neither the error nor the stop
+// could finish).
+func TestCharonThatDoesntStart(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "charon")
+	script := "#!/bin/sh\ni=0\nwhile [ $i -lt 2000 ]; do echo \"00[DMN] line $i of a lot of output\"; i=$((i+1)); done\necho 'no vici here'\nexec sleep 30\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := startWait
+	startWait = 500 * time.Millisecond
+	t.Cleanup(func() { startWait = w })
+	c := &Charon{Bin: bin, Dir: filepath.Join(dir, "run"), GOOS: "linux", Log: slog.New(slog.DiscardHandler)}
+	done := make(chan error, 1)
+	go func() { done <- c.Up(context.Background(), Conn{Name: "x", Server: server, PSK: "k"}) }()
+	select {
+	case err := <-done:
+		// What it printed last (how far it got is the scheduler's) follows.
+		if err == nil || !strings.Contains(err.Error(), "didn't start (no VICI socket): ") {
+			t.Fatalf("%v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Up hung")
+	}
+	stopped := make(chan struct{})
+	go func() { c.Down("x"); c.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(15 * time.Second):
+		t.Fatal("stopping hung")
 	}
 }

@@ -36,11 +36,14 @@ docker run --rm --privileged --pid=host alpine nsenter -t 1 -m -- \
 arch=$(docker version -f '{{.Server.Arch}}')
 echo "== build (linux/$arch)"
 (cd "$ROOT" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$WORK/probe" ./test/l2tp-linux/probe)
+for b in riftrouted riftroute; do
+  (cd "$ROOT" && GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -o "$WORK/$b" "./cmd/$b")
+done
 docker build -t "$IMG" "$HERE" >"$WORK/build.log" 2>&1 || { tail -30 "$WORK/build.log"; exit 1; }
 
 docker network create --subnet 10.88.9.0/24 rr-l2tp-net >/dev/null
-docker run -d --name rr-l2tp-server --network rr-l2tp-net --ip 10.88.9.20 --privileged "$IMG" sleep infinity >/dev/null
-docker run -d --name rr-l2tp-client --network rr-l2tp-net --ip 10.88.9.10 --privileged "$IMG" sleep infinity >/dev/null
+docker run -d --init --name rr-l2tp-server --network rr-l2tp-net --ip 10.88.9.20 --privileged "$IMG" sleep infinity >/dev/null
+docker run -d --init --name rr-l2tp-client --network rr-l2tp-net --ip 10.88.9.10 --privileged "$IMG" sleep infinity >/dev/null
 docker cp "$WORK/probe" rr-l2tp-client:/probe
 for c in rr-l2tp-server rr-l2tp-client; do docker exec $c sh -c '[ -e /dev/ppp ] || mknod /dev/ppp c 108 0'; done
 
@@ -208,6 +211,74 @@ ipsec_conf 1 psk
 out=$(probe -user alice -pass s3cret -psk not-the-key)
 [[ "$out" == *"FAIL IPsec: the server rejected the shared secret"* ]] && pass "rejected: ${out##*FAIL }" || fail "wrong PSK: $out"
 stop_probe
+
+echo "== the daemon: an L2TP/IPsec tunnel, end to end"
+stop_probe
+# The probe leaves its charon when it fails (it exits at once): clear it.
+cx sh -c 'pkill -x charon-systemd; sleep 1; ip xfrm policy flush; ip xfrm state flush' || true
+for b in riftrouted riftroute; do docker cp "$WORK/$b" "rr-l2tp-client:/usr/local/bin/$b"; done
+rr() { docker exec -e RIFTROUTE_SOCKET=/run/rr.sock rr-l2tp-client riftroute "$@"; }
+rri() { docker exec -i -e RIFTROUTE_SOCKET=/run/rr.sock rr-l2tp-client riftroute "$@"; }
+start_daemon() {
+  cx sh -c 'mkdir -p /var/lib/riftroute; riftrouted -provider auto -socket /run/rr.sock -db /var/lib/riftroute/rr.db -log debug >>/var/log/rrd.log 2>&1 & echo $! > /run/rrd.pid'
+  for _ in $(seq 1 40); do rr tunnel list >/dev/null 2>&1 && return 0; sleep 0.25; done
+  return 1
+}
+state() { rr tunnel list 2>/dev/null | awk -v n="$1" '$1==n {print $3}'; }
+wait_state() { # name state [tries]
+  for _ in $(seq 1 "${3:-60}"); do [ "$(state "$1")" = "$2" ] && return 0; sleep 0.5; done
+  return 1
+}
+charons() { cx sh -c 'pgrep -c -x charon-systemd || true'; }
+ipsec_conf 1 psk
+server require-mschap-v2 refuse-pap refuse-chap refuse-mschap
+start_daemon && pass "riftrouted runs" || { fail "riftrouted didn't start"; cx tail -20 /var/log/rrd.log; }
+cx sh -c 'printf "[L2TP]\nServer = 10.88.9.20\nPreSharedKey = rr-l2tp-psk\n" > /tmp/office-l2tp.conf; printf "[L2TP]\nServer = 10.88.9.20\nPreSharedKey = not-the-key\n" > /tmp/badkey-l2tp.conf'
+if printf 's3cret\n' | rri tunnel add office /tmp/office-l2tp.conf --username alice --password-stdin --route 10.88.0.1 >"$WORK/add.out" 2>&1; then
+  pass "added: $(head -1 "$WORK/add.out")"
+else
+  fail "add: $(cat "$WORK/add.out")"
+fi
+rr tunnel list | grep -q "10.88.9.20 (L2TP/IPsec)" && pass "listed as L2TP/IPsec" || fail "list: $(rr tunnel list)"
+if rr tunnel up office >"$WORK/up.out" 2>&1 && wait_state office connected; then
+  pass "connected: $(rr tunnel list | awk '$1=="office"')"
+else
+  fail "connect: $(tail -3 "$WORK/up.out") / $(rr tunnel list)"; rr tunnel log office | tail -20 || true
+fi
+[ "$(charons)" = 1 ] && pass "one charon" || fail "$(charons) charons"
+if cx ping -c 3 -W 2 10.88.0.1 >/dev/null 2>&1; then pass "10.88.0.1 through its route"; else fail "no ping by the route"; fi
+rr route explain 10.88.0.1 2>&1 | grep -q "via tunnel office" && pass "route explain: via tunnel office" || fail "explain: $(rr route explain 10.88.0.1 2>&1 | head -3)"
+n=$(sx sh -c 'rm -f /tmp/plain.txt; (timeout 5 tcpdump -ni eth0 -l "udp port 1701" > /tmp/plain.txt 2>/dev/null &); sleep 0.5'; cx ping -c 4 -i 0.4 -W 2 10.88.0.1 >/dev/null 2>&1; sleep 5; sx sh -c 'grep -c . /tmp/plain.txt || true')
+[ "$n" = 0 ] && pass "no L2TP in the clear" || fail "$n plain L2TP packets"
+sx swanctl --terminate --ike l2tp >/dev/null 2>&1 || true
+ok=0; for _ in $(seq 1 15); do cx ping -c 1 -W 2 10.88.0.1 >/dev/null 2>&1 && { ok=1; break; }; sleep 1; done
+[ "$ok" = 1 ] && pass "the server cut the SA: back by itself" || fail "not back after the SA was cut: $(rr tunnel list)"
+rr tunnel down office >"$WORK/down.out" 2>&1 || fail "disconnect: $(cat "$WORK/down.out")"
+left=x; for _ in $(seq 1 20); do left=$(cx sh -c 'ip xfrm policy; ip xfrm state'); [ -z "$left" ] && break; sleep 0.5; done
+[ -z "$left" ] && pass "disconnected: no policies or SAs left" || fail "left: $left"
+for _ in $(seq 1 20); do [ "$(charons)" = 0 ] && break; sleep 0.25; done
+[ "$(charons)" = 0 ] && pass "charon stopped with the last tunnel" || fail "charon still running"
+
+printf 's3cret\n' | rri tunnel add badkey /tmp/badkey-l2tp.conf --username alice --password-stdin --route 10.88.0.1 >/dev/null 2>&1
+rr tunnel up badkey >/dev/null 2>&1 || true
+if wait_state badkey failed && rr tunnel list | grep -q "rejected the shared secret"; then pass "a wrong PSK: failed, saying so"; else fail "wrong PSK: $(rr tunnel list)"; fi
+rr tunnel rm badkey >/dev/null 2>&1
+
+printf 'wrong\n' | rri tunnel add badpw /tmp/office-l2tp.conf --username alice --password-stdin --route 10.88.0.1 >/dev/null 2>&1
+before=$(sx grep -c "MS-CHAP\|CHAP authentication failed\|authentication failed" /var/log/ppp.log 2>/dev/null || echo 0)
+rr tunnel up badpw >/dev/null 2>&1 || true
+if wait_state badpw failed && rr tunnel list | grep -q "rejected the username or password"; then pass "a wrong password: failed at once"; else fail "wrong password: $(rr tunnel list)"; fi
+sleep 3
+st=$(state badpw)
+[ "$st" = failed ] && ! rr tunnel list | grep -q "gave up after" && pass "and not tried again (no lockout)" || fail "tried again: $(rr tunnel list)"
+rr tunnel rm badpw >/dev/null 2>&1
+
+rr tunnel up office >/dev/null 2>&1 && wait_state office connected || fail "reconnect: $(rr tunnel list)"
+cx sh -c 'kill -9 $(cat /run/rrd.pid)'
+for _ in $(seq 1 20); do [ "$(charons)" = 0 ] && break; sleep 0.25; done
+[ "$(charons)" = 0 ] && pass "the daemon killed: charon ends with it" || fail "charon outlived the daemon"
+left=x; for _ in $(seq 1 20); do left=$(cx sh -c 'ip xfrm policy; ip xfrm state'); [ -z "$left" ] && break; sleep 0.5; done
+[ -z "$left" ] && pass "and took its policies and SAs" || fail "left after the crash: $left"
 
 [ -s "$WORK/plain.txt" ] && { echo "-- unencrypted L2TP seen:"; cat "$WORK/plain.txt"; }
 if [ "$FAILED" = 0 ]; then echo "ALL PASSED"; else echo "SOME FAILED"; exit 1; fi

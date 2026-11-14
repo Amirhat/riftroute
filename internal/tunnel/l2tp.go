@@ -72,7 +72,7 @@ func (d l2tpDriver) system() WGSystem {
 	if s := d.env().System; s != nil {
 		return s
 	}
-	return wgSystem()
+	return l2tpSystem()
 }
 
 // engine: L2TP and PPP are built in; they need a TUN. IPsec's own engine

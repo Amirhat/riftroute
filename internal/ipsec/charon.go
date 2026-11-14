@@ -39,7 +39,12 @@ type Charon struct {
 	vs    *vici.Session
 	exit  chan struct{}
 	conns map[string]loaded
-	tail  []string // its last log lines
+	// tail is its last log lines, under a lock of its own: the reader must
+	// never wait for mu, or charon's output stops being drained, its exit
+	// is never seen (cmd.Wait waits for it), and a Down holding mu waits
+	// for that exit forever.
+	tmu  sync.Mutex
+	tail []string
 }
 
 type loaded struct {
@@ -120,18 +125,18 @@ func (c *Charon) logLines(r io.Reader) {
 	for sc.Scan() {
 		line := sc.Text()
 		c.Log.Debug("charon", "line", line)
-		c.mu.Lock()
+		c.tmu.Lock()
 		c.tail = append(c.tail, line)
 		if len(c.tail) > 60 {
 			c.tail = c.tail[len(c.tail)-60:]
 		}
-		c.mu.Unlock()
+		c.tmu.Unlock()
 	}
 }
 
 func (c *Charon) lastLines() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.tmu.Lock()
+	defer c.tmu.Unlock()
 	n := len(c.tail)
 	if n == 0 {
 		return ""
