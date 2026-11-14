@@ -863,6 +863,54 @@ describe('Tunnels view — WireGuard', () => {
     expect(screen.getByRole('button', { name: 'Connect lab' })).toBeEnabled()
   })
 
+  it('adds an L2TP file — the login asked for, a tunnel without IPsec warned about — and connects it', async () => {
+    withTunnels([])
+    mockApi.openTunnelProfile.mockResolvedValue({
+      path: '/Users/me/office-l2tp.conf',
+      name: 'office-l2tp.conf',
+      type: 'l2tp',
+      config: '[L2TP]\nServer = vpn.example.com\nIPsec = none\n',
+      servers: ['vpn.example.com (L2TP, unencrypted)'],
+      needs_auth: true,
+      ignored: [],
+      username: '',
+      password: '',
+      error: '',
+    })
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...wgTunnel, name: 'office', type: 'l2tp' } })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Choose a file…'))
+    await screen.findByText('office-l2tp.conf')
+
+    expect(screen.getByRole('heading', { name: 'Add an L2TP/IPsec tunnel' })).toBeInTheDocument()
+    expect(screen.getByText(/the IPsec key or certificate stays in the/)).toBeInTheDocument()
+    expect(screen.getByText(/This tunnel has no IPsec: nothing it carries is encrypted/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
+    fireEvent.change(screen.getByLabelText('Networks through this tunnel'), { target: { value: '10.40.0.0/16' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
+    expect(mockApi.saveTunnel.mock.calls[0][0]).toMatchObject({ type: 'l2tp', username: 'alice', password: 'pw' })
+  })
+
+  it("says what L2TP/IPsec needs when strongSwan's charon is missing, without holding Connect", async () => {
+    withTunnels([{ ...wgTunnel, name: 'office', type: 'l2tp' }])
+    mockApi.tunnelEngine.mockResolvedValue({
+      available: true,
+      l2tp: {
+        available: true,
+        problem: "L2TP/IPsec needs strongSwan's charon: strongSwan's charon isn't installed",
+        install: { system: 'Ubuntu 24.04', commands: ['sudo apt install charon-systemd'] },
+      },
+    })
+    renderView()
+    expect(await screen.findByText(/L2TP\/IPsec needs strongSwan's charon/)).toBeInTheDocument()
+    expect(screen.getByText('sudo apt install charon-systemd')).toBeInTheDocument()
+    // A tunnel without IPsec runs anyway; one with it says why it can't.
+    expect(screen.getByRole('button', { name: 'Connect office' })).toBeEnabled()
+  })
+
   it('warns on the card when an IKEv2 certificate is about to expire', async () => {
     withTunnels([
       {

@@ -42,3 +42,6 @@ func ifconfig(ctx context.Context, args ...string) error {
 	}
 	return nil
 }
+
+// l2tpSystem is the same for L2TP tunnels.
+func l2tpSystem() WGSystem { return wgSystem() }

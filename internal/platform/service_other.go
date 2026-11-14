@@ -8,6 +8,8 @@ const (
 	installedBin       = ""
 	installedOpenVPN   = ""
 	installedCharonCmd = ""
+	installedCharon    = ""
+	charonRunDir       = ""
 )
 
 type noopManager struct{}

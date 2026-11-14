@@ -228,6 +228,7 @@ func run() error {
 	var ike tunnel.IKELauncher = &tunnel.ExecIKELauncher{Output: func(name, line string) {
 		logger.Debug("charon-cmd", "tunnel", name, "line", line)
 	}}
+	l2tpEnv := tunnel.SystemL2TP(logger) // L2TP/IPsec: one charon for every tunnel
 	if fp, ok := prov.(*fake.Provider); ok {
 		launcher = &tunnel.FakeLauncher{ // never run a real openvpn under -provider fake
 			OnUp:    func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
@@ -241,6 +242,9 @@ func run() error {
 			OnDown:  func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) },
 			Missing: fakeNoVPN,
 		}
+		// …nor a real charon or TUN for L2TP: an in-process L2TP server.
+		l2tpEnv = tunnel.FakeL2TP(func(iface, ip string) { fp.SetTunnelIface(iface, ip, true) },
+			func(iface, ip string) { fp.SetTunnelIface(iface, ip, false) })
 	}
 	var rec *reconcile.Reconciler // assigned below; tunnels only apply once it exists
 	// Tunnel state changes come in bursts (every openvpn STATE line) and
@@ -281,6 +285,7 @@ func run() error {
 		Launcher:  launcher,
 		WireGuard: wireguard,
 		IKE:       ike,
+		L2TP:      l2tpEnv,
 		Owned: func() []domain.ManagedRoute {
 			owned, _ := st.ListOwned()
 			return owned

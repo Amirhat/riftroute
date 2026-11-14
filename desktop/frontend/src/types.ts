@@ -563,6 +563,9 @@ export interface TunnelEngine {
   // The same for IKEv2 tunnels' strongSwan (charon-cmd); absent from daemons
   // without IKEv2.
   ikev2?: TunnelEngine
+  // L2TP/IPsec tunnels': L2TP is built in (available), and problem says when
+  // IPsec's charon (strongSwan) is missing; absent from daemons without L2TP.
+  l2tp?: TunnelEngine
 }
 
 // What fixes openvpn here (absent from daemons that predate it):

@@ -56,6 +56,9 @@ type Options struct {
 	// IKE starts IKEv2 sessions (charon-cmd); nil: IKEv2 tunnels don't
 	// connect.
 	IKE IKELauncher
+	// L2TP is what L2TP/IPsec tunnels run on; nil: L2TP tunnels have no
+	// IPsec here (and use this OS's TUN).
+	L2TP *L2TPEnv
 	// Owned reads the routes RiftRoute owns (the ownership map). A tunnel's
 	// own — tagged tunnel:<name>, on-link — include what tunnel-mode
 	// profiles send into it, which only the engine knows: on macOS they stay
@@ -226,6 +229,7 @@ func New(o Options) (*Manager, error) {
 		domain.TunnelOpenVPN:   ovpnDriver{o: &m.o},
 		domain.TunnelWireGuard: wgDriver{o: &m.o},
 		domain.TunnelIKEv2:     ikev2Driver{o: &m.o},
+		domain.TunnelL2TP:      l2tpDriver{o: &m.o},
 	}
 	m.ap = newApplier(func(ctx context.Context) error {
 		if m.o.Apply != nil {
@@ -613,6 +617,8 @@ func (m *Manager) Save(ctx context.Context, spec domain.TunnelSpec) (domain.Tunn
 			bad("config", "a WireGuard configuration (.conf) is required")
 		} else if d.Type == domain.TunnelIKEv2 {
 			bad("config", "a configuration profile (.mobileconfig) is required")
+		} else if d.Type == domain.TunnelL2TP {
+			bad("config", "an L2TP configuration (an [L2TP] file, or a .mobileconfig) is required")
 		} else {
 			bad("config", "an OpenVPN profile (.ovpn) is required")
 		}
@@ -1822,6 +1828,8 @@ func (m *Manager) Engine() domain.TunnelEngine {
 	e := m.o.Launcher.Engine()
 	ike := m.drivers[domain.TunnelIKEv2].engine()
 	e.IKEv2 = &ike
+	l := m.drivers[domain.TunnelL2TP].(l2tpDriver).report()
+	e.L2TP = &l
 	return e
 }
 

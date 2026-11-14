@@ -9,7 +9,7 @@ class Riftroute < Formula
   version "0.0.0"
   # RiftRoute itself is MIT. The macOS tarballs also carry the openvpn that
   # tunnels run — a separate program, statically linked with OpenSSL, LZO and
-  # LZ4 — and strongSwan's charon-cmd for IKEv2 tunnels (GPL-2.0-or-later,
+  # LZ4 — and strongSwan's charon-cmd (IKEv2) and charon (L2TP/IPsec) (GPL-2.0-or-later,
   # with OpenSSL), with their licenses (see THIRD_PARTY.md).
   license all_of: [
     "MIT",
@@ -43,9 +43,9 @@ class Riftroute < Formula
 
   def install
     bin.install "riftroute"
-    helpers = %w[openvpn charon-cmd].select { |h| File.exist?(h) }
+    helpers = %w[openvpn charon-cmd charon].select { |h| File.exist?(h) }
     if OS.mac? && !helpers.empty? && File.directory?("licenses")
-      # Tunnels' openvpn and charon-cmd stay beside the daemon, off PATH:
+      # Tunnels' openvpn, charon-cmd and charon stay beside the daemon, off PATH:
       # `riftroute daemon install` copies them into
       # /Library/PrivilegedHelperTools, root-owned. The daemon never runs one
       # from this (user-writable) prefix. They are never installed without
@@ -65,8 +65,9 @@ class Riftroute < Formula
 
         sudo riftroute daemon install   # writes the launchd/systemd unit
 
-      On macOS this also installs the openvpn and charon-cmd (strongSwan, for
-      IKEv2) that ship with RiftRoute beside the daemon. On Linux tunnels use
+      On macOS this also installs the openvpn, charon-cmd (strongSwan, for
+      IKEv2) and charon (for L2TP/IPsec) that ship with RiftRoute beside the
+      daemon. On Linux tunnels use
       your distribution's openvpn and strongSwan packages.
 
       RiftRoute never mutates routes without the Apply Protocol's guardrails.
