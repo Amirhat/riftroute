@@ -44,11 +44,12 @@ type TunnelProfileFile struct {
 	CertExpires string `json:"cert_expires,omitempty"`
 }
 
-// OpenTunnelProfileDialog picks a .ovpn or WireGuard .conf file. An empty
-// Path with a nil error means the user cancelled.
+// OpenTunnelProfileDialog picks a .ovpn, a WireGuard .conf, a .mobileconfig
+// (IKEv2 or L2TP) or an L2TP file. An empty Path with a nil error means the
+// user cancelled.
 func (a *App) OpenTunnelProfileDialog() (TunnelProfileFile, error) {
 	path, err := wruntime.OpenFileDialog(a.ctx, wruntime.OpenDialogOptions{
-		Title: "Choose an OpenVPN profile, a WireGuard configuration, or an IKEv2 profile",
+		Title: "Choose an OpenVPN profile, a WireGuard configuration, or an IKEv2 or L2TP profile",
 		Filters: []wruntime.FileFilter{
 			{DisplayName: "VPN configuration (*.ovpn, *.conf, *.mobileconfig)", Pattern: "*.ovpn;*.conf;*.mobileconfig"},
 			{DisplayName: "All files", Pattern: "*"},
@@ -67,6 +68,26 @@ func loadTunnelProfile(path string) (TunnelProfileFile, error) {
 		return TunnelProfileFile{}, fmt.Errorf("could not read the profile: %w", err)
 	}
 	out := TunnelProfileFile{Path: path, Name: filepath.Base(path), Type: domain.TunnelOpenVPN, Servers: []string{}, Ignored: []string{}, Files: []string{}}
+	if tunnel.IsL2TP(text) || (tunnel.IsMobileconfig(text) && tunnel.MobileconfigVPNType(text) == "L2TP") {
+		// Self-contained: the IPsec key or certificate is in it; the PPP
+		// login is the tunnel's (a profile may carry it).
+		out.Type, out.Config = domain.TunnelL2TP, text
+		c, err := tunnel.ParseL2TP(text)
+		if err != nil {
+			out.Error = err.Error()
+			return out, nil
+		}
+		out.Servers = c.Servers()
+		if c.Ignored != nil {
+			out.Ignored = c.Ignored
+		}
+		out.NeedsAuth = true
+		out.Username, out.Password = c.Username, c.Password
+		if c.Cert != nil {
+			out.CertExpires = c.Cert.NotAfter.UTC().Format(time.RFC3339)
+		}
+		return out, nil
+	}
 	if tunnel.IsMobileconfig(text) {
 		// Self-contained too: the login and CAs are payloads in it.
 		out.Type, out.Config = domain.TunnelIKEv2, text
