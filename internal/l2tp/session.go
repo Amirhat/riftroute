@@ -307,7 +307,7 @@ var errClosed = errors.New("closed")
 
 // errPAPInClear: the server takes only PAP, which sends the password as it
 // is, and nothing encrypts the connection.
-var errPAPInClear = errors.New("the server accepts only PAP, which sends the password unencrypted, and this tunnel has no IPsec: RiftRoute won't send it")
+var errPAPInClear = lasting("the server accepts only PAP, which sends the password unencrypted, and this tunnel has no IPsec: RiftRoute won't send it")
 
 // readFailed: the socket failed. A refused port (ICMP) means nothing
 // listens there.
@@ -467,10 +467,10 @@ func (l *loop) input(b []byte, now time.Time) error {
 	}
 	for _, a := range m.avps {
 		if a.hidden {
-			return errors.New("the server hides its L2TP attributes (a tunnel secret), which RiftRoute doesn't support")
+			return lasting("the server hides its L2TP attributes (a tunnel secret), which RiftRoute doesn't support")
 		}
 		if a.mandatory && a.vendor != 0 && m.msgType() != msgStopCCN && m.msgType() != msgCDN {
-			return fmt.Errorf("the server sent an L2TP attribute RiftRoute doesn't know (vendor %d, type %d)", a.vendor, a.typ)
+			return lasting(fmt.Sprintf("the server sent an L2TP attribute RiftRoute doesn't know (vendor %d, type %d)", a.vendor, a.typ))
 		}
 	}
 	return l.control(m)
@@ -485,7 +485,7 @@ func (l *loop) control(m *message) error {
 			return nil
 		}
 		if _, ok := m.find(avpChallenge); ok {
-			return errors.New("the server asks for an L2TP tunnel secret, which RiftRoute doesn't support")
+			return lasting("the server asks for an L2TP tunnel secret, which RiftRoute doesn't support")
 		}
 		a, ok := m.find(avpAssignedTunnelID)
 		id, err := a.u16()
@@ -588,7 +588,7 @@ func (l *loop) ppp(frame []byte, now time.Time) error {
 			return l.sendPPP(protoLCP, cp{code: codeEchoReply, id: c.id, data: append(append([]byte{}, l.magic...), tail4(c.data)...)})
 		case codeProtoRej:
 			if len(c.data) >= 2 && binary.BigEndian.Uint16(c.data) == protoIPCP {
-				return errors.New("the server refuses IPv4 (IPCP) on this link")
+				return lasting("the server refuses IPv4 (IPCP) on this link")
 			}
 			return nil
 		}
@@ -765,7 +765,7 @@ func (l *loop) ipcpNak(opts []option) error {
 func (l *loop) ipcpRej(opts []option) error {
 	for _, o := range opts {
 		if o.typ == ipcpAddress {
-			return errors.New("the server assigned no address: it refuses to give one (IPCP)")
+			return lasting("the server assigned no address: it refuses to give one (IPCP)")
 		}
 	}
 	l.ipcp.ours = without(l.ipcp.ours, opts)
@@ -778,7 +778,7 @@ func (l *loop) established() error {
 		switch {
 		case o.typ == ipcpAddress:
 			if a.IsUnspecified() {
-				return errors.New("the server assigned no address (IPCP)")
+				return lasting("the server assigned no address (IPCP)")
 			}
 			l.s.local = a
 		case !a.IsUnspecified():

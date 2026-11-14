@@ -237,6 +237,15 @@ func (c *Charon) Up(ctx context.Context, conn Conn) error {
 			return fmt.Errorf("couldn't read the profile's private key: %w", err)
 		}
 		l.keyID, _ = out.Get("id").(string)
+		for _, cert := range conn.Chain {
+			m := vici.NewMessage()
+			_ = m.Set("type", "X509")
+			_ = m.Set("flag", "NONE")
+			_ = m.Set("data", string(cert))
+			if err := c.call("load-cert", m); err != nil {
+				return fmt.Errorf("ipsec: loading an intermediate certificate: %w", err)
+			}
+		}
 	}
 	c.conns[conn.Name] = l // unloaded by Down, whatever happens next
 	cm, err := connMessage(conn)
@@ -343,17 +352,17 @@ func explain(conn Conn, log []string, err error) error {
 	}
 	switch {
 	case has("NO_PROPOSAL_CHOSEN", "no acceptable proposal", "no matching proposal"):
-		return errors.New("IPsec: the server accepted none of the profile's encryption settings")
+		return lasting("IPsec: the server accepted none of the profile's encryption settings")
 	case conn.PSK != "" && has("invalid HASH_V1", "decryption failed", "message parsing failed", "AUTHENTICATION_FAILED",
 		"verification of AUTH payload", "no shared key found"):
-		return errors.New("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
+		return lasting("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
 	case conn.PSK == "" && has("AUTHENTICATION_FAILED", "constraint check failed", "no trusted RSA public key", "no trusted ECDSA public key"):
 		if has("no trusted", "constraint check failed") {
-			return errors.New("IPsec: the server's certificate couldn't be verified with the profile's certificate authorities")
+			return lasting("IPsec: the server's certificate couldn't be verified with the profile's certificate authorities")
 		}
-		return errors.New("IPsec: the server rejected this profile's certificate")
+		return lasting("IPsec: the server rejected this profile's certificate")
 	case has("INVALID_ID_INFORMATION", "TS_UNACCEPTABLE", "no matching CHILD_SA config"):
-		return errors.New("IPsec: the server refused the L2TP connection's selectors (transport mode, UDP port 1701)")
+		return lasting("IPsec: the server refused the L2TP connection's selectors (transport mode, UDP port 1701)")
 	case has("giving up after", "retransmit", "peer not responding"):
 		return errors.New("IPsec: the server didn't answer (IKE on UDP 500/4500)")
 	}
@@ -365,4 +374,22 @@ func explain(conn Conn, log []string, err error) error {
 		return fmt.Errorf("IPsec failed: %v (%s)", err, strings.Join(tail, " | "))
 	}
 	return fmt.Errorf("IPsec failed: %w", err)
+}
+
+// lastingError is an IPsec failure a retry can't fix (the key, the
+// certificates, the proposals): see Lasting.
+type lastingError struct{ msg string }
+
+func (e *lastingError) Error() string { return e.msg }
+
+func lasting(msg string) error { return &lastingError{msg} }
+
+// LastingError is an IPsec failure a retry can't fix, for stand-ins
+// (tunnel.FakeIPsec).
+func LastingError(msg string) error { return lasting(msg) }
+
+// Lasting reports whether err is an IPsec failure trying again can't fix.
+func Lasting(err error) bool {
+	var l *lastingError
+	return errors.As(err, &l)
 }

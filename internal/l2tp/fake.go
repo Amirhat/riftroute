@@ -25,6 +25,9 @@ type FakeServer struct {
 	BadAuthenticator bool // MS-CHAPv2 success that doesn't prove the password
 	NoAddress        bool // rejects the client's address option
 	Insist           bool // ends the session when its login is refused
+	// AnyPassword (-provider fake): PAP takes any password but "wrong"; a
+	// client that won't send it in the clear (no IPsec) is let in unasked.
+	AnyPassword bool
 
 	mu       sync.Mutex
 	conn     *net.UDPConn
@@ -150,6 +153,9 @@ func (f *FakeServer) input(b []byte, from *net.UDPAddr) {
 	if len(m.avps) == 0 {
 		return
 	}
+	if m.msgType() == msgSCCRQ && m.tunnel == 0 && m.ns == 0 {
+		f.st = fakeState{} // a new tunnel: start over
+	}
 	if m.ns != f.st.nr { // a duplicate: acknowledge it again
 		_ = f.write(controlPacket(f.st.peerTunnel, 0, f.st.ns, f.st.nr, nil))
 		return
@@ -219,6 +225,12 @@ func (f *FakeServer) pppInput(frame []byte) {
 				_ = f.ppp(protoLCP, cp{code: codeTermReq, id: 9}.bytes())
 				return
 			}
+			if f.AnyPassword {
+				f.Auth = "none"
+				_ = f.ppp(protoLCP, cp{code: codeConfReq, id: c.id + 1, data: encodeOptions([]option{
+					{typ: lcpMRU, data: binary.BigEndian.AppendUint16(nil, uint16(f.MRU))}})}.bytes())
+				return
+			}
 			opts, _ := parseOptions(c.data)
 			for _, o := range opts {
 				if o.typ == lcpAuth && len(o.data) == 3 && o.data[2] == chapMSCHAPv2 {
@@ -278,7 +290,8 @@ func (f *FakeServer) pppInput(frame []byte) {
 			return
 		}
 		f.logins++
-		if pass, ok := f.Users[user]; ok && pass == string(c.data[2+ul:2+ul+pl]) {
+		given := string(c.data[2+ul : 2+ul+pl])
+		if pass, ok := f.Users[user]; (ok && pass == given) || (f.AnyPassword && given != "wrong") {
 			f.authOK(protoPAP, cp{code: 2, id: c.id})
 			return
 		}

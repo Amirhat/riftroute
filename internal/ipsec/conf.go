@@ -4,13 +4,15 @@ import "fmt"
 
 // plugins charon loads: exactly these, so nothing from a system strongSwan
 // applies. kernel-pfkey on macOS (its kernel IPsec), kernel-netlink on
-// Linux.
+// Linux. socket-default and vici are critical: without either it can do
+// nothing, and it stops at once, naming the plugin, rather than run on with
+// no socket to drive it.
 func plugins(goos string) string {
 	kernel := "kernel-netlink"
 	if goos == "darwin" {
 		kernel = "kernel-pfkey kernel-pfroute"
 	}
-	return "random nonce openssl kdf x509 pem pkcs1 pkcs8 pubkey constraints " + kernel + " socket-default vici"
+	return "random nonce openssl kdf x509 pem pkcs1 pkcs8 pubkey constraints " + kernel + " socket-default! vici!"
 }
 
 // Conf is charon's strongswan.conf (under charon, which charon-systemd

@@ -125,14 +125,14 @@ func checkMSCHAPv2Success(msg []byte, password string, response, peer, auth []by
 	want := authenticatorResponse(password, response[24:48], peer, auth, user)
 	got, _, _ := strings.Cut(string(msg), " ")
 	if subtle.ConstantTimeCompare([]byte(strings.ToUpper(got)), []byte(want)) != 1 {
-		return errors.New("the server accepted the login but couldn't prove it knows the password (MS-CHAPv2); it may not be the server you meant")
+		return lasting("the server accepted the login but couldn't prove it knows the password (MS-CHAPv2); it may not be the server you meant")
 	}
 	return nil
 }
 
 // errRejected: the server rejected the username or password. The phrase is
 // the tunnels' own (failureCodes: "auth").
-var errRejected = errors.New("the server rejected the username or password")
+var errRejected = lasting("the server rejected the username or password")
 
 // msFailure turns an MS-CHAPv2 Failure message ("E=691 R=0 …") into an
 // error.
@@ -156,4 +156,20 @@ func msFailure(msg []byte) error {
 		return errRejected
 	}
 	return fmt.Errorf("%w (MS-CHAPv2 error %s)", errRejected, printable([]byte(e)))
+}
+
+// lastingError is a failure trying again can't fix: the server's
+// configuration, or a login it turns down (see Lasting).
+type lastingError struct{ msg string }
+
+func (e *lastingError) Error() string { return e.msg }
+
+func lasting(msg string) error { return &lastingError{msg} }
+
+// Lasting reports whether err is one a reconnect can't fix, and whether it's
+// a rejected login: a login the server turned down mustn't be tried again
+// and again (it locks accounts).
+func Lasting(err error) (lasting, rejected bool) {
+	var l *lastingError
+	return errors.As(err, &l), errors.Is(err, errRejected)
 }

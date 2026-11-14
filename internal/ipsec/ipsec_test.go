@@ -128,8 +128,13 @@ func TestExplain(t *testing.T) {
 		{psk, "giving up after 3 retransmits", "didn't answer"},
 		{psk, "something else", "IPsec failed"},
 	} {
-		if got := explain(c.conn, []string{"a", c.log}, errors.New("failed")).Error(); !strings.Contains(got, c.want) {
+		err := explain(c.conn, []string{"a", c.log}, errors.New("failed"))
+		if got := err.Error(); !strings.Contains(got, c.want) {
 			t.Errorf("%q: %q", c.log, got)
+		}
+		// Only a server that doesn't answer (or an unknown failure) is tried again.
+		if retry := strings.Contains(c.log, "retransmit") || c.log == "something else"; Lasting(err) == retry {
+			t.Errorf("%q: lasting %v", c.log, Lasting(err))
 		}
 	}
 }

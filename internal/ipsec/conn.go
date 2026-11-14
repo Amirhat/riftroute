@@ -25,7 +25,10 @@ type Conn struct {
 	// proven by CAs (PEM).
 	PSK       string
 	Cert, Key []byte
-	CAs       [][]byte
+	// Chain are intermediates between Cert and its CA (PEM), loaded so the
+	// server can be sent the whole path.
+	Chain [][]byte
+	CAs   [][]byte
 	// LocalID and RemoteID are the identities, when the server wants
 	// particular ones (default: the addresses, as Main Mode with a PSK
 	// uses).
