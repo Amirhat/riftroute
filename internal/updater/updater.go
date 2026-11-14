@@ -72,8 +72,11 @@ type Env struct {
 	// CharonCmd is strongSwan's charon-cmd (IKEv2 tunnels), kept like
 	// OpenVPN (platform.InstalledCharonCmdPath).
 	CharonCmd string
-	StateDir  string // marker, status, staging, database backup
-	DBPath    string
+	// Charon is strongSwan's charon (L2TP/IPsec tunnels), kept like OpenVPN
+	// (platform.InstalledCharonPath).
+	Charon   string
+	StateDir string // marker, status, staging, database backup
+	DBPath   string
 
 	// SelfUpdatable is false where files must not be replaced (package-managed
 	// install, a daemon not running as the installed service).

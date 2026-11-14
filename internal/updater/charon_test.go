@@ -151,3 +151,50 @@ func TestReleaseWhoseCharonCmdDoesntRunIsSkipped(t *testing.T) {
 		t.Fatal("something was replaced")
 	}
 }
+
+// fakeCharon stands in for a shipped charon (L2TP/IPsec): it prints its
+// version as charon does, after reading the strongswan.conf it's given —
+// which must exist and be a file (charon refuses /dev/null).
+func fakeCharon(tag string) []byte {
+	return []byte("#!/bin/sh\n# " + tag + "\n[ -f \"$STRONGSWAN_CONF\" ] || { echo 'abort initialization due to invalid configuration'; exit 1; }\necho 'strongSwan 6.1.0'\n")
+}
+
+// withCharon gives the harness an installed charon beside the daemon.
+func withCharon(t *testing.T, h *harness, installed []byte) string {
+	t.Helper()
+	p := filepath.Join(filepath.Dir(h.env.Binary), "riftroute-charon")
+	h.env.Charon, h.u.env.Charon = p, p
+	if installed != nil {
+		if err := os.WriteFile(p, installed, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p
+}
+
+// charon (L2TP/IPsec) is the third helper: added by the first release that
+// ships it, replaced and rolled back with the daemon like the others.
+func TestCharonIsCarriedLikeTheOthers(t *testing.T) {
+	f := newFakeRelease(t, "0.2.7", fakeDaemon("0.2.7"))
+	tgz := []tarFile{{name: "riftroute", body: []byte("#!/bin/sh\n")}, {name: "riftrouted", body: fakeDaemon("0.2.7")},
+		{name: "openvpn", body: fakeOpenVPN("new")}, {name: "charon-cmd", body: fakeCharonCmd("new")},
+		{name: "charon", body: fakeCharon("new")}, {name: "licenses/strongswan/COPYING", body: []byte("GPLv2")}}
+	f.tgz = releaseTarball(t, tgz...)
+	h := newHarness(t, f, "0.2.6")
+	withOpenVPN(t, h, fakeOpenVPN("old"))
+	withCharonCmd(t, h, fakeCharonCmd("old"))
+	charon := withCharon(t, h, fakeCharon("old"))
+	h.check()
+	if h.restarts.Load() != 1 {
+		t.Fatalf("not installed: %+v", h.u.Status())
+	}
+	if !fileIs(t, charon, fakeCharon("new")) || !fileIs(t, prevBinary(charon), fakeCharon("old")) {
+		t.Fatal("charon not replaced (and kept)")
+	}
+	for i := 0; i <= maxBoots; i++ {
+		_, _ = BootGuard(guardEnv(h, "0.2.7"))
+	}
+	if !fileIs(t, h.env.Binary, fakeDaemon("0.2.6")) || !fileIs(t, charon, fakeCharon("old")) {
+		t.Fatal("charon not rolled back with the daemon")
+	}
+}

@@ -14,6 +14,8 @@ const (
 	// No openvpn ships for Linux: tunnels run the distribution's package.
 	installedOpenVPN   = ""
 	installedCharonCmd = ""
+	installedCharon    = ""
+	charonRunDir       = ""
 )
 
 type systemdManager struct{}

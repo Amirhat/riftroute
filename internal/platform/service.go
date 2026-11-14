@@ -55,9 +55,18 @@ func InstalledOpenVPNPath() string { return installedOpenVPN }
 // Linux, IKEv2 tunnels run the distribution's strongSwan.
 func InstalledCharonCmdPath() string { return installedCharonCmd }
 
+// InstalledCharonPath is where the charon (strongSwan's IKE daemon, for
+// L2TP/IPsec tunnels) that ships with RiftRoute is placed. It is "" where
+// none ships: on Linux, the distribution's charon-systemd runs.
+func InstalledCharonPath() string { return installedCharon }
+
+// CharonRunDir is the shipped charon's run directory (its PID file and VICI
+// socket), the PID directory it was built with; "" where none ships.
+func CharonRunDir() string { return charonRunDir }
+
 // Helper is a program that ships with RiftRoute beside the daemon where the
 // system has none the daemon can trust (macOS): openvpn, and strongSwan's
-// charon-cmd for IKEv2 tunnels.
+// charon-cmd for IKEv2 tunnels and charon for L2TP/IPsec tunnels.
 type Helper struct {
 	// Name is its name next to riftrouted wherever a build ships it: the
 	// release tarball, the app bundle's Contents/Resources/bin.
@@ -75,6 +84,9 @@ func Helpers() []Helper {
 	}
 	if installedCharonCmd != "" {
 		hs = append(hs, Helper{Name: "charon-cmd", Installed: installedCharonCmd})
+	}
+	if installedCharon != "" {
+		hs = append(hs, Helper{Name: "charon", Installed: installedCharon})
 	}
 	return hs
 }
