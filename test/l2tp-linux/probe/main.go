@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Amirhat/riftroute/internal/ipsec"
 	"github.com/Amirhat/riftroute/internal/l2tp"
 	"golang.zx2c4.com/wireguard/tun"
 )
@@ -28,7 +30,13 @@ func main() {
 	user := flag.String("user", "", "username")
 	pass := flag.String("pass", "", "password")
 	iface := flag.String("iface", "l2tp0", "the TUN's name")
-	encrypted := flag.Bool("encrypted", false, "IPsec protects the socket (allows PAP)")
+	encrypted := flag.Bool("encrypted", false, "pretend IPsec protects the socket (allows PAP)")
+	psk := flag.String("psk", "", "IPsec pre-shared key")
+	certF := flag.String("cert", "", "IPsec certificate (PEM file)")
+	keyF := flag.String("key", "", "its private key (PEM file)")
+	caF := flag.String("ca", "", "the server's CA (PEM file)")
+	ikev := flag.Int("ikev", 1, "IKE version")
+	charonBin := flag.String("charon", "/usr/sbin/charon-systemd", "strongSwan's charon")
 	flag.Parse()
 
 	fail := func(err error) {
@@ -38,6 +46,39 @@ func main() {
 	srv, err := netip.ParseAddr(*server)
 	if err != nil {
 		fail(err)
+	}
+	if *psk != "" || *certF != "" {
+		conn := ipsec.Conn{Name: "probe", Server: srv, Version: *ikev, PSK: *psk}
+		if *certF != "" {
+			for _, f := range []struct {
+				path string
+				to   *[]byte
+			}{{*certF, &conn.Cert}, {*keyF, &conn.Key}} {
+				b, err := os.ReadFile(f.path)
+				if err != nil {
+					fail(err)
+				}
+				*f.to = b
+			}
+			if *caF != "" {
+				b, err := os.ReadFile(*caF)
+				if err != nil {
+					fail(err)
+				}
+				conn.CAs = [][]byte{b}
+			}
+		}
+		ch := &ipsec.Charon{Bin: *charonBin, Dir: "/run/rr-charon", GOOS: "linux",
+			Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+		err := ch.Up(ctx, conn)
+		cancel()
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println("IPSEC up")
+		defer ch.Down("probe")
+		*encrypted = true
 	}
 	// Source port 1701 too, as servers expect.
 	c, err := net.DialUDP("udp", &net.UDPAddr{Port: 1701}, net.UDPAddrFromAddrPort(netip.AddrPortFrom(srv, 1701)))

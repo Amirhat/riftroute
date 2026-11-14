@@ -84,6 +84,38 @@ ESP, supports tunnel mode only. So:
       the PID file;
     - RiftRoute could load its connections into that charon over its
       VICI socket, or decline and say why.
+- **One charon, shared** (`internal/ipsec`), started with the first L2TP
+  tunnel and stopped with the last. Two can't share a machine:
+  - on macOS kernel-pfkey sets `net.inet.ipsec.esp_port`, a single
+    system-wide setting, to its NAT-T port, and every PF_KEY socket hears
+    every other's messages;
+  - the `charon` binary's PID file path is fixed at build time.
+- **Each tunnel's connection**, loaded over VICI as `rr-…`:
+  - `mode = transport`;
+  - `local_ts`/`remote_ts = dynamic[17/1701]`. The protocol is by number:
+    a system without `/etc/protocols` (Debian slim) rejects `udp`;
+  - `start_action`/`dpd_action`/`close_action = trap`. The policies stay
+    while the connection is loaded, so an SA that drops (the server
+    deleting it, DPD) is renegotiated by the next L2TP packet, which never
+    leaves unencrypted. The Docker test cuts the SA from the server and
+    checks the wire;
+  - `encap = yes`;
+  - IKE and ESP proposals from AES-GCM down to 3DES-SHA1/MODP-1024, which
+    old servers still use;
+  - the PSK is loaded for the server's address (Main Mode's identity),
+    under its own id, and unloaded with the connection;
+  - certificates: the PEM certificate and key, the CAs as `cacerts`.
+  **IKEv1 signs both ways with the same kind of key:** an RSA client
+  certificate against a server with an ECDSA key fails (AUTH_FAILED), as
+  it does for any IKEv1 client.
+- **Plugins:** `kdf` too. strongSwan 5.9's IKEv2 derives its keys through it
+  (without it: "KDF_PRF … not supported").
+- **Leftovers:**
+  - a charon an earlier daemon left running (macOS: nothing ends a crashed
+    daemon's children) is stopped through its PID file before a new one
+    starts;
+  - a policy a killed charon left is replaced by the next connection to
+    that server (an update of the same selector).
 - **Its own `strongswan.conf`**, as for IKEv2:
   - only the plugins it needs;
   - its log to the tunnel's log;
@@ -147,9 +179,13 @@ status or logs).
    - a Docker test: an `xl2tpd` + `pppd` server and the engine as client,
      over a Linux TUN.
 2. **IPsec:**
-   - charon over VICI, transport mode, PSK and certificates;
-   - the macOS build gains `charon`;
-   - the Docker test gains a strongSwan server.
+   - charon over VICI, transport mode, PSK and certificates
+     (`internal/ipsec`). Done: the Docker test runs IKEv1 with a PSK,
+     IKEv1 and IKEv2 with certificates, and a wrong PSK, and checks that
+     no L2TP crosses the wire unencrypted, before and after the server cuts
+     the SA (42 checks, ALL PASSED);
+   - the macOS build gains `charon` (kernel-pfkey, ikev1, its PID
+     directory RiftRoute's).
 3. **The driver:**
    - `TunnelL2TP` in the manager;
    - `.mobileconfig` L2TP and the flags;
