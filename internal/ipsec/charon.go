@@ -357,23 +357,53 @@ func localHost(ctx context.Context, socket, name string) (netip.Addr, error) {
 	_ = in.Set("noblock", "yes")
 	lctx, cancel := context.WithTimeout(ctx, viciWait)
 	defer cancel()
+	// Only an SA that's up with its CHILD_SA installed: one from the last
+	// attempt (IKEv2's, still DELETING) carries the name too, maybe with an
+	// address the policy no longer covers.
+	var found netip.Addr
 	for m, err := range vs.CallStreaming(lctx, "list-sas", "list-sa", in) {
 		if err != nil {
 			return netip.Addr{}, err
 		}
 		for _, k := range m.Keys() {
 			sa, ok := m.Get(k).(*vici.Message)
-			if !ok {
+			if !ok || !upWithChild(sa) {
 				continue
 			}
-			if h, ok := sa.Get("local-host").(string); ok {
-				if a, err := netip.ParseAddr(h); err == nil {
-					return a.Unmap(), nil
-				}
+			h, _ := sa.Get("local-host").(string)
+			a, err := netip.ParseAddr(h)
+			if err != nil {
+				continue
+			}
+			if found.IsValid() && found != a.Unmap() {
+				return netip.Addr{}, fmt.Errorf("two IKE SAs up, from %s and %s", found, a.Unmap())
+			}
+			found = a.Unmap()
+		}
+	}
+	if !found.IsValid() {
+		return netip.Addr{}, errors.New("no IKE SA up with its CHILD_SA installed")
+	}
+	return found, nil
+}
+
+// upWithChild: an IKE SA established, with an installed CHILD_SA.
+func upWithChild(sa *vici.Message) bool {
+	if s, _ := sa.Get("state").(string); s != "ESTABLISHED" {
+		return false
+	}
+	children, ok := sa.Get("child-sas").(*vici.Message)
+	if !ok {
+		return false
+	}
+	for _, k := range children.Keys() {
+		if c, ok := children.Get(k).(*vici.Message); ok {
+			if s, _ := c.Get("state").(string); s == "INSTALLED" {
+				return true
 			}
 		}
 	}
-	return netip.Addr{}, errors.New("no IKE SA listed")
+	return false
 }
 
 // Busy reports whether connections are loaded: this charon mustn't be
@@ -501,6 +531,10 @@ func explain(conn Conn, log []string, err error) error {
 	case conn.PSK != "" && has("invalid HASH_V1", "decryption failed", "message parsing failed", "AUTHENTICATION_FAILED",
 		"verification of AUTH payload", "no shared key found"):
 		return lasting("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
+	// IKEv2: "constraint check failed: identity '…' required"; IKEv1:
+	// "IDir '…' does not match to '…'".
+	case conn.PSK == "" && (has("constraint check failed: identity") || has("IDir") && has("does not match")):
+		return lasting("IPsec: the server's certificate doesn't carry the identity expected (the server's name); set RemoteIdentifier to the identity it uses (often its certificate's subject)")
 	case conn.PSK == "" && has("AUTHENTICATION_FAILED", "constraint check failed", "no trusted RSA public key", "no trusted ECDSA public key"):
 		if has("no trusted", "constraint check failed") {
 			return lasting("IPsec: the server's certificate couldn't be verified with the profile's certificate authorities")

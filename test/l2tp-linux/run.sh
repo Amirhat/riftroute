@@ -273,7 +273,14 @@ cx ping -c 6 -i 0.5 -W 1 10.88.0.1 >/dev/null 2>&1 || true
 sleep 6
 n=$(sx sh -c 'grep -c . /tmp/plain.txt || true')
 [ "$n" = 0 ] && pass "charon killed under it: the client sent nothing unencrypted" || { fail "$n plain L2TP packets from the client after charon was killed"; sx cat /tmp/plain.txt | head -3; }
-if wait_state office connected 60 && cx ping -c 2 -W 2 10.88.0.1 >/dev/null 2>&1; then pass "and it connected again, through a new charon"; else fail "not back after charon was killed: $(rr tunnel list)"; fi
+# The old session was cut without a word (nothing goes out unprotected), so
+# the server keeps it — and its ppp interface, maybe with the address the
+# new one gets — until its own keepalives give up (pppd: ~20 s).
+back=0
+if wait_state office connected 60; then
+  for _ in $(seq 1 30); do cx ping -c 1 -W 2 10.88.0.1 >/dev/null 2>&1 && { back=1; break; }; sleep 1; done
+fi
+[ "$back" = 1 ] && pass "and it connected again, through a new charon" || fail "not back after charon was killed: $(rr tunnel list)"
 rr tunnel down office >"$WORK/down.out" 2>&1 || fail "disconnect: $(cat "$WORK/down.out")"
 left=x; for _ in $(seq 1 20); do left=$(cx sh -c 'ip xfrm policy; ip xfrm state'); [ -z "$left" ] && break; sleep 0.5; done
 [ -z "$left" ] && pass "disconnected: no policies or SAs left" || fail "left: $left"

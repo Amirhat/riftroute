@@ -32,6 +32,10 @@ type FakeServer struct {
 	// HangUpAfterLogin: the client's login is answered by a Terminate-Request,
 	// as a server that drops a rejected login does.
 	HangUpAfterLogin bool
+	// LoseSuccess: the first CHAP Success is "lost" (not sent); a repeated
+	// Response is answered.
+	LoseSuccess bool
+	lostOnce    bool
 	// RepeatLCP: its LCP request is sent again (same id) during the login,
 	// as pppd retransmits it.
 	RepeatLCP bool
@@ -278,6 +282,10 @@ func (f *FakeServer) pppInput(frame []byte) {
 		f.logins++
 		if f.RepeatLCP {
 			_ = f.ppp(protoLCP, cp{code: codeConfReq, id: 1, data: f.lcpReq}.bytes())
+		}
+		if f.LoseSuccess && !f.lostOnce {
+			f.lostOnce = true
+			return
 		}
 		if f.HangUpAfterLogin {
 			_ = f.ppp(protoLCP, cp{code: codeTermReq, id: 7}.bytes())

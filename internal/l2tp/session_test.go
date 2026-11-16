@@ -275,3 +275,16 @@ func TestSessionRepeatedLCPRequest(t *testing.T) {
 		t.Fatal("no address")
 	}
 }
+
+// A lost CHAP Success isn't a rejection: the Response is sent again until
+// it's answered (the review's LOW 2).
+func TestSessionLostSuccessIsAskedAgain(t *testing.T) {
+	f := &FakeServer{Users: map[string]string{"alice": "pw"}, LoseSuccess: true}
+	s, err := dialFake(t, f, "alice", "pw", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.LocalIP().IsValid() || f.Logins() != 2 {
+		t.Fatalf("up %v after %d responses", s.LocalIP(), f.Logins())
+	}
+}

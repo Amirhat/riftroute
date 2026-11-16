@@ -170,7 +170,7 @@ type l2tpSession struct {
 
 // errIPsecLost: charon went away under a session. Its socket was closed at
 // once: nothing more left it unprotected.
-var errIPsecLost = errors.New("IPsec stopped under the tunnel (strongSwan's charon ended); the connection was closed at once, so nothing more went out unencrypted")
+var errIPsecLost = errors.New("IPsec stopped under the tunnel (strongSwan's charon ended); the connection was closed within milliseconds")
 
 func (k *l2tpSession) run(ctx context.Context) {
 	k.log.max = 200

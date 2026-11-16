@@ -47,6 +47,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	var local netip.Addr
 	if *psk != "" || *certF != "" {
 		conn := ipsec.Conn{Name: "probe", Server: srv, Version: *ikev, PSK: *psk}
 		if *certF != "" {
@@ -71,7 +72,8 @@ func main() {
 		ch := &ipsec.Charon{Bin: *charonBin, Dir: "/run/rr-charon", GOOS: "linux",
 			Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-		_, _, err := ch.Up(ctx, conn)
+		var err error
+		_, local, err = ch.Up(ctx, conn)
 		cancel()
 		if err != nil {
 			fail(err)
@@ -80,8 +82,12 @@ func main() {
 		defer ch.Down("probe")
 		*encrypted = true
 	}
-	// Source port 1701 too, as servers expect.
-	c, err := net.DialUDP("udp", &net.UDPAddr{Port: 1701}, net.UDPAddrFromAddrPort(netip.AddrPortFrom(srv, 1701)))
+	// Source port 1701 too, as servers expect; from IKE's address under IPsec.
+	la := &net.UDPAddr{Port: 1701}
+	if local.IsValid() {
+		la.IP = local.AsSlice()
+	}
+	c, err := net.DialUDP("udp", la, net.UDPAddrFromAddrPort(netip.AddrPortFrom(srv, 1701)))
 	if err != nil {
 		fail(err)
 	}

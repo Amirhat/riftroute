@@ -256,6 +256,22 @@ status or logs).
   prove it knows the password. CHAP-MD5, or no login at all, proves nothing:
   with a group pre-shared key (or `IPsec = none`), whoever holds the key can
   answer as the server. A certificate login names the server.
+- **charon stopped from outside leaves a window of milliseconds.** charon
+  removes its trap policies as it shuts down, a few milliseconds before it
+  exits, and the session's socket closes when the exit is seen. A packet
+  sent in that window goes out unencrypted (the review proved 0 to 8 of
+  them, with a packet every 2 ms). It needs something outside the daemon
+  to stop charon (`pkill`, a package upgrade). The fix is a per-socket
+  policy the kernel enforces whatever charon does ("ESP, transport,
+  required": `IP_XFRM_POLICY` on Linux, `IP_IPSEC_POLICY` on macOS). That's
+  a follow-up.
+- **After IPsec is lost, the server keeps the old session** for a while:
+  nothing was sent to end it, since nothing goes out unprotected. Until its
+  keepalives give up (pppd's: about 20 s), a server that gives the new
+  session the same address may send its replies to the old one.
+- **No PFS first:** a server that takes both is never asked for PFS, as
+  Windows' and Apple's clients don't ask. A server that wants it gets it
+  on the second try.
 - **A profile with an IKEv2 and an L2TP VPN** makes an IKEv2 tunnel. The
   L2TP one is listed as ignored (import it on its own).
 - **No IPv6 over PPP** (IPV6CP is refused): a full tunnel blocks IPv6, as

@@ -131,6 +131,8 @@ func TestExplain(t *testing.T) {
 		{psk, "received AUTHENTICATION_FAILED error notify", "rejected the shared secret"},
 		{cert, "received AUTHENTICATION_FAILED error notify", "rejected this profile's certificate"},
 		{cert, "no trusted RSA public key found for '10.0.0.1'", "couldn't be verified"},
+		{cert, "constraint check failed: identity 'vpn.example.com' required", "set RemoteIdentifier"},
+		{cert, "IDir 'CN=vpn' does not match to 'vpn.example.com'", "set RemoteIdentifier"},
 		{psk, "received INVALID_ID_INFORMATION error notify", "selectors"},
 		{psk, "giving up after 3 retransmits", "didn't answer"},
 		{psk, "something else", "IPsec failed"},

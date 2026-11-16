@@ -229,6 +229,11 @@ type loop struct {
 	papID    uint8
 	papNext  time.Time
 	papTries int
+	// chapNext and chapTries: the CHAP Response is sent again while it's
+	// unanswered (a lost Success mustn't read as a rejection; RFC 1994's
+	// authenticator answers a repeated Response again).
+	chapNext  time.Time
+	chapTries int
 	chap     struct {
 		id                    uint8
 		challenge, peer, resp []byte
@@ -461,6 +466,11 @@ func (l *loop) timers(now time.Time) error {
 	if l.ph == phAuth {
 		if now.Sub(l.authAt) > authWait {
 			return l.afterLogin(errors.New("the server never finished the login (PPP authentication)"))
+		}
+		if l.auth == protoCHAP && l.loginSent && !l.authDone && l.chap.resp != nil && now.After(l.chapNext) && l.chapTries < cpMaxTries {
+			if err := l.sendCHAPResponse(now); err != nil {
+				return err
+			}
 		}
 		if l.auth == protoPAP && now.After(l.papNext) {
 			if err := l.sendPAP(now); err != nil {
@@ -891,6 +901,18 @@ func (l *loop) sendPAP(now time.Time) error {
 	return l.sendPPP(protoPAP, cp{code: 1, id: l.papID, data: d})
 }
 
+// sendCHAPResponse sends the Response to the current Challenge (again,
+// while it's unanswered).
+func (l *loop) sendCHAPResponse(now time.Time) error {
+	d := []byte{byte(len(l.chap.resp))}
+	d = append(d, l.chap.resp...)
+	d = append(d, l.cfg.Username...)
+	l.loginSent = true
+	l.chapTries++
+	l.chapNext = now.Add(cpRestart)
+	return l.sendPPP(protoCHAP, cp{code: 2, id: l.chap.id, data: d})
+}
+
 func (l *loop) papInput(info []byte) error {
 	c, err := parseCP(info)
 	if err != nil || l.ph != phAuth || l.auth != protoPAP || c.id != l.papID {
@@ -933,11 +955,8 @@ func (l *loop) chapInput(info []byte, now time.Time) error {
 		if l.chap.resp == nil {
 			return nil // an algorithm we didn't agree to
 		}
-		d := []byte{byte(len(l.chap.resp))}
-		d = append(d, l.chap.resp...)
-		d = append(d, l.cfg.Username...)
-		l.loginSent = true
-		return l.sendPPP(protoCHAP, cp{code: 2, id: c.id, data: d})
+		l.chapTries = 0
+		return l.sendCHAPResponse(now)
 	case 3: // Success
 		if c.id != l.chap.id || l.chap.resp == nil {
 			return nil
