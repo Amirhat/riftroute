@@ -16,9 +16,17 @@ import (
 // ip(8), as the routing provider does.
 func wgSystem() WGSystem { return linuxWG{} }
 
-type linuxWG struct{}
+// l2tpSystem is the same for L2TP tunnels, named rrl2tpN.
+func l2tpSystem() WGSystem { return linuxWG{name: "rrl2tp%d"} }
 
-func (linuxWG) CreateTUN(mtu int) (tun.Device, error) { return tun.CreateTUN("rrwg%d", mtu) }
+type linuxWG struct{ name string }
+
+func (w linuxWG) CreateTUN(mtu int) (tun.Device, error) {
+	if w.name != "" {
+		return tun.CreateTUN(w.name, mtu)
+	}
+	return tun.CreateTUN("rrwg%d", mtu)
+}
 
 func (linuxWG) Configure(ctx context.Context, iface string, addrs []netip.Addr, mtu int) error {
 	for _, a := range addrs {

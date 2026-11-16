@@ -58,9 +58,9 @@ type GuardEnv struct {
 	// OpenVPN and CharonCmd are the installed helpers beside the daemon
 	// (Env.OpenVPN, Env.CharonCmd): a rollback restores them together with
 	// the daemon.
-	OpenVPN, CharonCmd string
-	StateDir           string
-	DBPath             string
+	OpenVPN, CharonCmd, Charon string
+	StateDir                   string
+	DBPath                     string
 	// DBVersion reads a database file's schema version (PRAGMA user_version).
 	DBVersion func(path string) (int, error)
 	// DBMinReader reads the oldest schema a database may be read with
@@ -242,7 +242,7 @@ func restoreHelpersFor(env GuardEnv) {
 	if err != nil {
 		return
 	}
-	for _, h := range helpersAt(env.OpenVPN, env.CharonCmd) {
+	for _, h := range helpersAt(env.OpenVPN, env.CharonCmd, env.Charon) {
 		how := ps.swapOf(h.name)
 		if how == "" {
 			continue

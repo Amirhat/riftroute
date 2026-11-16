@@ -32,7 +32,7 @@ func TestDaemonInstallReportsTheShippedOpenVPN(t *testing.T) {
 	if _, err := os.Stat(platform.InstalledOpenVPNPath()); err != nil && !strings.Contains(errw.String(), "riftroute update check") {
 		t.Fatalf("without openvpn, and none installed: say how to get it: %q", errw.String())
 	}
-	for _, name := range []string{"openvpn", "charon-cmd"} {
+	for _, name := range []string{"openvpn", "charon-cmd", "charon"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(name), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -42,7 +42,8 @@ func TestDaemonInstallReportsTheShippedOpenVPN(t *testing.T) {
 	reportHelpers(&out, &errw, daemon)
 	if !strings.Contains(out.String(), "installing openvpn for tunnels") || !strings.Contains(out.String(), platform.InstalledOpenVPNPath()) ||
 		!strings.Contains(out.String(), "installing charon-cmd for IKEv2 tunnels") || !strings.Contains(out.String(), platform.InstalledCharonCmdPath()) ||
+		!strings.Contains(out.String(), "installing charon for L2TP/IPsec tunnels") || !strings.Contains(out.String(), platform.InstalledCharonPath()) ||
 		errw.Len() != 0 {
-		t.Fatalf("with both: %q %q", out.String(), errw.String())
+		t.Fatalf("with all three: %q %q", out.String(), errw.String())
 	}
 }

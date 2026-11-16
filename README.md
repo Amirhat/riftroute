@@ -83,7 +83,7 @@ See [`riftroute-spec.md`](riftroute-spec.md) for the full spec and
 | Rules | `cidr`, `ip`, `domain` (re-resolved on a schedule), `asn`/`country` (with a MaxMind MMDB), `app` (Linux cgroup + fwmark; macOS PF match on uid/user) |
 | Lists | Inline static + subscribable remote lists (HTTPS-only, size-capped, checksummed, never executed) |
 | Safety | Watchdog, commit-confirm with auto-revert, atomic apply + precomputed inverse, ownership reconcile on crash, guardrails; a route another program removes is put back — and left alone, with a warning, if it keeps being removed |
-| Tunnels | Run an **OpenVPN**, **WireGuard** or **IKEv2** (certificate, username and password, or shared secret) connection as a split tunnel next to your main VPN — only the networks you list go through it; the server can't take the default route or DNS. A route that would carry your router's network, a DNS server or a tunnel's own server keeps those out and routes the rest, and says so. When it's down, its networks can be blocked rather than leak |
+| Tunnels | Run an **OpenVPN**, **WireGuard**, **IKEv2** (certificate, username and password, or shared secret) or **L2TP/IPsec** (a pre-shared key or certificate) connection as a split tunnel next to your main VPN — only the networks you list go through it; the server can't take the default route or DNS. A route that would carry your router's network, a DNS server or a tunnel's own server keeps those out and routes the rest, and says so. When it's down, its networks can be blocked rather than leak |
 | All traffic | One tunnel can carry everything, like an ordinary VPN, but your profiles, other VPNs' networks, your local network and RiftRoute's own exceptions keep their paths. Names resolve through it; IPv6 it can't carry is blocked; one that passes nothing is reconnected ([docs/tunnels-full.md](docs/tunnels-full.md)) |
 | Beside Tailscale | A Tailscale already on the machine is recognized and left alone: its networks and MagicDNS stay its own (include profiles, app rules and tunnel routes go around them), and on Linux RiftRoute's routes still work with its exit node on. RiftRoute never runs or changes Tailscale ([docs/tailscale.md](docs/tailscale.md)) |
 | Profiles through a tunnel | `mode: tunnel` sends a profile's destinations (domains, lists, wildcards) through one of your tunnels, switched on and off without disconnecting it |
@@ -224,7 +224,7 @@ the first hit. **If you depend on a specific subdomain, add it as its own exact
 guaranteed, immediate coverage. Wildcard subdomain learning is available on
 macOS (scoped resolver files) and Linux (systemd-resolved).
 
-### Tunnels — an OpenVPN, WireGuard or IKEv2 connection next to your main VPN
+### Tunnels — an OpenVPN, WireGuard, IKEv2 or L2TP/IPsec connection next to your main VPN
 
 Running a second VPN client usually knocks the first one off: an OpenVPN server
 pushes `redirect-gateway` (a pair of `0/1` + `128/1` routes that out-rank the
@@ -279,6 +279,26 @@ give when it leaves the password out), or a shared secret (macOS, or a Linux
 strongSwan 6.1 or later). Design and details:
 [docs/tunnels-ikev2.md](docs/tunnels-ikev2.md).
 
+**L2TP/IPsec** tunnels come from a configuration profile with an L2TP VPN, or
+from a small file of RiftRoute's own, which keeps the IPsec key out of the
+command line:
+
+```ini
+[L2TP]
+Server = vpn.example.com
+PreSharedKey = …
+# or: Certificate = <base64 PKCS#12>, CertificatePassword = …, CA = <base64>
+# or: IPsec = none   (nothing is encrypted; only if you mean it)
+```
+
+L2TP and PPP run inside the daemon (the login: MS-CHAPv2, CHAP or, under
+IPsec only, PAP); IPsec, in transport mode, is strongSwan's `charon` — on
+macOS the one RiftRoute ships, on Linux your distribution's `charon-systemd`
+(Debian/Ubuntu: `sudo apt install --no-install-recommends charon-systemd
+strongswan-swanctl libstrongswan-standard-plugins`). The login is asked for
+as an OpenVPN one is; a login the server rejects is never tried again and
+again. Design and details: [docs/tunnels-l2tp.md](docs/tunnels-l2tp.md).
+
 ```bash
 riftroute tunnel add infra ~/Downloads/office.ovpn \
   --route 192.168.70.0/24 --route 192.168.72.11 --connect
@@ -286,6 +306,7 @@ riftroute tunnel list       # state, interface, server, routes
 riftroute tunnel down infra # disconnect; its routes are removed
 riftroute tunnel log infra  # openvpn's own output — why it won't connect
 riftroute tunnel add office ~/Downloads/office.mobileconfig --route 10.30.0.0/16 --connect
+riftroute tunnel add branch ~/branch-l2tp.conf --route 10.40.0.0/16 --connect
 ```
 
 Or use the **Tunnels** page in the app. How it works:

@@ -382,3 +382,38 @@ func TestTunnelAddMobileconfig(t *testing.T) {
 		t.Fatalf("an .ovpn for an IKEv2 tunnel: %v", err)
 	}
 }
+
+// An L2TP file: its key stays in the file, the login is asked for (here,
+// from stdin), and an .ovpn can't replace it.
+func TestTunnelAddL2TP(t *testing.T) {
+	sock := tunnelDaemon(t)
+	conf := filepath.Join(t.TempDir(), "office-l2tp.conf")
+	if err := os.WriteFile(conf, []byte("[L2TP]\nServer = 198.51.100.9\nPreSharedKey = not-on-the-command-line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, err := runCLI(t, sock, "s3cret\n", "tunnel", "add", "office", conf, "--username", "alice", "--password-stdin", "--route", "10.40.0.0/16")
+	if err != nil {
+		t.Fatalf("add: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "saved tunnel office (l2tp") {
+		t.Fatalf("stdout:\n%s", out)
+	}
+	out, _, err = runCLI(t, sock, "", "tunnel", "list")
+	if err != nil || !strings.Contains(out, "l2tp") || !strings.Contains(out, "198.51.100.9 (L2TP/IPsec)") {
+		t.Fatalf("list: %v\n%s", err, out)
+	}
+	if _, _, err := runCLI(t, sock, "", "tunnel", "edit", "office", "--profile", writeProfile(t, plainProfile)); err == nil ||
+		!strings.Contains(err.Error(), "L2TP configuration") {
+		t.Fatalf("an .ovpn for an L2TP tunnel: %v", err)
+	}
+
+	// Without IPsec: said so.
+	none := filepath.Join(t.TempDir(), "plain-l2tp.conf")
+	if err := os.WriteFile(none, []byte("[L2TP]\nServer = 198.51.100.9\nIPsec = none\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, errOut, err = runCLI(t, sock, "pw\n", "tunnel", "add", "plain", none, "--username", "bob", "--password-stdin", "--route", "10.41.0.0/16")
+	if err != nil || !strings.Contains(errOut, "nothing it carries is encrypted") {
+		t.Fatalf("add without IPsec: %v\n%s", err, errOut)
+	}
+}

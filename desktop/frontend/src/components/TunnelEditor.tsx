@@ -27,8 +27,8 @@ function parseRoutes(text: string): { routes: string[]; errors: RouteError[] } {
 
 type RouteError = { line: number; value: string; msg: string }
 
-// TunnelEditor adds or edits a RiftRoute-run tunnel — OpenVPN, WireGuard or
-// IKEv2, by the file chosen: the profile or configuration, the login (OpenVPN), the
+// TunnelEditor adds or edits a RiftRoute-run tunnel — OpenVPN, WireGuard,
+// IKEv2 or L2TP/IPsec, by the file chosen: the profile or configuration, the login (OpenVPN), the
 // networks that go through it, and how its own connection reaches the
 // server. The configuration and password are write-only: an edit that leaves
 // them alone keeps what the daemon has saved.
@@ -73,9 +73,11 @@ export function TunnelEditor({
   const info = KINDS[kind]
   const wireguard = kind === 'wireguard'
   const ikev2 = kind === 'ikev2'
+  const l2tp = kind === 'l2tp'
   // Editing takes a file of the tunnel's own type only.
   const wrongType = editing && profile && kindOf(profile.type) !== kind
-  const connectable = wireguard || (ikev2 ? canConnectIKEv2 : canConnect)
+  // L2TP is built in (a missing IPsec is the Tunnels page's banner).
+  const connectable = wireguard || l2tp || (ikev2 ? canConnectIKEv2 : canConnect)
   // An OpenVPN profile may ask for a login, and an IKEv2 one may log in with
   // a username and password (EAP); WireGuard's keys are in its file.
   const needsAuth = kind !== 'wireguard' && (profile ? profile.needs_auth : !!existing?.needs_auth)
@@ -194,7 +196,7 @@ export function TunnelEditor({
           <Label>
             {editing
               ? info.file
-              : 'OpenVPN profile (.ovpn), WireGuard configuration (.conf) or IKEv2 profile (.mobileconfig)'}
+              : 'OpenVPN profile (.ovpn), WireGuard configuration (.conf), IKEv2 or L2TP profile (.mobileconfig), or L2TP file'}
           </Label>
           <div className="flex items-center gap-3">
             <button
@@ -240,6 +242,19 @@ export function TunnelEditor({
                 ? 'It logs in with the username and password below (the profile’s, when it has them). '
                 : 'It logs in with what the profile carries. '}
               Its full tunnel never becomes routes: list the networks to send through it below.
+            </p>
+          )}
+          {l2tp && (
+            <p className="text-xs text-muted">
+              It logs in with the username and password below (the profile’s, when it has them); the IPsec key or
+              certificate stays in the {fileWord}. Its full tunnel never becomes routes: list the networks to send
+              through it below.
+            </p>
+          )}
+          {l2tp && servers.some((s) => s.includes('unencrypted')) && (
+            <p className="text-xs text-warning">
+              This tunnel has no IPsec: nothing it carries is encrypted, and a server that asks for the password in
+              the clear (PAP) is refused.
             </p>
           )}
           {expiry && (

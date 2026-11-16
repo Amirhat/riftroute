@@ -84,7 +84,7 @@ jobs:
           path: build/openvpn-sources/
           if-no-files-found: error
 
-  # strongSwan's charon-cmd for macOS IKEv2 tunnels, the same way
+  # strongSwan's charon-cmd (macOS IKEv2 tunnels) and charon (L2TP/IPsec), the same way
   # (scripts/build-strongswan.sh, with RiftRoute's patch in
   # packaging/strongswan). Cached by the script's and the patches' hash;
   # strongswan.yml saves that cache on the default branch.
@@ -99,7 +99,7 @@ jobs:
             build/strongswan
             build/strongswan-work/sources
           key: strongswan-${{ runner.os }}-${{ hashFiles('scripts/build-strongswan.sh', 'packaging/strongswan/*.patch') }}
-      - name: Build charon-cmd (arm64, x86_64, universal)
+      - name: Build charon-cmd and charon (arm64, x86_64, universal)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           scripts/build-strongswan.sh arm64 build/strongswan/arm64
@@ -153,7 +153,7 @@ jobs:
         with:
           name: openvpn-darwin
           path: build/openvpn
-      - name: Get the macOS charon-cmd
+      - name: Get the macOS charon-cmd and charon
         uses: actions/download-artifact@v4
         with:
           name: strongswan-darwin
@@ -212,7 +212,7 @@ jobs:
         with:
           name: openvpn-darwin
           path: build/openvpn
-      - name: Get the macOS charon-cmd
+      - name: Get the macOS charon-cmd and charon
         uses: actions/download-artifact@v4
         with:
           name: strongswan-darwin

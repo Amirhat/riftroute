@@ -144,7 +144,12 @@ const (
 	installedOpenVPN = installDir + "/riftroute-openvpn"
 	// strongSwan's charon-cmd, which it runs as root for IKEv2 tunnels.
 	installedCharonCmd = installDir + "/riftroute-charon-cmd"
-	logDir             = "/var/log/riftroute"
+	// strongSwan's charon, which it runs as root for L2TP/IPsec tunnels; its
+	// run directory is the PID directory it was built with
+	// (scripts/build-strongswan.sh).
+	installedCharon = installDir + "/riftroute-charon"
+	charonRunDir    = "/var/run/riftroute-ipsec"
+	logDir          = "/var/log/riftroute"
 )
 
 type launchdManager struct{}

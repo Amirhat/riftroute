@@ -22,6 +22,10 @@ const TunnelWireGuard TunnelType = "wireguard"
 // on-demand rules are ignored.
 const TunnelIKEv2 TunnelType = "ikev2"
 
+// TunnelL2TP is an L2TP/IPsec connection: L2TP and PPP inside the daemon,
+// IPsec (transport mode) by strongSwan's charon (docs/tunnels-l2tp.md).
+const TunnelL2TP TunnelType = "l2tp"
+
 // TunnelVia is how a managed tunnel reaches its own server.
 type TunnelVia string
 
@@ -205,6 +209,9 @@ type TunnelEngine struct {
 	// IKEv2 is the same report for IKEv2 tunnels' strongSwan (charon-cmd),
 	// beside openvpn's; absent from daemons without IKEv2.
 	IKEv2 *TunnelEngine `json:"ikev2,omitempty"`
+	// L2TP is the same for L2TP/IPsec tunnels: L2TP is built in; IPsec is
+	// strongSwan's charon. Absent from daemons without L2TP.
+	L2TP *TunnelEngine `json:"l2tp,omitempty"`
 }
 
 // TunnelInstall is how to install (or fix) openvpn on this system: on macOS,

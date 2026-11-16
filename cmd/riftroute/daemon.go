@@ -85,9 +85,10 @@ func daemonInstallCmd() *cobra.Command {
 		Long: "Installs the riftrouted binary (macOS: /Library/PrivilegedHelperTools,\n" +
 			"Linux: /usr/local/bin), writes the launchd plist / systemd unit, and\n" +
 			"(re)starts it. Run with sudo.\n\n" +
-			"On macOS the openvpn and charon-cmd (strongSwan, for IKEv2) that ship next\n" +
-			"to riftrouted are installed beside it (/Library/PrivilegedHelperTools/\n" +
-			"riftroute-openvpn, riftroute-charon-cmd): tunnels run only those. On Linux\n" +
+			"On macOS the openvpn, charon-cmd (strongSwan, for IKEv2) and charon (for\n" +
+			"L2TP/IPsec) that ship next to riftrouted are installed beside it\n" +
+			"(/Library/PrivilegedHelperTools/riftroute-openvpn, riftroute-charon-cmd,\n" +
+			"riftroute-charon): tunnels run only those. On Linux\n" +
 			"they use the distribution's openvpn and strongSwan packages.\n\n" +
 			"The daemon runs as root but authorizes --allow-uid (default: the invoking\n" +
 			"user, even under sudo) for mutating calls, so an unprivileged GUI/CLI can\n" +
@@ -139,7 +140,7 @@ func daemonInstallCmd() *cobra.Command {
 }
 
 // reportHelpers says what install does about the programs tunnels run
-// (openvpn; charon-cmd for IKEv2): on macOS each one shipped next to
+// (openvpn; charon-cmd for IKEv2; charon for L2TP/IPsec): on macOS each one shipped next to
 // riftrouted is installed beside the daemon (tunnels never run any other);
 // without one, an earlier copy stays, or the daemon's update check fetches
 // it (the updater's repair). On Linux the distribution's are used and
@@ -147,8 +148,11 @@ func daemonInstallCmd() *cobra.Command {
 func reportHelpers(out, errw io.Writer, daemonBin string) {
 	for _, h := range platform.Helpers() {
 		what := "tunnels"
-		if h.Name == "charon-cmd" {
+		switch h.Name {
+		case "charon-cmd":
 			what = "IKEv2 tunnels"
+		case "charon":
+			what = "L2TP/IPsec tunnels"
 		}
 		if src := h.Bundled(daemonBin); src != "" {
 			fmt.Fprintf(out, "installing %s for %s\n  from %s\n  to   %s\n", h.Name, what, src, h.Installed)

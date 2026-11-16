@@ -1,6 +1,6 @@
 // What each tunnel type is called, and the file it's configured from.
 
-export type TunnelKind = 'openvpn' | 'wireguard' | 'ikev2'
+export type TunnelKind = 'openvpn' | 'wireguard' | 'ikev2' | 'l2tp'
 
 export interface KindInfo {
   name: string // OpenVPN
@@ -14,16 +14,17 @@ export const KINDS: Record<TunnelKind, KindInfo> = {
   openvpn: { name: 'OpenVPN', a: 'an OpenVPN', file: 'OpenVPN profile', ext: '.ovpn', word: 'profile' },
   wireguard: { name: 'WireGuard', a: 'a WireGuard', file: 'WireGuard configuration', ext: '.conf', word: 'configuration' },
   ikev2: { name: 'IKEv2', a: 'an IKEv2', file: 'IKEv2 profile', ext: '.mobileconfig', word: 'profile' },
+  l2tp: { name: 'L2TP/IPsec', a: 'an L2TP/IPsec', file: 'L2TP configuration', ext: '[L2TP] or .mobileconfig', word: 'configuration' },
 }
 
 /** kindOf reads a tunnel's type; empty or unknown (a daemon from before types) is OpenVPN. */
 export function kindOf(t?: string): TunnelKind {
-  return t === 'wireguard' || t === 'ikev2' ? t : 'openvpn'
+  return t === 'wireguard' || t === 'ikev2' || t === 'l2tp' ? t : 'openvpn'
 }
 
 /** tunnelTypeName is how a tunnel's protocol reads. */
 export function tunnelTypeName(t: string): string {
-  return t === 'wireguard' || t === 'ikev2' || t === 'openvpn' ? KINDS[t].name : t
+  return t === 'wireguard' || t === 'ikev2' || t === 'l2tp' || t === 'openvpn' ? KINDS[t].name : t
 }
 
 /** certExpiry says when a tunnel's login certificate stops working, and whether that's soon (14 days). */

@@ -1,6 +1,6 @@
 name: strongswan (macOS)
 
-# Builds RiftRoute's own charon-cmd for macOS IKEv2 tunnels
+# Builds RiftRoute's own charon-cmd (macOS IKEv2 tunnels) and charon (L2TP/IPsec)
 # (scripts/build-strongswan.sh, with the patch in packaging/strongswan) when
 # the script, the patches or this workflow change. It is slow (OpenSSL from
 # source), so it isn't part of every PR's CI; the release workflow builds it
@@ -39,7 +39,7 @@ jobs:
             build/strongswan
             build/strongswan-work/sources
           key: strongswan-${{ runner.os }}-${{ hashFiles('scripts/build-strongswan.sh', 'packaging/strongswan/*.patch') }}
-      - name: Build charon-cmd (arm64, x86_64, universal)
+      - name: Build charon-cmd and charon (arm64, x86_64, universal)
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
           scripts/build-strongswan.sh arm64 build/strongswan/arm64

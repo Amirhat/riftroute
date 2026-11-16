@@ -307,7 +307,7 @@ func TestExtractReleaseRefusesOddOpenVPNs(t *testing.T) {
 		if err := os.WriteFile(tgz, releaseTarball(t, files...), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := extractRelease(tgz, filepath.Join(dir, "riftrouted"), dir, helpersAt("/x/riftroute-openvpn", ""))
+		got, err := extractRelease(tgz, filepath.Join(dir, "riftrouted"), dir, helpersAt("/x/riftroute-openvpn", "", ""))
 		return got["openvpn"], err
 	}
 	isBroken := func(err error) bool { var b errBroken; return err != nil && errors.As(err, &b) }

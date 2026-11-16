@@ -81,11 +81,19 @@ func installedCharonCmd(exe string) string {
 	return platform.InstalledCharonCmdPath()
 }
 
+// installedCharon is installedOpenVPN for strongSwan's charon (L2TP/IPsec).
+func installedCharon(exe string) string {
+	if exe == "" || exe != platform.InstalledDaemonPath() {
+		return ""
+	}
+	return platform.InstalledCharonPath()
+}
+
 // bootGuard runs before the database is opened: it confirms, counts or rolls
 // back a pending update (see updater.BootGuard).
 func bootGuard(current, exe, stateDir, dbPath string, logger *slog.Logger) (*updater.Guard, error) {
 	g, err := updater.BootGuard(updater.GuardEnv{
-		Current: current, Binary: exe, OpenVPN: installedOpenVPN(exe), CharonCmd: installedCharonCmd(exe),
+		Current: current, Binary: exe, OpenVPN: installedOpenVPN(exe), CharonCmd: installedCharonCmd(exe), Charon: installedCharon(exe),
 		StateDir: stateDir, DBPath: dbPath, DBVersion: store.FileUserVersion, DBMinReader: store.FileMinReader, Log: logger,
 	})
 	if err != nil {
@@ -161,7 +169,7 @@ func newUpdater(ctx context.Context, st *store.Store, proto *safety.Protocol, cu
 		Ctx: ctx, Current: current, Channel: channel,
 		ServerURL: updater.DefaultServerURL, FallbackURL: updater.DefaultFallbackURL,
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
-		Binary: exe, OpenVPN: installedOpenVPN(exe), CharonCmd: installedCharonCmd(exe), StateDir: stateDir, DBPath: dbPath,
+		Binary: exe, OpenVPN: installedOpenVPN(exe), CharonCmd: installedCharonCmd(exe), Charon: installedCharon(exe), StateDir: stateDir, DBPath: dbPath,
 		SelfUpdatable: selfUpdatable(exe, providerName),
 		Loop:          providerName != "fake",
 		Mode: func() domain.UpdateMode {

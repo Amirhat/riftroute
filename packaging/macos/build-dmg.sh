@@ -18,8 +18,9 @@
 # strongSwan's charon-cmd (IKEv2 tunnels; scripts/build-strongswan.sh
 # universal) is bundled the same way from CHARON_BIN (default
 # build/strongswan/universal/charon-cmd), its licenses/ going to
-# Resources/licenses/charon-cmd; REQUIRE_STRONGSWAN=1 makes a missing one an
-# error.
+# Resources/licenses/charon-cmd; charon (L2TP/IPsec), from the same build, from
+# CHARON_DAEMON_BIN (default: beside CHARON_BIN). REQUIRE_STRONGSWAN=1 makes a
+# missing one an error.
 #
 # Usage: VERSION=1.2.3 packaging/macos/build-dmg.sh
 # Requires the app already built at desktop/build/bin/RiftRoute.app (make desktop).
@@ -93,7 +94,9 @@ fi
 # licenses, the patch and SOURCES.txt go wherever it goes).
 CHARON_BIN="${CHARON_BIN:-${ROOT}/build/strongswan/universal/charon-cmd}"
 CHARON_LICENSES="$(dirname "$CHARON_BIN")/licenses"
-rm -f "${BINDIR}/charon-cmd"
+# charon (L2TP/IPsec) comes from the same strongSwan build, beside it.
+CHARON_DAEMON_BIN="${CHARON_DAEMON_BIN:-$(dirname "$CHARON_BIN")/charon}"
+rm -f "${BINDIR}/charon-cmd" "${BINDIR}/charon"
 have_charon_licenses() {
   local l="$1" f
   for f in SOURCES.txt strongswan/COPYING strongswan/LICENSE openssl/LICENSE.txt; do
@@ -107,6 +110,17 @@ if [ -f "$CHARON_BIN" ] && have_charon_licenses "$CHARON_LICENSES"; then
     echo "${CHARON_BIN} must be universal (arm64 + x86_64)" >&2; exit 1; }
   cp "$CHARON_BIN" "${BINDIR}/charon-cmd"
   chmod 755 "${BINDIR}/charon-cmd"
+  if [ -f "$CHARON_DAEMON_BIN" ]; then
+    lipo "$CHARON_DAEMON_BIN" -verify_arch arm64 x86_64 || {
+      echo "${CHARON_DAEMON_BIN} must be universal (arm64 + x86_64)" >&2; exit 1; }
+    cp "$CHARON_DAEMON_BIN" "${BINDIR}/charon"
+    chmod 755 "${BINDIR}/charon"
+  elif [ -n "${REQUIRE_STRONGSWAN:-}" ]; then
+    echo "missing ${CHARON_DAEMON_BIN} — build it with scripts/build-strongswan.sh universal" >&2
+    exit 1
+  else
+    echo "no charon at ${CHARON_DAEMON_BIN}: the app ships without it; L2TP/IPsec tunnels won't be available on macOS" >&2
+  fi
   mkdir -p "${APP}/Contents/Resources/licenses"
   cp -R "$CHARON_LICENSES" "${APP}/Contents/Resources/licenses/charon-cmd"
 elif [ -n "${REQUIRE_STRONGSWAN:-}" ]; then
@@ -136,22 +150,26 @@ if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
     codesign --force --options runtime --timestamp --identifier com.riftroute.openvpn \
       --sign "${MAC_SIGN_IDENTITY}" "${BINDIR}/openvpn"
   fi
-  if [ -f "${BINDIR}/charon-cmd" ]; then
-    codesign --force --options runtime --timestamp --identifier com.riftroute.charon-cmd \
-      --sign "${MAC_SIGN_IDENTITY}" "${BINDIR}/charon-cmd"
-  fi
+  for h in charon-cmd charon; do
+    if [ -f "${BINDIR}/${h}" ]; then
+      codesign --force --options runtime --timestamp --identifier "com.riftroute.${h}" \
+        --sign "${MAC_SIGN_IDENTITY}" "${BINDIR}/${h}"
+    fi
+  done
   codesign --force --options runtime --timestamp --deep --sign "${MAC_SIGN_IDENTITY}" "$APP"
 else
   echo "no Developer ID — ad-hoc signing (valid signature so macOS won't call it 'damaged')"
   if [ -f "${BINDIR}/openvpn" ]; then
     codesign --force --identifier com.riftroute.openvpn --sign - "${BINDIR}/openvpn"
   fi
-  if [ -f "${BINDIR}/charon-cmd" ]; then
-    codesign --force --identifier com.riftroute.charon-cmd --sign - "${BINDIR}/charon-cmd"
-  fi
+  for h in charon-cmd charon; do
+    if [ -f "${BINDIR}/${h}" ]; then
+      codesign --force --identifier "com.riftroute.${h}" --sign - "${BINDIR}/${h}"
+    fi
+  done
   codesign --force --deep --sign - "$APP"
 fi
-for h in openvpn charon-cmd; do
+for h in openvpn charon-cmd charon; do
   if [ -f "${BINDIR}/${h}" ]; then
     codesign --verify --strict --verbose=2 "${BINDIR}/${h}" || {
       echo "${h} signature verification failed" >&2; exit 1; }

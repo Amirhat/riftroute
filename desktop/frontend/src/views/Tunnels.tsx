@@ -49,9 +49,13 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
   // IKEv2 tunnels run on strongSwan's charon-cmd, reported beside openvpn.
   const ikeEngine = engine?.ikev2
   const canConnectIKEv2 = !ikeEngine || ikeEngine.available
+  // L2TP is built in; its IPsec's charon (strongSwan) may be missing, which
+  // the banner says (a tunnel without IPsec still connects).
+  const l2tpEngine = engine?.l2tp
   // The banners' headings: why Connect is off, for its accessible description.
   const engineProblemId = useId()
   const ikeProblemId = useId()
+  const l2tpProblemId = useId()
 
   const tunnels = stateQ.data?.tunnels ?? []
   // A profile toggled here is saved, as on the Profiles page; "Apply
@@ -63,6 +67,7 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
   // tunnel, to say what a first one would need. WireGuard is built in.
   const openvpnMatters = tunnels.length === 0 || tunnels.some((t) => (t.type || 'openvpn') === 'openvpn')
   const ikev2Matters = tunnels.some((t) => t.type === 'ikev2')
+  const l2tpMatters = tunnels.some((t) => t.type === 'l2tp')
   const refresh = () => {
     qc.invalidateQueries({ queryKey: stateKey })
     qc.invalidateQueries({ queryKey: ['routes'] })
@@ -131,8 +136,8 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted">
-          Run an OpenVPN, WireGuard or IKEv2 connection next to your main VPN. Only the networks you list go through it
-          — the server can't take over your default route or DNS.
+          Run an OpenVPN, WireGuard, IKEv2 or L2TP/IPsec connection next to your main VPN. Only the networks you list go
+          through it — the server can't take over your default route or DNS.
         </p>
         {tunnels.length > 0 && (
           <button
@@ -160,6 +165,17 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
           engine={ikeEngine}
           program={PROGRAMS.ikev2}
           headingId={ikeProblemId}
+          update={stateQ.data?.update}
+          checking={engineQ.isFetching}
+          onRecheck={() => engineQ.refetch()}
+          onOpenUpdates={onOpenUpdates}
+        />
+      )}
+      {l2tpEngine?.problem && l2tpMatters && (
+        <EngineBanner
+          engine={l2tpEngine}
+          program={PROGRAMS.l2tp}
+          headingId={l2tpProblemId}
           update={stateQ.data?.update}
           checking={engineQ.isFetching}
           onRecheck={() => engineQ.refetch()}
@@ -209,8 +225,8 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
             <h2 className="text-base font-semibold text-default">No tunnels yet</h2>
             <p className="text-sm text-muted">
               Import an OpenVPN profile (<span className="font-mono">.ovpn</span>), a WireGuard configuration (
-              <span className="font-mono">.conf</span>) or an IKEv2 profile (
-              <span className="font-mono">.mobileconfig</span>) to reach private networks (say{' '}
+              <span className="font-mono">.conf</span>), an IKEv2 or L2TP profile (
+              <span className="font-mono">.mobileconfig</span>) or an L2TP file to reach private networks (say{' '}
               <Addr>192.168.70.0/24</Addr>) while your main VPN carries everything else. WireGuard is built in. For
               OpenVPN and IKEv2, RiftRoute runs <span className="font-mono">openvpn</span> and strongSwan itself — no
               other VPN app is needed. On macOS they come with RiftRoute; on Linux they're your distribution's packages.
@@ -232,7 +248,9 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
               key={t.name}
               t={t}
               busy={busy === t.name}
-              canConnect={t.type === 'wireguard' || (t.type === 'ikev2' ? canConnectIKEv2 : canConnect)}
+              canConnect={
+                t.type === 'wireguard' || t.type === 'l2tp' || (t.type === 'ikev2' ? canConnectIKEv2 : canConnect)
+              }
               whyNotId={t.type === 'ikev2' ? ikeProblemId : engineProblemId}
               onConnect={() => run(t.name, () => api.connectTunnel(t.name))}
               onDisconnect={() => run(t.name, () => api.disconnectTunnel(t.name))}
@@ -295,9 +313,10 @@ export function Tunnels({ onOpenUpdates }: { onOpenUpdates?: () => void } = {}) 
 
 // The programs tunnels run on, as the banners name them.
 type EngineProgram = { bin: string; label: string; what: string }
-const PROGRAMS: Record<'openvpn' | 'ikev2', EngineProgram> = {
+const PROGRAMS: Record<'openvpn' | 'ikev2' | 'l2tp', EngineProgram> = {
   openvpn: { bin: 'openvpn', label: 'OpenVPN', what: 'Tunnels' },
   ikev2: { bin: 'charon-cmd', label: 'strongSwan', what: 'IKEv2 tunnels' },
+  l2tp: { bin: 'charon', label: 'strongSwan', what: 'L2TP/IPsec tunnels' },
 }
 
 // EngineBanner explains, before the user tries to connect, that tunnels need

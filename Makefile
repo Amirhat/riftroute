@@ -112,15 +112,15 @@ openvpn:
 # Homebrew's. REQUIRE_OPENVPN=1 makes a missing one an error.
 OPENVPN_DIR ?= build/openvpn
 
-## strongswan: build the charon-cmd that ships on macOS for IKEv2 (macOS host; scripts/build-strongswan.sh)
+## strongswan: build the charon-cmd (IKEv2) and charon (L2TP/IPsec) that ship on macOS (macOS host; scripts/build-strongswan.sh)
 strongswan:
 	scripts/build-strongswan.sh arm64 $(STRONGSWAN_DIR)/arm64
 	scripts/build-strongswan.sh x86_64 $(STRONGSWAN_DIR)/x86_64
 	scripts/build-strongswan.sh universal $(STRONGSWAN_DIR)/universal
 
-# The same for strongSwan's charon-cmd (IKEv2 tunnels): $(STRONGSWAN_DIR)/
-# <arch>/charon-cmd and licenses/, which go in the tarball as charon-cmd and
-# licenses/charon-cmd/. REQUIRE_STRONGSWAN=1 makes a missing one an error.
+# The same for strongSwan's charon-cmd (IKEv2 tunnels) and charon (L2TP/IPsec):
+# $(STRONGSWAN_DIR)/<arch>/charon-cmd, charon and licenses/, which go in the
+# tarball as charon-cmd, charon and licenses/charon-cmd/ (one strongSwan build). REQUIRE_STRONGSWAN=1 makes a missing one an error.
 STRONGSWAN_DIR ?= build/strongswan
 
 ## dist-binaries: cross-compile CLI+daemon tarballs for all release targets
@@ -149,6 +149,11 @@ dist-binaries:
 				mkdir -p $$d/licenses; cp -R $$ss/licenses $$d/licenses/charon-cmd; \
 				files="$$files charon-cmd"; case " $$files " in *" licenses "*) ;; *) files="$$files licenses";; esac; \
 				echo "  + charon-cmd from $$ss"; \
+				if [ -f $$ss/charon ]; then \
+					cp $$ss/charon $$d/charon; chmod 755 $$d/charon; files="$$files charon"; echo "  + charon from $$ss"; \
+				elif [ -n "$(REQUIRE_STRONGSWAN)" ]; then \
+					echo "missing $$ss/charon — build it with scripts/build-strongswan.sh" >&2; exit 1; \
+				fi; \
 			elif [ -n "$(REQUIRE_STRONGSWAN)" ]; then \
 				echo "missing $$ss/charon-cmd (+ licenses/) — build it with scripts/build-strongswan.sh" >&2; exit 1; \
 			else \

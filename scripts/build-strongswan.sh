@@ -7,7 +7,10 @@
 #   scripts/build-strongswan.sh <arm64|x86_64|universal> <outdir>
 #
 # Produces <outdir>/charon-cmd — strongSwan's single-connection IKE client,
-# one process per tunnel — over a static OpenSSL, linking only macOS's own
+# one process per IKEv2 tunnel — and <outdir>/charon, the IKE daemon one
+# instance of which carries every L2TP/IPsec tunnel's IPsec in transport
+# mode through macOS's kernel IPsec (kernel-pfkey, IKEv1; docs/tunnels-l2tp.md),
+# with its PID file in RiftRoute's own run directory — over a static OpenSSL, linking only macOS's own
 # libraries, with every plugin it needs compiled in (monolithic) and nothing
 # loadable: IKEv2, userspace ESP over a utun (kernel-libipsec), macOS routing
 # (kernel-pfroute), the VICI control socket, X.509/PKCS#1/PKCS#8/PEM keys,
@@ -63,6 +66,11 @@ STRONGSWAN_URL=https://download.strongswan.org/strongswan-${STRONGSWAN_VERSION}.
 # (and the daemon runs it with OPENSSL_CONF=/dev/null).
 HELPERDIR=/Library/PrivilegedHelperTools/riftroute-strongswan.d
 OPENSSLDIR=${HELPERDIR}/ssl
+# charon's PID file (charon.pid) goes here; the daemon runs it with this as
+# its run directory (internal/ipsec, platform.CharonDir).
+CHARON_PIDDIR=/var/run/riftroute-ipsec
+# The programs built: charon-cmd (IKEv2 tunnels), charon (L2TP/IPsec).
+BINS=(charon-cmd charon)
 # Go 1.25 (the daemon) needs macOS 12, so nothing older is supported anyway.
 MACOS_MIN=12.0
 
@@ -77,6 +85,9 @@ PLUGINS=(
   # plugins.resolve.file), which the daemon reads for a full tunnel; its
   # resolvconf path is set to nothing, so it never touches the system's DNS.
   --enable-resolve
+  # charon, for L2TP/IPsec: the IKE daemon, IKEv1, and macOS's kernel IPsec
+  # (transport mode). charon-cmd's configuration never loads kernel-pfkey.
+  --enable-charon --enable-ikev1 --enable-kernel-pfkey
 )
 
 # ---------------------------------------------------------------- args
@@ -169,9 +180,12 @@ check_version() {
     log "can't run ${arch} code on this Mac (no Rosetta) — skipping the --version check"
     return 0
   fi
-  out=$(env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin OPENSSL_CONF=/dev/null STRONGSWAN_CONF=/dev/null arch -"$arch" "$bin" --version 2>&1 || true)
+  # An empty strongswan.conf: charon reads it before it prints its version,
+  # and takes /dev/null for an invalid one.
+  : >"${WORK}/empty.conf"
+  out=$(env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin OPENSSL_CONF=/dev/null STRONGSWAN_CONF="${WORK}/empty.conf" arch -"$arch" "$bin" --version 2>&1 || true)
   printf '%s\n' "$out" >&2
-  case "$out" in *"charon-cmd, strongSwan ${STRONGSWAN_VERSION}"*) ;; *) die "charon-cmd --version doesn't show strongSwan ${STRONGSWAN_VERSION}" ;; esac
+  case "$out" in *"strongSwan ${STRONGSWAN_VERSION}"*) ;; *) die "$(basename "$bin") --version doesn't show strongSwan ${STRONGSWAN_VERSION}" ;; esac
 }
 
 # ---------------------------------------------------------------- build
@@ -187,9 +201,9 @@ build_arch() {
     *) build=x86_64-apple-darwin ;;
   esac
 
-  if [ -z "${RR_STRONGSWAN_REBUILD:-}" ] && [ -x "${dest}/charon-cmd" ] && [ "$(cat "${dest}/.pins" 2>/dev/null)" = "$PINS" ]; then
+  if [ -z "${RR_STRONGSWAN_REBUILD:-}" ] && [ -x "${dest}/charon-cmd" ] && [ -x "${dest}/charon" ] && [ "$(cat "${dest}/.pins" 2>/dev/null)" = "$PINS" ]; then
     log "${arch}: up to date in ${dest}"
-    check_links "${dest}/charon-cmd"
+    for bin in "${BINS[@]}"; do check_links "${dest}/${bin}"; done
     return 0
   fi
 
@@ -246,7 +260,7 @@ PKGCONFIG
     # up on disk at run time. Our lib dir, searched first, holds only the
     # static libcrypto, so -lcrypto can't be a dylib (check_links makes sure).
     ./configure --host="$host" --build="$build" \
-      --prefix="$HELPERDIR" --sysconfdir="${HELPERDIR}/etc" \
+      --prefix="$HELPERDIR" --sysconfdir="${HELPERDIR}/etc" --with-piddir="$CHARON_PIDDIR" \
       --disable-defaults "${PLUGINS[@]}" \
       --enable-monolithic --enable-static --disable-shared \
       CC=clang CFLAGS="$cflags" CPPFLAGS="-I${prefix}/include" LDFLAGS="-L${prefix}/lib" \
@@ -256,12 +270,15 @@ PKGCONFIG
   )
 
   mkdir -p "$dest"
-  rm -f "${dest}/charon-cmd" "${dest}/.pins"
+  rm -f "${dest}/charon-cmd" "${dest}/charon" "${dest}/.pins"
   cp "${b}/strongswan/src/charon-cmd/charon-cmd" "${dest}/charon-cmd"
-  strip "${dest}/charon-cmd"
-  check_links "${dest}/charon-cmd"
-  codesign --force --sign - --identifier com.riftroute.charon-cmd "${dest}/charon-cmd"
-  check_version "${dest}/charon-cmd" "$arch"
+  cp "${b}/strongswan/src/charon/charon" "${dest}/charon"
+  for bin in "${BINS[@]}"; do
+    strip "${dest}/${bin}"
+    check_links "${dest}/${bin}"
+    codesign --force --sign - --identifier "com.riftroute.${bin}" "${dest}/${bin}"
+    check_version "${dest}/${bin}" "$arch"
+  done
   licenses "$dest"
   printf '%s' "$PINS" >"${dest}/.pins"
   rm -rf "$b" # the sources stay; the build tree is large and not reused
@@ -281,7 +298,7 @@ licenses() {
   cp "$t/openssl-${OPENSSL_VERSION}/LICENSE.txt" "$d/openssl/"
   rm -rf "$t"
   cat >"$d/SOURCES.txt" <<EOF
-The charon-cmd program shipped with RiftRoute is a separate program, built by
+The charon-cmd and charon programs shipped with RiftRoute are separate programs, built by
 scripts/build-strongswan.sh in https://github.com/Amirhat/riftroute from these
 sources (each checked against the SHA-256 below):
 
@@ -305,19 +322,21 @@ if [ "$ARCH" = universal ]; then
   build_arch arm64 "${WORK}/out/arm64"
   build_arch x86_64 "${WORK}/out/x86_64"
   log "universal: lipo"
-  rm -f "${OUT}/charon-cmd"
-  lipo -create -output "${OUT}/charon-cmd" "${WORK}/out/arm64/charon-cmd" "${WORK}/out/x86_64/charon-cmd"
-  codesign --force --sign - --identifier com.riftroute.charon-cmd "${OUT}/charon-cmd"
-  check_links "${OUT}/charon-cmd"
-  lipo -info "${OUT}/charon-cmd" >&2
-  check_version "${OUT}/charon-cmd" "$(uname -m)"
+  for bin in "${BINS[@]}"; do
+    rm -f "${OUT}/${bin}"
+    lipo -create -output "${OUT}/${bin}" "${WORK}/out/arm64/${bin}" "${WORK}/out/x86_64/${bin}"
+    codesign --force --sign - --identifier "com.riftroute.${bin}" "${OUT}/${bin}"
+    check_links "${OUT}/${bin}"
+    lipo -info "${OUT}/${bin}" >&2
+    check_version "${OUT}/${bin}" "$(uname -m)"
+  done
   licenses "$OUT"
 else
   build_arch "$ARCH" "${WORK}/out/${ARCH}"
   if [ "${WORK}/out/${ARCH}" != "$OUT" ]; then
-    rm -rf "${OUT}/charon-cmd" "${OUT}/licenses"
-    cp "${WORK}/out/${ARCH}/charon-cmd" "${OUT}/charon-cmd"
+    rm -rf "${OUT}/charon-cmd" "${OUT}/charon" "${OUT}/licenses"
+    for bin in "${BINS[@]}"; do cp "${WORK}/out/${ARCH}/${bin}" "${OUT}/${bin}"; done
     cp -R "${WORK}/out/${ARCH}/licenses" "${OUT}/licenses"
   fi
 fi
-log "built ${OUT}/charon-cmd"
+log "built ${OUT}/charon-cmd and ${OUT}/charon"

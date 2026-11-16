@@ -22,7 +22,7 @@ import (
 
 // helper is a program that ships with RiftRoute beside the daemon where the
 // system has none to trust (macOS): openvpn, and strongSwan's charon-cmd for
-// IKEv2 tunnels. The updater installs a release's copy together with its
+// IKEv2 tunnels and charon for L2TP/IPsec tunnels. The updater installs a release's copy together with its
 // daemon, rolls it back with it (one the update added stays), and puts back
 // one that's missing from the newest release (repairHelpers).
 type helper struct {
@@ -37,12 +37,13 @@ type helper struct {
 const (
 	helperOpenVPN   = "openvpn"
 	helperCharonCmd = "charon-cmd"
+	helperCharon    = "charon"
 )
 
-var helperNames = []string{helperOpenVPN, helperCharonCmd}
+var helperNames = []string{helperOpenVPN, helperCharonCmd, helperCharon}
 
 // helpersAt lists the helpers installed at these paths ("" where none ships).
-func helpersAt(openvpn, charonCmd string) []helper {
+func helpersAt(openvpn, charonCmd, charon string) []helper {
 	var hs []helper
 	if openvpn != "" {
 		hs = append(hs, helper{name: helperOpenVPN, path: openvpn, maxSize: maxOpenVPNSize, version: "OpenVPN "})
@@ -50,10 +51,13 @@ func helpersAt(openvpn, charonCmd string) []helper {
 	if charonCmd != "" {
 		hs = append(hs, helper{name: helperCharonCmd, path: charonCmd, maxSize: maxCharonCmdSize, version: "charon-cmd, strongSwan "})
 	}
+	if charon != "" {
+		hs = append(hs, helper{name: helperCharon, path: charon, maxSize: maxCharonCmdSize, version: "strongSwan "})
+	}
 	return hs
 }
 
-func (u *Updater) helpers() []helper { return helpersAt(u.env.OpenVPN, u.env.CharonCmd) }
+func (u *Updater) helpers() []helper { return helpersAt(u.env.OpenVPN, u.env.CharonCmd, u.env.Charon) }
 
 // staged is a verified, self-tested daemon waiting to be installed — with
 // the helpers from the same release, where they ship (macOS).
@@ -96,7 +100,7 @@ func (s *staged) has(name string) bool {
 const (
 	maxDaemonSize    = 150 << 20
 	maxOpenVPNSize   = 20 << 20 // a static openvpn is ~6 MB
-	maxCharonCmdSize = 30 << 20 // a static charon-cmd is ~5 MB (per architecture)
+	maxCharonCmdSize = 30 << 20 // a static charon-cmd (or charon) is ~5 MB (per architecture)
 )
 
 // errBroken marks a problem with the release itself (as opposed to the
@@ -179,7 +183,7 @@ func (u *Updater) stage(ctx context.Context, m update.Manifest) bool {
 	u.staged = s
 	u.mu.Unlock()
 	u.set(func(s *domain.UpdateStatus) { s.State, s.Staged, s.Error = "waiting", m.Version, "" })
-	u.env.Log.Info("update staged", "version", m.Version, "openvpn", s.has(helperOpenVPN), "charon-cmd", s.has(helperCharonCmd))
+	u.env.Log.Info("update staged", "version", m.Version, "openvpn", s.has(helperOpenVPN), "charon-cmd", s.has(helperCharonCmd), "charon", s.has(helperCharon))
 	return true
 }
 
@@ -304,12 +308,21 @@ func writeLimited(dst string, r io.Reader, n int64) error {
 // daemon runs it with: a release whose helper doesn't run here (the wrong
 // architecture, a missing library) is broken. It runs as root from the
 // root-only staging dir; it matched the signed hash, like the daemon that
-// selfTest runs. (charon-cmd prints its version before it reads anything.)
+// selfTest runs. (charon-cmd prints its version before it reads anything;
+// charon after it reads its strongswan.conf, /dev/null here.)
 func selfTestHelper(ctx context.Context, h helper, bin string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// An empty strongswan.conf beside it (the root-only staging dir): charon
+	// reads one before it prints its version, and takes /dev/null for an
+	// invalid one.
+	conf := filepath.Join(filepath.Dir(bin), "empty-strongswan.conf")
+	if err := os.WriteFile(conf, nil, 0o600); err != nil {
+		return err
+	}
+	defer os.Remove(conf)
 	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "OPENSSL_CONF=/dev/null", "STRONGSWAN_CONF=/dev/null"}
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "OPENSSL_CONF=/dev/null", "STRONGSWAN_CONF=" + conf}
 	cmd.Dir = "/"
 	cmd.WaitDelay = 2 * time.Second
 	out, err := cmd.CombinedOutput() // some openvpn versions exit 1 after printing it

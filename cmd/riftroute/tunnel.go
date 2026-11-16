@@ -59,8 +59,11 @@ func tunnelListCmd() *cobra.Command {
 			if slices.ContainsFunc(ts, isIKEv2) {
 				defer printEngineProblem(cmd, domain.TunnelIKEv2)
 			}
+			if slices.ContainsFunc(ts, isL2TP) {
+				defer printEngineProblem(cmd, domain.TunnelL2TP)
+			}
 			if len(ts) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(), "no tunnels — add one with: riftroute tunnel add <name> <profile.ovpn | wg.conf | profile.mobileconfig> --route <cidr>")
+				fmt.Fprintln(cmd.OutOrStdout(), "no tunnels — add one with: riftroute tunnel add <name> <profile.ovpn | wg.conf | profile.mobileconfig | l2tp.conf> --route <cidr>")
 				return nil
 			}
 			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
@@ -249,13 +252,23 @@ func tunnelAddCmd() *cobra.Command {
 		replace bool
 	)
 	cmd := &cobra.Command{
-		Use:   "add <name> <profile.ovpn | wg.conf | profile.mobileconfig>",
-		Short: "Import an OpenVPN profile, a WireGuard configuration or an IKEv2 profile (.mobileconfig) as a tunnel",
+		Use:   "add <name> <profile.ovpn | wg.conf | profile.mobileconfig | l2tp.conf>",
+		Short: "Import an OpenVPN profile, a WireGuard configuration, an IKEv2 or L2TP profile (.mobileconfig) or an L2TP file as a tunnel",
+		Long: "Import a VPN connection as a tunnel. Its type is read from the file:\n" +
+			"  an OpenVPN profile (.ovpn), a WireGuard configuration ([Interface]),\n" +
+			"  a configuration profile (.mobileconfig) with an IKEv2 or L2TP VPN, or\n" +
+			"  RiftRoute's L2TP file, which keeps the IPsec key out of the command line:\n\n" +
+			"    [L2TP]\n" +
+			"    Server = vpn.example.com\n" +
+			"    PreSharedKey = …        (or Certificate = <base64 PKCS#12>, CertificatePassword, CA)\n" +
+			"    # IPsec = none          (no IPsec at all: nothing is encrypted)\n\n" +
+			"The L2TP login (username and password) is asked for, as an OpenVPN one is.",
 		Example: "  riftroute tunnel add infra ~/Downloads/office.ovpn \\\n" +
 			"    --route 192.168.70.0/24 --route 192.168.72.11 --connect\n" +
 			"  riftroute tunnel add lab ~/Downloads/lab-wg0.conf --route 10.20.0.0/16 --when-down block\n" +
 			"  riftroute tunnel add home ~/Downloads/home.ovpn --all-traffic --when-down block\n" +
-			"  riftroute tunnel add ops ~/Downloads/ops.mobileconfig --route 10.30.0.0/16",
+			"  riftroute tunnel add ops ~/Downloads/ops.mobileconfig --route 10.30.0.0/16\n" +
+			"  riftroute tunnel add office ~/office-l2tp.conf --route 10.40.0.0/16",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := f.checkPasswordStdin(cmd); err != nil {
@@ -266,6 +279,29 @@ func tunnelAddCmd() *cobra.Command {
 			}
 			if _, err := findTunnel(cmd.Context(), args[0]); err == nil && !replace {
 				return fmt.Errorf("a tunnel named %q already exists — change it with `riftroute tunnel edit %s`, or pass --replace", args[0], args[0])
+			}
+			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && isL2TPFile(raw) {
+				c, err := tunnel.ParseL2TP(raw)
+				if err != nil {
+					return fmt.Errorf("%s: %w", args[1], err)
+				}
+				spec := domain.TunnelSpec{
+					Name: args[0], Type: domain.TunnelL2TP, Config: raw, Routes: f.routes,
+					Via: domain.TunnelVia(f.via), AutoConnect: f.autoConnect, WhenDown: domain.TunnelWhenDown(f.whenDown),
+					Username: f.username, AllTraffic: f.allTrafficSpec(), DNS: f.dnsSpec(cmd),
+				}
+				if c.Password == "" || f.passwordStdin {
+					if err := askCreds(cmd, &spec, f.passwordStdin, c.Username != ""); err != nil {
+						return err
+					}
+				}
+				if c.IPsec == tunnel.L2TPNoIPsec {
+					fmt.Fprintln(cmd.ErrOrStderr(), "warning: this tunnel has no IPsec (IPsec = none): nothing it carries is encrypted, and its login is refused if the server asks for PAP")
+				}
+				if len(f.routes) == 0 && !f.allTraffic {
+					fmt.Fprintln(cmd.ErrOrStderr(), "note: no --route given; the tunnel will connect but carry nothing until you add routes")
+				}
+				return saveTunnel(cmd, spec, f.connect)
 			}
 			if raw, err := tunnel.ReadProfileFile(args[1]); err == nil && tunnel.IsMobileconfig(raw) {
 				c, err := tunnel.ParseMobileconfig(raw)
@@ -377,6 +413,8 @@ func tunnelEditCmd() *cobra.Command {
 				}
 				kind := domain.TunnelOpenVPN
 				switch {
+				case isL2TPFile(raw):
+					kind = domain.TunnelL2TP
 				case tunnel.IsMobileconfig(raw):
 					kind = domain.TunnelIKEv2
 				case tunnel.IsWireGuard(raw):
@@ -432,6 +470,9 @@ func tunnelEditCmd() *cobra.Command {
 						needsAuth = c.Auth == tunnel.IKEv2EAP
 					}
 				}
+				if cur.Type == domain.TunnelL2TP {
+					needsAuth = true
+				}
 				switch {
 				case !needsAuth && f.passwordStdin:
 					warnNoLogin(cmd, "--password-stdin")
@@ -447,7 +488,7 @@ func tunnelEditCmd() *cobra.Command {
 		},
 	}
 	f.bind(cmd)
-	cmd.Flags().StringVar(&profile, "profile", "", "replace the profile: OpenVPN (.ovpn), WireGuard (.conf) or IKEv2 (.mobileconfig)")
+	cmd.Flags().StringVar(&profile, "profile", "", "replace the profile: OpenVPN (.ovpn), WireGuard (.conf), IKEv2 or L2TP (.mobileconfig), or an L2TP file")
 	cmd.Flags().BoolVar(&askPass, "ask-password", false, "prompt for a new password")
 	cmd.Flags().BoolVar(&noRoutes, "no-routes", false, "remove every route")
 	return cmd
@@ -646,6 +687,14 @@ func isOpenVPN(t domain.TunnelStatus) bool {
 
 func isIKEv2(t domain.TunnelStatus) bool { return t.Type == domain.TunnelIKEv2 }
 
+func isL2TP(t domain.TunnelStatus) bool { return t.Type == domain.TunnelL2TP }
+
+// isL2TPFile: RiftRoute's [L2TP] file, or a configuration profile whose VPN
+// is L2TP.
+func isL2TPFile(raw string) bool {
+	return tunnel.IsL2TP(raw) || (tunnel.IsMobileconfig(raw) && tunnel.MobileconfigVPNType(raw) == "L2TP")
+}
+
 // printEngineProblem tells the user, when the program a tunnel type runs on
 // (openvpn; strongSwan's charon-cmd for IKEv2) isn't usable on the daemon's
 // machine, what's wrong and how to install it there. It says nothing when
@@ -657,11 +706,20 @@ func printEngineProblem(cmd *cobra.Command, typ domain.TunnelType) bool {
 		return false
 	}
 	what := "OpenVPN tunnels"
-	if typ == domain.TunnelIKEv2 {
+	switch typ {
+	case domain.TunnelIKEv2:
 		if e.IKEv2 == nil {
 			return false
 		}
 		e, what = *e.IKEv2, "IKEv2 tunnels"
+	case domain.TunnelL2TP:
+		// L2TP is built in: what's missing is IPsec's charon (a Problem on an
+		// available engine), which all but an unencrypted tunnel need.
+		if e.L2TP == nil || e.L2TP.Problem == "" {
+			return false
+		}
+		e, what = *e.L2TP, "L2TP/IPsec tunnels"
+		e.Available = false
 	}
 	if e.Available {
 		return false
@@ -767,6 +825,8 @@ func profileKind(t domain.TunnelType) string {
 		return "a WireGuard configuration (.conf)"
 	case domain.TunnelIKEv2:
 		return "a configuration profile (.mobileconfig)"
+	case domain.TunnelL2TP:
+		return "an L2TP configuration (an [L2TP] file, or a .mobileconfig)"
 	}
 	return "an OpenVPN profile (.ovpn)"
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -231,18 +232,25 @@ func TestPlistGivesTheDaemonTimeToStop(t *testing.T) {
 	}
 }
 
-// macOS ships RiftRoute's own openvpn and charon-cmd, installed beside the
-// daemon in the root-only helper directory — never a Homebrew path.
+// macOS ships RiftRoute's own openvpn, charon-cmd and charon, installed
+// beside the daemon in the root-only helper directory — never a Homebrew
+// path.
 func TestHelpersInstallBesideTheDaemon(t *testing.T) {
 	want := []Helper{
 		{Name: "openvpn", Installed: "/Library/PrivilegedHelperTools/riftroute-openvpn"},
 		{Name: "charon-cmd", Installed: "/Library/PrivilegedHelperTools/riftroute-charon-cmd"},
+		{Name: "charon", Installed: "/Library/PrivilegedHelperTools/riftroute-charon"},
 	}
-	if got := Helpers(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+	if got := Helpers(); !slices.Equal(got, want) {
 		t.Fatalf("Helpers = %+v", got)
 	}
-	if InstalledCharonCmdPath() != want[1].Installed {
-		t.Fatalf("InstalledCharonCmdPath = %q", InstalledCharonCmdPath())
+	if InstalledCharonCmdPath() != want[1].Installed || InstalledCharonPath() != want[2].Installed {
+		t.Fatalf("InstalledCharonCmdPath = %q, InstalledCharonPath = %q", InstalledCharonCmdPath(), InstalledCharonPath())
+	}
+	// charon's PID file goes in its run directory (build-strongswan.sh's
+	// --with-piddir), which root alone writes.
+	if CharonRunDir() != "/var/run/riftroute-ipsec" {
+		t.Fatalf("CharonRunDir = %q", CharonRunDir())
 	}
 }
 
