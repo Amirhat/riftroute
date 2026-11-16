@@ -144,9 +144,9 @@ for f in alice.key alice.pem; do docker cp "rr-l2tp-server:/tmp/$f" "$WORK/$f"; 
 docker cp rr-l2tp-server:/etc/swanctl/x509ca/ca.pem "$WORK/ca.pem"; docker cp "$WORK/ca.pem" rr-l2tp-client:/tmp/ca.pem
 sx sh -c '/usr/sbin/charon-systemd >/var/log/charon.log 2>&1 &'
 for _ in $(seq 1 30); do sx swanctl --stats >/dev/null 2>&1 && break; sleep 0.5; done
-# ipsec_conf <version> <psk|cert>: the server's one connection.
+# ipsec_conf <version> <psk|cert> [esp proposals]: the server's one connection.
 ipsec_conf() {
-  local auth=$2 local_auth remote_auth secrets
+  local auth=$2 esp=${3:-aes256-sha1,aes128-sha1,3des-sha1} local_auth remote_auth secrets
   if [ "$auth" = psk ]; then
     local_auth='auth = psk
       id = 10.88.9.20'
@@ -172,7 +172,7 @@ connections {
         mode = transport
         local_ts = dynamic[17/1701]
         remote_ts = dynamic[17]
-        esp_proposals = aes256-sha1,aes128-sha1,3des-sha1
+        esp_proposals = $esp
       }
     }
   }
@@ -189,6 +189,10 @@ for scenario in "1 psk" "1 cert" "2 cert"; do
   if [ "$2" = psk ]; then creds="-psk rr-l2tp-psk"; else creds="-cert /tmp/alice.pem -key /tmp/alice.key -ca /tmp/ca.pem"; fi
   out=$(probe -user alice -pass s3cret -ikev "$1" $creds)
   if [[ "$out" == *"IPSEC up"* && "$out" == *$'\n'UP* ]]; then pass "up through IPsec: $(grep ^UP <<<"$out")"; else fail "not up: $out"; sx tail -15 /var/log/charon.log || true; continue; fi
+  if [ "$1" = 1 ]; then
+    qm=$(grep "QUICK_MODE request" <<<"$out" | head -1)
+    [[ -n "$qm" && "$qm" != *" KE "* ]] && pass "Quick Mode without PFS (no KE), as Windows and Apple send it" || fail "Quick Mode: $qm"
+  fi
   sas=$(sx swanctl --list-sas 2>/dev/null)
   [[ "$sas" == *TRANSPORT* && "$sas" == *"INSTALLED"* ]] && pass "the server's SA is in transport mode" || fail "server SAs: $sas"
   if cx ping -c 3 -W 2 -I l2tp0 10.88.0.1 >/dev/null 2>&1; then pass "ping through it"; else fail "no ping through it"; fi
@@ -205,6 +209,12 @@ for scenario in "1 psk" "1 cert" "2 cert"; do
   left=x; for _ in $(seq 1 20); do left=$(cx sh -c 'ip xfrm policy; ip xfrm state' 2>/dev/null); [ -z "$left" ] && break; sleep 0.5; done
   [ -z "$left" ] && pass "no IPsec policies or SAs left on the client" || fail "left on the client: $left"
 done
+
+echo "== IPsec: a server that wants PFS (MODP-2048)"
+ipsec_conf 1 psk aes256-sha1-modp2048
+out=$(probe -user alice -pass s3cret -psk rr-l2tp-psk)
+if [[ "$out" == *"IPSEC up"* && "$out" == *$'\n'UP* ]]; then pass "up, after trying without PFS: $(grep -c 'trying again with another PFS group' <<<"$out") retry"; else fail "PFS server: $out"; fi
+stop_probe
 
 echo "== IPsec: a wrong pre-shared key"
 ipsec_conf 1 psk

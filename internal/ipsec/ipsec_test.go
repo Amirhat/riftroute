@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func sub(t *testing.T, m *vici.Message, keys ...string) *vici.Message {
 }
 
 func TestConnMessagePSK(t *testing.T) {
-	m, err := connMessage(Conn{Name: "office", Server: server, PSK: "secret"})
+	m, err := connMessage(Conn{Name: "office", Server: server, PSK: "secret"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +65,7 @@ func TestConnMessagePSK(t *testing.T) {
 
 func TestConnMessageCert(t *testing.T) {
 	m, err := connMessage(Conn{Name: "office", Server: server, Version: 2, Cert: []byte("CERT"), Key: []byte("KEY"),
-		CAs: [][]byte{[]byte("CA")}, RemoteID: "vpn.example.com", Port: 1702})
+		CAs: [][]byte{[]byte("CA")}, RemoteID: "vpn.example.com", Port: 1702}, "modp1024")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,5 +181,38 @@ func TestCharonThatDoesntStart(t *testing.T) {
 	case <-stopped:
 	case <-time.After(15 * time.Second):
 		t.Fatal("stopping hung")
+	}
+}
+
+// Quick Mode without PFS first (no KE), as Windows' and Apple's clients
+// send it; then each group, one at a time. Never strongSwan's "default",
+// which brings a key exchange.
+func TestESPProposals(t *testing.T) {
+	if pfsGroups[0] != "" {
+		t.Fatal("the first try must be without PFS")
+	}
+	for _, p := range espProposals("") {
+		if strings.Contains(p, "modp") || strings.Contains(p, "ecp") || p == "default" {
+			t.Errorf("without PFS: %s", p)
+		}
+	}
+	for _, p := range espProposals("modp1024") {
+		if !strings.HasSuffix(p, "-modp1024") {
+			t.Errorf("with modp1024: %s", p)
+		}
+	}
+	m, _ := connMessage(Conn{Name: "x", Server: server, PSK: "k"}, "")
+	if got := sub(t, m, "x", "children", "l2tp").Get("esp_proposals").([]string); slices.Contains(got, "default") {
+		t.Errorf("esp_proposals %v", got)
+	}
+}
+
+func TestPhase2Refused(t *testing.T) {
+	ok := []string{"IKE_SA rr-x[1] established between a...b", "received NO_PROPOSAL_CHOSEN error notify"}
+	if !phase2Refused(ok) {
+		t.Error("Quick Mode refused after Main Mode: not seen")
+	}
+	if phase2Refused([]string{"received NO_PROPOSAL_CHOSEN error notify"}) {
+		t.Error("Main Mode's own refusal taken for Quick Mode's")
 	}
 }

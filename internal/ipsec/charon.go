@@ -260,14 +260,44 @@ func (c *Charon) Up(ctx context.Context, conn Conn) error {
 		}
 	}
 	c.conns[conn.Name] = l // unloaded by Down, whatever happens next
-	cm, err := connMessage(conn)
-	if err != nil {
-		return err
+	var log []string
+	var failed error
+	for i, pfs := range pfsGroups {
+		cm, err := connMessage(conn, pfs)
+		if err != nil {
+			return err
+		}
+		if err := c.call("load-conn", cm); err != nil {
+			return fmt.Errorf("ipsec: loading the connection: %w", err)
+		}
+		if log, failed = c.initiate(ctx, conn); failed == nil {
+			if pfs != "" {
+				c.Log.Info("ipsec: the server takes ESP only with PFS", "conn", conn.Name, "group", pfs)
+			}
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Main Mode worked and Quick Mode's proposals were refused: the server
+		// may want PFS (or no PFS). Try the next group.
+		if !(phase2Refused(log) && i < len(pfsGroups)-1) {
+			break
+		}
+		c.Log.Info("ipsec: ESP refused; trying again with another PFS group", "conn", conn.Name, "next", pfsGroups[i+1])
 	}
-	if err := c.call("load-conn", cm); err != nil {
-		return fmt.Errorf("ipsec: loading the connection: %w", err)
+	return explain(conn, log, failed)
+}
+
+// phase2Refused: the IKE SA was set up, then the CHILD SA's proposals were
+// refused.
+func phase2Refused(log []string) bool {
+	established, refused := false, false
+	for _, l := range log {
+		established = established || strings.Contains(l, "IKE_SA") && strings.Contains(l, "established")
+		refused = refused || strings.Contains(l, "NO_PROPOSAL_CHOSEN") || strings.Contains(l, "no acceptable proposal")
 	}
-	return c.initiate(ctx, conn)
+	return established && refused
 }
 
 func (c *Charon) call(cmd string, m *vici.Message) error {
@@ -278,9 +308,9 @@ func (c *Charon) call(cmd string, m *vici.Message) error {
 	return out.Err()
 }
 
-// initiate starts the CHILD_SA and waits for it, reading charon's log for
-// why it failed.
-func (c *Charon) initiate(ctx context.Context, conn Conn) error {
+// initiate starts the CHILD_SA and waits for it; on failure it returns
+// charon's log of the attempt, for why.
+func (c *Charon) initiate(ctx context.Context, conn Conn) ([]string, error) {
 	m := vici.NewMessage()
 	_ = m.Set("child", child)
 	_ = m.Set("ike", conn.Name)
@@ -304,13 +334,7 @@ func (c *Charon) initiate(ctx context.Context, conn Conn) error {
 			failed = e
 		}
 	}
-	if failed == nil {
-		return nil
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return explain(conn, log, failed)
+	return log, failed
 }
 
 // Down terminates and unloads a connection: its SA is deleted with the

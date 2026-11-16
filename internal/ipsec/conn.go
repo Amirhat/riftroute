@@ -47,12 +47,19 @@ var (
 		"aes256-sha1-modp1024", "aes128-sha1-modp1024", "3des-sha1-modp1024",
 		"default",
 	}
-	espProposals = []string{
-		"aes256gcm16", "aes128gcm16",
-		"aes256-sha256", "aes128-sha256",
-		"aes256-sha1", "aes128-sha1", "3des-sha1",
-		"default",
+	// espBase are ESP's, without PFS: Quick Mode as Windows' and Apple's
+	// clients send it (no KE payload), which L2TP/IPsec servers (MikroTik's,
+	// RRAS) expect. No "default": strongSwan's default ESP proposals bring a
+	// key exchange, and a server that takes no PFS refuses them all
+	// (NO_PROPOSAL_CHOSEN in Quick Mode, after Main Mode worked — the
+	// owner's server, 2026-11-14).
+	espBase = []string{
+		"aes256-sha1", "aes128-sha1", "aes256-sha256", "aes128-sha256",
+		"aes256gcm16", "aes128gcm16", "3des-sha1",
 	}
+	// pfsGroups are tried, in turn, when a server refuses the proposals
+	// without PFS: IKEv1 offers one group in a Quick Mode (one KE).
+	pfsGroups = []string{"", "modp2048", "modp1024"}
 )
 
 // child is the name of every connection's CHILD_SA.
@@ -91,15 +98,28 @@ func (c Conn) version() int {
 // ids are the names its secrets are loaded under (unload-shared/-key).
 func (c Conn) pskID() string { return "rr-psk-" + c.Name }
 
-// connMessage is the load-conn message.
-func connMessage(c Conn) (*vici.Message, error) {
+// espProposals are ESP's proposals with this PFS group ("": none).
+func espProposals(group string) []string {
+	if group == "" {
+		return espBase
+	}
+	out := make([]string, len(espBase))
+	for i, p := range espBase {
+		out[i] = p + "-" + group
+	}
+	return out
+}
+
+// connMessage is the load-conn message, its ESP proposals with this PFS
+// group ("": none).
+func connMessage(c Conn, pfs string) (*vici.Message, error) {
 	ts := fmt.Sprintf("dynamic[17/%d]", c.port()) // UDP; by number: no /etc/protocols needed
 	ch := vici.NewMessage()
 	for k, v := range map[string]any{
 		"mode":          "transport",
 		"local_ts":      []string{ts},
 		"remote_ts":     []string{ts},
-		"esp_proposals": espProposals,
+		"esp_proposals": espProposals(pfs),
 		// The policies stay while the connection is loaded: a packet for the
 		// server's L2TP port without an SA starts one, and never leaves in the
 		// clear (the SA dropped, being renegotiated).
