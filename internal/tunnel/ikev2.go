@@ -2,9 +2,7 @@ package tunnel
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -470,10 +468,7 @@ func (k *ikeSession) lateDNS(tail []string) {
 
 // loginPrint fingerprints the session's login: the profile and what it
 // logs in with.
-func (k *ikeSession) loginPrint() string {
-	h := sha256.Sum256([]byte(k.d.Config + "\x00" + k.d.Username + "\x00" + k.d.Password))
-	return hex.EncodeToString(h[:])
-}
+func (k *ikeSession) loginPrint() string { return loginPrint(k.d.Config, k.d.Username, k.d.Password) }
 
 // loginWorked reports whether this very login has connected before (since
 // it was saved: across reconnects and restarts).

@@ -1546,6 +1546,7 @@ export namespace domain {
 	    problem?: string;
 	    install?: TunnelInstall;
 	    ikev2?: TunnelEngine;
+	    l2tp?: TunnelEngine;
 	
 	    static createFrom(source: any = {}) {
 	        return new TunnelEngine(source);
@@ -1559,6 +1560,7 @@ export namespace domain {
 	        this.problem = source["problem"];
 	        this.install = this.convertValues(source["install"], TunnelInstall);
 	        this.ikev2 = this.convertValues(source["ikev2"], TunnelEngine);
+	        this.l2tp = this.convertValues(source["l2tp"], TunnelEngine);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

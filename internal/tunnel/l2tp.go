@@ -2,8 +2,6 @@ package tunnel
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -587,10 +585,7 @@ func (k *l2tpSession) carry(ctx context.Context, sess *l2tp.Session) error {
 
 // loginPrint and loginWorked: as IKEv2's (#37: a login that has never
 // worked isn't tried twice).
-func (k *l2tpSession) loginPrint() string {
-	h := sha256.Sum256([]byte(k.d.Config + "\x00" + k.d.Username + "\x00" + k.d.Password))
-	return hex.EncodeToString(h[:])
-}
+func (k *l2tpSession) loginPrint() string { return loginPrint(k.d.Config, k.d.Username, k.d.Password) }
 
 func (k *l2tpSession) loginWorked() bool { return k.m.loggedIn(k.name) == k.loginPrint() }
 

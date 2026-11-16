@@ -62,7 +62,9 @@ server() {
 probe() {
   cx sh -c 'pkill -TERM -f /probe; sleep 0.5; rm -f /tmp/probe.log'
   docker exec -d rr-l2tp-client sh -c "/probe -server 10.88.9.20 $* >/tmp/probe.log 2>&1"
-  for _ in $(seq 1 40); do
+  # Up to 60 s: a wrong PSK fails only when charon's retransmissions give up
+  # (the server's answer can't be decrypted), ~25 s on a slow runner.
+  for _ in $(seq 1 120); do
     if cx grep -qE '^(UP|FAIL)' /tmp/probe.log 2>/dev/null; then break; fi
     sleep 0.5
   done
