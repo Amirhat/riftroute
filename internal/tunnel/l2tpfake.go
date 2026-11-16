@@ -40,15 +40,15 @@ func (f *FakeIPsec) Lose(name string) {
 }
 
 // Up implements IPsecRunner.
-func (f *FakeIPsec) Up(ctx context.Context, c ipsec.Conn) (<-chan struct{}, netip.Addr, error) {
+func (f *FakeIPsec) Up(ctx context.Context, c ipsec.Conn) (ipsec.SA, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ups++
 	if f.Fail != nil {
-		return nil, netip.Addr{}, f.Fail
+		return ipsec.SA{}, f.Fail
 	}
 	if c.PSK == "wrong" {
-		return nil, netip.Addr{}, ipsec.LastingError("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
+		return ipsec.SA{}, ipsec.LastingError("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
 	}
 	if f.up == nil {
 		f.up, f.lost = map[string]ipsec.Conn{}, map[string]chan struct{}{}
@@ -56,7 +56,7 @@ func (f *FakeIPsec) Up(ctx context.Context, c ipsec.Conn) (<-chan struct{}, neti
 	f.up[c.Name] = c
 	ch := make(chan struct{})
 	f.lost[c.Name] = ch
-	return ch, netip.Addr{}, nil
+	return ipsec.SA{Lost: ch}, nil
 }
 
 // Down implements IPsecRunner.
@@ -146,7 +146,7 @@ func FakeL2TP(onUp, onDown func(iface, ip string)) *L2TPEnv {
 
 // dialFakeServer starts a FakeServer and connects to it; closing the
 // connection stops it.
-func dialFakeServer(ctx context.Context, _ netip.AddrPort, _ netip.Addr) (net.Conn, error) {
+func dialFakeServer(ctx context.Context, _ netip.AddrPort, _ *ipsec.SA) (net.Conn, error) {
 	srv := &l2tp.FakeServer{Auth: "pap", AnyPassword: true, DNS: []netip.Addr{netip.MustParseAddr("10.77.0.53")}}
 	ap, err := srv.Start()
 	if err != nil {

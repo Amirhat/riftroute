@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Amirhat/riftroute/internal/domain"
+	"github.com/Amirhat/riftroute/internal/ipsec"
 	"github.com/Amirhat/riftroute/internal/l2tp"
 )
 
@@ -46,7 +47,7 @@ func newL2TPHarness(t *testing.T, srv *l2tp.FakeServer) *l2tpHarness {
 		},
 	}
 	h.m.o.L2TP = &L2TPEnv{IPsec: h.ipsec, System: tuns,
-		Dial: func(ctx context.Context, _ netip.AddrPort, _ netip.Addr) (net.Conn, error) {
+		Dial: func(ctx context.Context, _ netip.AddrPort, _ *ipsec.SA) (net.Conn, error) {
 			h.mu.Lock()
 			h.dials++
 			h.mu.Unlock()

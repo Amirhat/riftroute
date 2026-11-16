@@ -62,7 +62,9 @@ server() {
 probe() {
   cx sh -c 'pkill -TERM -f /probe; sleep 0.5; rm -f /tmp/probe.log'
   docker exec -d rr-l2tp-client sh -c "/probe -server 10.88.9.20 $* >/tmp/probe.log 2>&1"
-  for _ in $(seq 1 40); do
+  # Up to 60 s: a wrong PSK fails only when charon's retransmissions give up
+  # (the server's answer can't be decrypted), ~25 s on a slow runner.
+  for _ in $(seq 1 120); do
     if cx grep -qE '^(UP|FAIL)' /tmp/probe.log 2>/dev/null; then break; fi
     sleep 0.5
   done
@@ -263,14 +265,31 @@ n=$(sx sh -c 'rm -f /tmp/plain.txt; (timeout 5 tcpdump -ni eth0 -l "udp port 170
 sx swanctl --terminate --ike l2tp >/dev/null 2>&1 || true
 ok=0; for _ in $(seq 1 15); do cx ping -c 1 -W 2 10.88.0.1 >/dev/null 2>&1 && { ok=1; break; }; sleep 1; done
 [ "$ok" = 1 ] && pass "the server cut the SA: back by itself" || fail "not back after the SA was cut: $(rr tunnel list)"
-# charon killed under the connected tunnel (the review's H3): its trap
-# policies go with it, so the session must stop sending at once. Only what
+# Its policies and SAs wiped from outside while charon lives (an `ip xfrm
+# flush`, a system strongSwan restarting): nothing tells the session, and
+# only the socket's own policy (ESP required) keeps its packets from going
+# out in the clear. Deterministic, unlike a kill's milliseconds.
+sx sh -c 'rm -f /tmp/plain.txt; (timeout 6 tcpdump -ni eth0 -l "udp port 1701 and src host 10.88.9.10" > /tmp/plain.txt 2>/dev/null &); sleep 0.5'
+cx sh -c 'ip xfrm policy flush; ip xfrm state flush'
+cx ping -c 8 -i 0.25 -W 1 10.88.0.1 >/dev/null 2>&1 || true
+sleep 5
+n=$(sx sh -c 'grep -c . /tmp/plain.txt || true')
+[ "$n" = 0 ] && pass "its policies and SAs wiped from outside: the client sent nothing unencrypted (the socket's own policy)" || { fail "$n plain L2TP packets from the client after an xfrm flush"; sx cat /tmp/plain.txt | head -3; }
+ok=0; for _ in $(seq 1 90); do cx ping -c 1 -W 1 10.88.0.1 >/dev/null 2>&1 && { ok=1; break; }; sleep 1; done
+[ "$ok" = 1 ] && pass "and it came back by itself" || fail "not back after the flush: $(rr tunnel list)"
+# charon killed under the connected tunnel (the review's H3 and its verify's
+# LOW 1): its trap policies go with it, so the session must stop sending
+# at once, and the socket's own policy drops what's sent meanwhile. Only what
 # the client sends counts: the server, its SA deleted by charon as it stops,
 # may send in the clear itself (this server keeps no trap policy).
 sx sh -c 'rm -f /tmp/plain.txt; (timeout 8 tcpdump -ni eth0 -l "udp port 1701 and src host 10.88.9.10" > /tmp/plain.txt 2>/dev/null &); sleep 0.5'
+# A packet every 2 ms through the tunnel while charon is killed: charon
+# drops its trap policies milliseconds before it exits, and only the
+# socket's own policy (ESP required) keeps those packets in.
+cx sh -c 'ping -i 0.002 -c 3000 -W 1 10.88.0.1 >/dev/null 2>&1 &'
+sleep 1
 cx sh -c 'pkill -TERM -x charon-systemd'
-cx ping -c 6 -i 0.5 -W 1 10.88.0.1 >/dev/null 2>&1 || true
-sleep 6
+sleep 7
 n=$(sx sh -c 'grep -c . /tmp/plain.txt || true')
 [ "$n" = 0 ] && pass "charon killed under it: the client sent nothing unencrypted" || { fail "$n plain L2TP packets from the client after charon was killed"; sx cat /tmp/plain.txt | head -3; }
 # The old session was cut without a word (nothing goes out unprotected), so
