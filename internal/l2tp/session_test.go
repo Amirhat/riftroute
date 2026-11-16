@@ -206,3 +206,72 @@ func TestSessionDialCancelled(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// A server that changes the login under the client (CHAP-MD5, then LCP asks
+// for MS-CHAPv2 and CHAP says Success) ends the session; it never crashes
+// it (the review's H1: a slice of the 16-byte MD5 response panicked).
+func TestSessionLoginChangedUnderIt(t *testing.T) {
+	f := &FakeServer{Users: map[string]string{"alice": "pw"}, Auth: "chap", Renegotiate: true}
+	_, err := dialFake(t, f, "alice", "pw", true)
+	if err == nil {
+		t.Fatal("connected")
+	}
+	if lasting, rejected := Lasting(err); !lasting || !rejected {
+		t.Fatalf("%v: lasting %v rejected %v", err, lasting, rejected)
+	}
+}
+
+// A server that drops the session right after the login instead of saying
+// "rejected" is taken at its word: a rejection, not retried (#37).
+func TestSessionHangUpAfterLoginIsARejection(t *testing.T) {
+	f := &FakeServer{Users: map[string]string{"alice": "pw"}, HangUpAfterLogin: true}
+	_, err := dialFake(t, f, "alice", "pw", true)
+	lasting, rejected := Lasting(err)
+	if err == nil || !lasting || !rejected || !strings.Contains(err.Error(), "hung up right after the login") {
+		t.Fatalf("%v: lasting %v rejected %v", err, lasting, rejected)
+	}
+}
+
+// What isn't an IPv4 packet never reaches the TUN (the review's H2: an
+// empty frame panicked macOS's utun write).
+func TestSessionDropsWhatIsntIPv4(t *testing.T) {
+	f := &FakeServer{Users: map[string]string{"alice": "pw"}}
+	s, err := dialFake(t, f, "alice", "pw", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkt := []byte{0x45, 0, 0, 20, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	for _, bad := range [][]byte{nil, {0x45}, append([]byte{0x60}, pkt[1:]...)} {
+		if err := f.Send(bad); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Send(pkt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadPacket()
+	if err != nil || !bytes.Equal(got, pkt) {
+		t.Fatalf("the first packet read: %x, %v", got, err)
+	}
+}
+
+// A bug in the loop ends the session; it never takes the process.
+func TestGuardTurnsAPanicIntoAnError(t *testing.T) {
+	err := guard(func() error { var b []byte; _ = b[3]; return nil })
+	if err == nil || !strings.Contains(err.Error(), "internal error") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// The server's LCP request sent again during the login (pppd retransmits
+// it, the same id) is acknowledged again; the session goes on.
+func TestSessionRepeatedLCPRequest(t *testing.T) {
+	f := &FakeServer{Users: map[string]string{"alice": "pw"}, RepeatLCP: true}
+	s, err := dialFake(t, f, "alice", "pw", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.LocalIP().IsValid() {
+		t.Fatal("no address")
+	}
+}

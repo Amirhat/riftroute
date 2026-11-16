@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,14 +36,19 @@ type L2TPEnv struct {
 	// System makes the TUN and puts PPP's address on it (nil: this OS's
 	// own, as WireGuard's).
 	System WGSystem
-	// Dial opens the UDP socket to the server's L2TP port (nil: from port
-	// 1701, which servers expect, shared with other tunnels' sockets).
-	Dial func(ctx context.Context, server netip.AddrPort) (net.Conn, error)
+	// Dial opens the UDP socket to the server's L2TP port, from local when
+	// it's valid (nil: from port 1701, which servers expect, shared with
+	// other tunnels' sockets).
+	Dial func(ctx context.Context, server netip.AddrPort, local netip.Addr) (net.Conn, error)
 }
 
-// IPsecRunner is ipsec.Charon's part a session uses.
+// IPsecRunner is ipsec.Charon's part a session uses. Up's lost is closed
+// when the IPsec under the connection is gone (charon exited, taking its SAs
+// and trap policies): from then on nothing protects the L2TP socket. local
+// is IKE's own address, which the L2TP socket must leave from (the policy
+// covers that one only); invalid when it doesn't matter.
 type IPsecRunner interface {
-	Up(ctx context.Context, c ipsec.Conn) error
+	Up(ctx context.Context, c ipsec.Conn) (lost <-chan struct{}, local netip.Addr, err error)
 	Down(name string)
 }
 
@@ -156,7 +162,15 @@ type l2tpSession struct {
 	remotes  []Remote
 	resolved time.Time
 	log      ring // max set by run
+	// cur is the attempt's session once it's up (a pump that fails ends it).
+	cur atomic.Pointer[l2tp.Session]
+	// lost: the attempt's IPsec went away under it.
+	lost atomic.Bool
 }
+
+// errIPsecLost: charon went away under a session. Its socket was closed at
+// once: nothing more left it unprotected.
+var errIPsecLost = errors.New("IPsec stopped under the tunnel (strongSwan's charon ended); the connection was closed at once, so nothing more went out unencrypted")
 
 func (k *l2tpSession) run(ctx context.Context) {
 	k.log.max = 200
@@ -253,6 +267,28 @@ func (k *l2tpSession) resolve(ctx context.Context) error {
 	return nil
 }
 
+// claimL2TP takes server for tunnel name, or says which tunnel has it.
+func (m *Manager) claimL2TP(server netip.Addr, name string) (other string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if o, ok := m.l2tpServers[server]; ok && o != name {
+		return o
+	}
+	if m.l2tpServers == nil {
+		m.l2tpServers = map[netip.Addr]string{}
+	}
+	m.l2tpServers[server] = name
+	return ""
+}
+
+func (m *Manager) releaseL2TP(server netip.Addr, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.l2tpServers[server] == name {
+		delete(m.l2tpServers, server)
+	}
+}
+
 // ipsecName is the tunnel's IPsec connection in charon.
 func ipsecName(tunnel string) string { return "rr-" + tunnel }
 
@@ -263,7 +299,16 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 	if err != nil {
 		return false, err
 	}
+	// One L2TP tunnel per server: two would have the same addresses and
+	// ports, and the kernel would give one's packets to the other.
+	if other := k.m.claimL2TP(server, k.name); other != "" {
+		return false, errFatal{fmt.Sprintf("another L2TP tunnel (%s) is using the server %s: L2TP's fixed port (1701) allows one tunnel per server", other, server)}
+	}
+	defer k.m.releaseL2TP(server, k.name)
 	encrypted := k.c.IPsec != L2TPNoIPsec
+	k.lost.Store(false)
+	var lost <-chan struct{}
+	var local netip.Addr
 	if encrypted {
 		conn, err := k.ipsecConn(server)
 		if err != nil {
@@ -273,7 +318,7 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 		k.m.changed()
 		k.log.printf("IPsec to %s (IKEv%d, %s)", server, k.c.IKEVersion, k.c.IPsec)
 		ictx, cancel := context.WithTimeout(ctx, l2tpDialWait)
-		err = k.env.IPsec.Up(ictx, conn)
+		lost, local, err = k.env.IPsec.Up(ictx, conn)
 		cancel()
 		// Down whatever happened: the policies, the SA, the secrets go.
 		defer k.env.IPsec.Down(conn.Name)
@@ -289,9 +334,27 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 	if dial == nil {
 		dial = dialL2TP
 	}
-	sock, err := dial(ctx, netip.AddrPortFrom(server, 1701))
+	sock, err := dial(ctx, netip.AddrPortFrom(server, 1701), local)
 	if err != nil {
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return false, fmt.Errorf("can't use UDP port 1701, which L2TP servers expect: another program holds it (%v)", err)
+		}
 		return false, fmt.Errorf("can't reach the server's L2TP port: %v", err)
+	}
+	if lost != nil {
+		// IPsec gone: the socket closes before another byte goes out — no
+		// CDN, no HELLO, no packet — and the session ends.
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			select {
+			case <-lost:
+				k.lost.Store(true)
+				k.m.o.Log.Warn("l2tp: IPsec went away under the tunnel; closing its connection", "tunnel", k.name)
+				_ = sock.Close()
+			case <-stop:
+			}
+		}()
 	}
 	k.m.update(k.name, func(r *live) { r.detail = "L2TP and PPP" })
 	k.m.changed()
@@ -306,6 +369,9 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 		if ctx.Err() != nil {
 			return false, ctx.Err()
 		}
+		if k.lost.Load() {
+			return false, errIPsecLost
+		}
 		k.log.printf("L2TP: %v", err)
 		lasting, rejected := l2tp.Lasting(err)
 		switch {
@@ -316,7 +382,15 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 		}
 		return false, err
 	}
-	defer sess.Close()
+	k.cur.Store(sess)
+	defer func() {
+		k.cur.Store(nil)
+		if k.lost.Load() {
+			_ = sess.Abort()
+		} else {
+			_ = sess.Close()
+		}
+	}()
 	k.log.printf("PPP up: %s, DNS %v, MTU %d", sess.LocalIP(), sess.DNS(), sess.MTU())
 	if why := k.up(ctx, sess); why != "" {
 		return false, errFatal{why}
@@ -356,6 +430,11 @@ func (k *l2tpSession) ipsecConn(server netip.Addr) (ipsec.Conn, error) {
 	case L2TPPSK:
 		conn.PSK = k.c.PSK
 	case L2TPCertificate:
+		// The server must prove it's the server named, not just anyone the
+		// CA vouches for (a company CA issues every employee one).
+		if conn.RemoteID == "" {
+			conn.RemoteID = k.c.Remote.Host
+		}
 		key, err := pemKey(k.c.Key)
 		if err != nil {
 			return conn, fmt.Errorf("couldn't read the profile's private key: %v", err)
@@ -400,8 +479,9 @@ func (k *l2tpSession) up(ctx context.Context, sess *l2tp.Session) (why string) {
 	k.m.update(k.name, func(r *live) {
 		r.state, r.detail, r.lastErr, r.failures = domain.TunnelConnected, "", "", 0
 		r.iface, r.localIP, r.v6 = iface, local.String(), false
-		r.dns, r.dnsWhy = tunneldns.Config{Servers: sess.DNS()}, ""
-		if len(sess.DNS()) == 0 {
+		dns := tunneldns.Clean(sess.DNS()) // never loopback, multicast, …: they'd become the system's
+		r.dns, r.dnsWhy = tunneldns.Config{Servers: dns}, ""
+		if len(dns) == 0 {
 			r.dnsWhy = "the server gave no DNS servers (IPCP); set some for the tunnel"
 		}
 		r.server = k.remotes[0].Host
@@ -424,6 +504,7 @@ func (k *l2tpSession) pump(dev tun.Device, sess *l2tp.Session) {
 		_ = dev.Close()
 	}()
 	go func() { // TUN → server
+		defer k.recovered("the TUN's packets")
 		bufs := make([][]byte, dev.BatchSize())
 		for i := range bufs {
 			bufs[i] = make([]byte, tunOffset+65535)
@@ -438,17 +519,21 @@ func (k *l2tpSession) pump(dev tun.Device, sess *l2tp.Session) {
 				return
 			}
 			for i := range n {
-				if p := bufs[i][tunOffset : tunOffset+sizes[i]]; len(p) > 0 && p[0]>>4 == 4 {
+				if p := bufs[i][tunOffset : tunOffset+sizes[i]]; isIPv4(p) {
 					_ = sess.WritePacket(p) // IPv4 only: the link carries nothing else
 				}
 			}
 		}
 	}()
 	go func() { // server → TUN
+		defer k.recovered("the server's packets")
 		for {
 			p, err := sess.ReadPacket()
 			if err != nil {
 				return
+			}
+			if !isIPv4(p) {
+				continue // a TUN may index the header (macOS's does)
 			}
 			b := make([]byte, tunOffset+len(p))
 			copy(b[tunOffset:], p)
@@ -457,6 +542,21 @@ func (k *l2tpSession) pump(dev tun.Device, sess *l2tp.Session) {
 			}
 		}
 	}()
+}
+
+// isIPv4: at least an IPv4 header's worth, of version 4.
+func isIPv4(p []byte) bool { return len(p) >= 20 && p[0]>>4 == 4 }
+
+// recovered ends a pump that panicked (a bug, reached by a packet) with
+// the session, instead of the daemon.
+func (k *l2tpSession) recovered(what string) {
+	if r := recover(); r != nil {
+		k.m.o.Log.Error("l2tp: a pump failed; ending the session", "tunnel", k.name, "pump", what, "panic", r)
+		k.log.printf("internal error carrying %s: %v", what, r)
+		if s := k.cur.Load(); s != nil {
+			_ = s.Abort()
+		}
+	}
 }
 
 // carry follows the connected session: its counters, until it ends (why)
@@ -470,6 +570,9 @@ func (k *l2tpSession) carry(ctx context.Context, sess *l2tp.Session) error {
 			return nil
 		case <-sess.Done():
 			err := sess.Err()
+			if k.lost.Load() {
+				err = errIPsecLost
+			}
 			if err == nil {
 				err = errors.New("the connection ended")
 			}
@@ -495,9 +598,13 @@ func (k *l2tpSession) loginWorked() bool { return k.m.loggedIn(k.name) == k.logi
 // which servers expect (Apple's and Windows' clients use it). Other L2TP
 // tunnels' sockets share the port: each is connected to its own server, so
 // the kernel gives each its own packets.
-func dialL2TP(ctx context.Context, server netip.AddrPort) (net.Conn, error) {
+func dialL2TP(ctx context.Context, server netip.AddrPort, local netip.Addr) (net.Conn, error) {
+	la := &net.UDPAddr{Port: 1701}
+	if local.IsValid() {
+		la.IP = local.AsSlice() // IKE's address: the one the policy covers
+	}
 	d := net.Dialer{
-		LocalAddr: &net.UDPAddr{Port: 1701},
+		LocalAddr: la,
 		Control: func(network, address string, c syscall.RawConn) error {
 			var serr error
 			err := c.Control(func(fd uintptr) { serr = reusePort(fd) })

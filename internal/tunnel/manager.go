@@ -90,6 +90,9 @@ type Manager struct {
 	// dnsDirty: what a run before left may still be there (its Recover can
 	// fail): the first sync with nothing wanted reverts anyway.
 	dnsDirty bool
+	// l2tpServers are the servers L2TP tunnels are using, and by which:
+	// L2TP's fixed ports (1701 both ends) allow one tunnel per server.
+	l2tpServers map[netip.Addr]string
 
 	store   *defStore
 	runDir  string

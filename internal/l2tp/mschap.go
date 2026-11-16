@@ -160,16 +160,22 @@ func msFailure(msg []byte) error {
 
 // lastingError is a failure trying again can't fix: the server's
 // configuration, or a login it turns down (see Lasting).
-type lastingError struct{ msg string }
+type lastingError struct {
+	msg      string
+	rejected bool // a login the server turned down
+}
 
 func (e *lastingError) Error() string { return e.msg }
 
-func lasting(msg string) error { return &lastingError{msg} }
+func lasting(msg string) error { return &lastingError{msg: msg} }
 
 // Lasting reports whether err is one a reconnect can't fix, and whether it's
 // a rejected login: a login the server turned down mustn't be tried again
 // and again (it locks accounts).
 func Lasting(err error) (lasting, rejected bool) {
 	var l *lastingError
-	return errors.As(err, &l), errors.Is(err, errRejected)
+	if !errors.As(err, &l) {
+		return false, false
+	}
+	return true, l.rejected || errors.Is(err, errRejected)
 }

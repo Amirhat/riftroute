@@ -46,7 +46,7 @@ func newL2TPHarness(t *testing.T, srv *l2tp.FakeServer) *l2tpHarness {
 		},
 	}
 	h.m.o.L2TP = &L2TPEnv{IPsec: h.ipsec, System: tuns,
-		Dial: func(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+		Dial: func(ctx context.Context, _ netip.AddrPort, _ netip.Addr) (net.Conn, error) {
 			h.mu.Lock()
 			h.dials++
 			h.mu.Unlock()
@@ -210,15 +210,15 @@ func TestL2TPServerHangsUp(t *testing.T) {
 // Its configuration: the [L2TP] file's checks.
 func TestParseL2TP(t *testing.T) {
 	for cfg, want := range map[string]string{
-		"[L2TP]\nServer = vpn.example.com\nPreSharedKey = k\n":                "",
-		"[L2TP]\nServer = vpn.example.com\nIPsec = none\n":                    "",
-		"[L2TP]\nServer = vpn.example.com\n":                                  "no IPsec login",
-		"[L2TP]\nPreSharedKey = k\n":                                          "no server",
-		"[L2TP]\nServer = vpn.example.com\nIPsec = none\nPreSharedKey = k\n":  "which one",
+		"[L2TP]\nServer = vpn.example.com\nPreSharedKey = k\n":                 "",
+		"[L2TP]\nServer = vpn.example.com\nIPsec = none\n":                     "",
+		"[L2TP]\nServer = vpn.example.com\n":                                   "no IPsec login",
+		"[L2TP]\nPreSharedKey = k\n":                                           "no server",
+		"[L2TP]\nServer = vpn.example.com\nIPsec = none\nPreSharedKey = k\n":   "which one",
 		"[L2TP]\nServer = vpn.example.com\nPreSharedKey = k\nIKEVersion = 3\n": "IKEVersion",
 		"[L2TP]\nServer = vpn.example.com\nPreSharedKey = k\nColor = red\n":    "unknown setting",
-		"Server = x\n[L2TP]\n":                                                "before [L2TP]",
-		"[Interface]\n":                                                       "no [L2TP] section",
+		"Server = x\n[L2TP]\n":                                                 "before [L2TP]",
+		"[Interface]\n":                                                        "no [L2TP] section",
 	} {
 		_, err := ParseL2TP(cfg)
 		if (want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), want)) {
@@ -244,5 +244,73 @@ func TestL2TPEngineWithoutIPsec(t *testing.T) {
 	}
 	if err := h.m.Connect("office"); err == nil || !strings.Contains(err.Error(), "IPsec for L2TP tunnels isn't available") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// IPsec gone under a connected tunnel (charon exited, its trap policies
+// with it): the socket closes before another byte goes out — not even the
+// CDN, which would go unencrypted — and the tunnel connects again.
+func TestL2TPIPsecLostUnderTheTunnel(t *testing.T) {
+	h := newL2TPHarness(t, &l2tp.FakeServer{Users: map[string]string{"alice": "s3cret"}})
+	if _, err := h.m.Save(t.Context(), l2tpSpec("office", "k")); err != nil {
+		t.Fatal(err)
+	}
+	_ = h.m.Connect("office")
+	waitState(t, h.m, "office", domain.TunnelConnected)
+	h.ipsec.Lose("rr-office")
+	// It connects again (a new attempt brings IPsec up first), and the log
+	// says why the first one ended.
+	waitFor(t, "a new attempt", func() bool { _, ups := h.ipsec.Conns(); return ups >= 2 })
+	waitState(t, h.m, "office", domain.TunnelConnected)
+	if n := h.srv.HangUps(); n != 0 {
+		t.Fatalf("%d hang-ups went out after IPsec was gone", n)
+	}
+	h.m.mu.Lock()
+	var tail []string
+	if p, ok := h.m.rt["office"].sess.proc.Load().(Process); ok {
+		tail = p.Tail()
+	}
+	h.m.mu.Unlock()
+	if !strings.Contains(strings.Join(tail, "\n"), "IPsec stopped under the tunnel") {
+		t.Errorf("log: %v", tail)
+	}
+	// A Disconnect, IPsec up: it says goodbye.
+	if err := h.m.Disconnect(t.Context(), "office"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the hang-up", func() bool { return h.srv.HangUps() > 0 })
+}
+
+// Two L2TP tunnels to one server: the second is refused, saying why (the
+// same addresses and ports: the kernel would give one's packets to the
+// other).
+func TestL2TPOneTunnelPerServer(t *testing.T) {
+	h := newL2TPHarness(t, &l2tp.FakeServer{Users: map[string]string{"alice": "s3cret"}})
+	for _, n := range []string{"office", "office2"} {
+		if _, err := h.m.Save(t.Context(), l2tpSpec(n, "k")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = h.m.Connect("office")
+	waitState(t, h.m, "office", domain.TunnelConnected)
+	_ = h.m.Connect("office2")
+	st := waitState(t, h.m, "office2", domain.TunnelFailed)
+	if !strings.Contains(st.LastError, "another L2TP tunnel (office) is using the server 203.0.113.9") {
+		t.Fatalf("%q", st.LastError)
+	}
+	if st, _ := h.m.Status("office"); st.State != domain.TunnelConnected {
+		t.Fatalf("the first one: %s", st.State)
+	}
+}
+
+// A certificate login names the server it must be (not "%any" from the
+// CA); DNS servers IPCP gives are cleaned before they're used.
+func TestL2TPCertificateNamesTheServer(t *testing.T) {
+	pki := newTestPKI(t)
+	k := &l2tpSession{name: "office", c: &L2TPConfig{IPsec: L2TPCertificate, Remote: Remote{Host: "vpn.example.com"},
+		Cert: pki.client, Key: pki.key}}
+	conn, err := k.ipsecConn(netip.MustParseAddr("203.0.113.9"))
+	if err != nil || conn.RemoteID != "vpn.example.com" {
+		t.Fatalf("%+v %v", conn.RemoteID, err)
 	}
 }

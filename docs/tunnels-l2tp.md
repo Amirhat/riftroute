@@ -213,6 +213,35 @@ status or logs).
 - **Telemetry** doesn't count L2TP tunnels: its tunnel types are a fixed
   list, and the schema doesn't change.
 
+## What the review (round a) changed
+
+- **What a server sends never takes the daemon down:**
+  - every step of the L2TP loop and both of the TUN's pumps recover;
+  - only real IPv4 packets (20 bytes or more, version 4) reach the TUN;
+  - the CHAP state is dropped when LCP changes the login;
+  - an LCP renegotiation once the login has begun ends the session.
+- **IPsec lost under a tunnel** (charon exited, and its trap policies with
+  it): its socket closes at once, before another byte, even a CDN, goes out
+  unencrypted, and the tunnel connects again through a new charon.
+  - A charon carrying connections is never replaced.
+  - A leftover is stopped only when it's an orphan (its parent is init),
+    once the daemon holds its socket, and never under `-provider fake`.
+- **A hang-up, CDN, StopCCN or silence after the login was sent** counts as
+  a rejection (#37's rule).
+- **A certificate login** names the server it must be (`RemoteIdentifier`,
+  else `Server`), and needs the server's CA.
+- **One L2TP tunnel per server:** a second is refused, saying which tunnel
+  has the server.
+- **Also:**
+  - IPCP's DNS servers are cleaned as the other tunnels' are;
+  - VICI calls have deadlines, and the lock isn't held while an SA is
+    negotiated;
+  - a port 1701 already taken is named in the error;
+  - the L2TP socket leaves from IKE's own local address (`list-sas`
+    `local-host`). The policy (`dynamic[17/1701]`) covers that address
+    only: from another one (two uplinks, a route that changed between the
+    two steps) its packets would have gone out unencrypted.
+
 ## Known limits
 
 - **macOS's `net.inet.ipsec.esp_port` is system-wide.** While an L2TP/IPsec
@@ -223,6 +252,12 @@ status or logs).
   sockets), and RiftRoute never uses or changes it.
 - **IKEv1 signs both ways with the same kind of key:** an RSA certificate
   against a server whose key is ECDSA fails.
+- **The server chooses whether it proves anything.** MS-CHAPv2 makes it
+  prove it knows the password. CHAP-MD5, or no login at all, proves nothing:
+  with a group pre-shared key (or `IPsec = none`), whoever holds the key can
+  answer as the server. A certificate login names the server.
+- **A profile with an IKEv2 and an L2TP VPN** makes an IKEv2 tunnel. The
+  L2TP one is listed as ignored (import it on its own).
 - **No IPv6 over PPP** (IPV6CP is refused): a full tunnel blocks IPv6, as
   for the other tunnels without it.
 

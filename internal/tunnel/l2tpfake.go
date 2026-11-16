@@ -22,27 +22,41 @@ type FakeIPsec struct {
 	// Fail, when set, is every Up's error.
 	Fail error
 
-	mu  sync.Mutex
-	up  map[string]ipsec.Conn
-	ups int
+	mu   sync.Mutex
+	up   map[string]ipsec.Conn
+	ups  int
+	lost map[string]chan struct{}
+}
+
+// Lose takes a connection's IPsec away under it, as charon exiting does.
+func (f *FakeIPsec) Lose(name string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if ch, ok := f.lost[name]; ok {
+		close(ch)
+		delete(f.lost, name)
+	}
+	delete(f.up, name)
 }
 
 // Up implements IPsecRunner.
-func (f *FakeIPsec) Up(ctx context.Context, c ipsec.Conn) error {
+func (f *FakeIPsec) Up(ctx context.Context, c ipsec.Conn) (<-chan struct{}, netip.Addr, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.ups++
 	if f.Fail != nil {
-		return f.Fail
+		return nil, netip.Addr{}, f.Fail
 	}
 	if c.PSK == "wrong" {
-		return ipsec.LastingError("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
+		return nil, netip.Addr{}, ipsec.LastingError("IPsec: the server rejected the shared secret (or its identity isn't the one expected)")
 	}
 	if f.up == nil {
-		f.up = map[string]ipsec.Conn{}
+		f.up, f.lost = map[string]ipsec.Conn{}, map[string]chan struct{}{}
 	}
 	f.up[c.Name] = c
-	return nil
+	ch := make(chan struct{})
+	f.lost[c.Name] = ch
+	return ch, netip.Addr{}, nil
 }
 
 // Down implements IPsecRunner.
@@ -50,6 +64,7 @@ func (f *FakeIPsec) Down(name string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.up, name)
+	delete(f.lost, name)
 }
 
 // Up reports the connections that are up now, and how many Ups there were.
@@ -131,7 +146,7 @@ func FakeL2TP(onUp, onDown func(iface, ip string)) *L2TPEnv {
 
 // dialFakeServer starts a FakeServer and connects to it; closing the
 // connection stops it.
-func dialFakeServer(ctx context.Context, _ netip.AddrPort) (net.Conn, error) {
+func dialFakeServer(ctx context.Context, _ netip.AddrPort, _ netip.Addr) (net.Conn, error) {
 	srv := &l2tp.FakeServer{Auth: "pap", AnyPassword: true, DNS: []netip.Addr{netip.MustParseAddr("10.77.0.53")}}
 	ap, err := srv.Start()
 	if err != nil {

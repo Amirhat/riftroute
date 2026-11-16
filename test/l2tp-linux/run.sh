@@ -263,6 +263,17 @@ n=$(sx sh -c 'rm -f /tmp/plain.txt; (timeout 5 tcpdump -ni eth0 -l "udp port 170
 sx swanctl --terminate --ike l2tp >/dev/null 2>&1 || true
 ok=0; for _ in $(seq 1 15); do cx ping -c 1 -W 2 10.88.0.1 >/dev/null 2>&1 && { ok=1; break; }; sleep 1; done
 [ "$ok" = 1 ] && pass "the server cut the SA: back by itself" || fail "not back after the SA was cut: $(rr tunnel list)"
+# charon killed under the connected tunnel (the review's H3): its trap
+# policies go with it, so the session must stop sending at once. Only what
+# the client sends counts: the server, its SA deleted by charon as it stops,
+# may send in the clear itself (this server keeps no trap policy).
+sx sh -c 'rm -f /tmp/plain.txt; (timeout 8 tcpdump -ni eth0 -l "udp port 1701 and src host 10.88.9.10" > /tmp/plain.txt 2>/dev/null &); sleep 0.5'
+cx sh -c 'pkill -TERM -x charon-systemd'
+cx ping -c 6 -i 0.5 -W 1 10.88.0.1 >/dev/null 2>&1 || true
+sleep 6
+n=$(sx sh -c 'grep -c . /tmp/plain.txt || true')
+[ "$n" = 0 ] && pass "charon killed under it: the client sent nothing unencrypted" || { fail "$n plain L2TP packets from the client after charon was killed"; sx cat /tmp/plain.txt | head -3; }
+if wait_state office connected 60 && cx ping -c 2 -W 2 10.88.0.1 >/dev/null 2>&1; then pass "and it connected again, through a new charon"; else fail "not back after charon was killed: $(rr tunnel list)"; fi
 rr tunnel down office >"$WORK/down.out" 2>&1 || fail "disconnect: $(cat "$WORK/down.out")"
 left=x; for _ in $(seq 1 20); do left=$(cx sh -c 'ip xfrm policy; ip xfrm state'); [ -z "$left" ] && break; sleep 0.5; done
 [ -z "$left" ] && pass "disconnected: no policies or SAs left" || fail "left: $left"

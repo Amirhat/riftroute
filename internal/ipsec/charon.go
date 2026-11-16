@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,7 +39,7 @@ type Charon struct {
 	cmd   *exec.Cmd
 	vs    *vici.Session
 	exit  chan struct{}
-	conns map[string]loaded
+	conns map[string]*loaded
 	// tail is its last log lines, under a lock of its own: the reader must
 	// never wait for mu, or charon's output stops being drained, its exit
 	// is never seen (cmd.Wait waits for it), and a Down holding mu waits
@@ -96,7 +97,7 @@ func (c *Charon) ensure(ctx context.Context) error {
 		c.Log.Info("charon exited", "err", err)
 		close(exit)
 	}()
-	c.cmd, c.exit, c.conns = cmd, exit, map[string]loaded{}
+	c.cmd, c.exit, c.conns = cmd, exit, map[string]*loaded{}
 	deadline := time.Now().Add(startWait)
 	for {
 		vs, err := vici.NewSession(vici.WithSocketPath(c.socket()))
@@ -168,8 +169,8 @@ func (c *Charon) stopLocked() {
 }
 
 // StopLeftover ends a charon an earlier daemon left running in dir (see
-// stopLeftover): the daemon calls it as it starts, so a crash's charon
-// doesn't hold its SAs and policies until the next tunnel connects.
+// stopLeftover): the daemon calls it once it holds its socket, so a crash's
+// charon doesn't hold its SAs and policies until the next tunnel connects.
 func StopLeftover(dir string, log *slog.Logger) {
 	stopLeftover(filepath.Join(dir, "charon.pid"), log)
 }
@@ -185,7 +186,10 @@ func stopLeftover(pidFile string, log *slog.Logger) {
 		return
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 1 || pid == os.Getpid() || !isCharon(pid) {
+	// Only an orphan: its daemon gone, it was handed to init (1). A charon
+	// whose daemon lives (another riftrouted's, even a dev one sharing the
+	// directory) is that daemon's, and its tunnels'.
+	if err != nil || pid <= 1 || pid == os.Getpid() || !isCharon(pid) || parentOf(pid) != 1 {
 		return
 	}
 	p, err := os.FindProcess(pid)
@@ -203,10 +207,28 @@ func stopLeftover(pidFile string, log *slog.Logger) {
 	_ = p.Kill()
 }
 
-// isCharon reports whether pid is a running charon.
+// isCharon reports whether pid is a running charon (RiftRoute's, or a
+// distribution's charon-systemd), not a charon-cmd.
 func isCharon(pid int) bool {
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	return err == nil && strings.Contains(filepath.Base(strings.TrimSpace(string(out))), "charon")
+	if err != nil {
+		return false
+	}
+	switch filepath.Base(strings.TrimSpace(string(out))) {
+	case "charon", "riftroute-charon", "charon-systemd":
+		return true
+	}
+	return false
+}
+
+// parentOf is pid's parent (0 when it can't be read).
+func parentOf(pid int) int {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "ppid=").Output()
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+	return n
 }
 
 // Stop ends charon whatever is loaded (the daemon shutting down).
@@ -218,35 +240,49 @@ func (c *Charon) Stop() {
 
 // Up loads c's connection and brings its SA up: it returns once the
 // server's L2TP port is reached only through IPsec, or with why not.
-func (c *Charon) Up(ctx context.Context, conn Conn) error {
+//
+// lost is closed when this charon exits. Its SAs and trap policies go with
+// it, and nothing covers the L2TP socket any more: the session must stop
+// sending at once.
+//
+// The lock isn't held while the SA is negotiated (up to 35 s): another
+// tunnel's Up or Down goes ahead meanwhile.
+func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local netip.Addr, err error) {
 	if err := conn.check(); err != nil {
-		return err
+		return nil, netip.Addr{}, err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			c.mu.Unlock()
+		}
+	}()
 	if err := c.ensure(ctx); err != nil {
-		return err
+		return nil, netip.Addr{}, err
 	}
 	if _, ok := c.conns[conn.Name]; ok {
 		c.downLocked(conn.Name)
 	}
-	var l loaded
+	// Registered before anything is loaded: Down unloads whatever got in.
+	l := &loaded{}
+	c.conns[conn.Name] = l
+	l.psk = conn.PSK != "" // unloaded by Down even if loading it failed half-way
 	if conn.PSK != "" {
 		if err := c.call("load-shared", pskMessage(conn)); err != nil {
-			return fmt.Errorf("ipsec: loading the shared secret: %w", err)
+			return nil, netip.Addr{}, fmt.Errorf("ipsec: loading the shared secret: %w", err)
 		}
-		l.psk = true
 	} else {
 		km, err := keyMessage(conn)
 		if err != nil {
-			return err
+			return nil, netip.Addr{}, err
 		}
 		out, err := c.vs.Call(context.Background(), "load-key", km)
 		if err == nil {
 			err = out.Err()
 		}
 		if err != nil {
-			return fmt.Errorf("couldn't read the profile's private key: %w", err)
+			return nil, netip.Addr{}, fmt.Errorf("couldn't read the profile's private key: %w", err)
 		}
 		l.keyID, _ = out.Get("id").(string)
 		for _, cert := range conn.Chain {
@@ -255,29 +291,49 @@ func (c *Charon) Up(ctx context.Context, conn Conn) error {
 			_ = m.Set("flag", "NONE")
 			_ = m.Set("data", string(cert))
 			if err := c.call("load-cert", m); err != nil {
-				return fmt.Errorf("ipsec: loading an intermediate certificate: %w", err)
+				return nil, netip.Addr{}, fmt.Errorf("ipsec: loading an intermediate certificate: %w", err)
 			}
 		}
 	}
-	c.conns[conn.Name] = l // unloaded by Down, whatever happens next
+	exit, socket := c.exit, c.socket()
 	var log []string
 	var failed error
 	for i, pfs := range pfsGroups {
 		cm, err := connMessage(conn, pfs)
 		if err != nil {
-			return err
+			return nil, netip.Addr{}, err
+		}
+		if !locked {
+			c.mu.Lock()
+			locked = true
+		}
+		if c.exit != exit || c.vs == nil || c.conns[conn.Name] != l {
+			return nil, netip.Addr{}, errors.New("IPsec: strongSwan's charon stopped while connecting")
 		}
 		if err := c.call("load-conn", cm); err != nil {
-			return fmt.Errorf("ipsec: loading the connection: %w", err)
+			return nil, netip.Addr{}, fmt.Errorf("ipsec: loading the connection: %w", err)
 		}
-		if log, failed = c.initiate(ctx, conn); failed == nil {
+		c.mu.Unlock()
+		locked = false
+		if log, failed = c.initiate(ctx, socket, conn); failed == nil {
+			select {
+			case <-exit:
+				return nil, netip.Addr{}, errors.New("IPsec: strongSwan's charon stopped while connecting")
+			default:
+			}
 			if pfs != "" {
 				c.Log.Info("ipsec: the server takes ESP only with PFS", "conn", conn.Name, "group", pfs)
 			}
-			return nil
+			// The L2TP socket must leave from IKE's own address: the policy
+			// (dynamic[17/1701]) covers that one only.
+			local, err := localHost(ctx, socket, conn.Name)
+			if err != nil {
+				return nil, netip.Addr{}, fmt.Errorf("IPsec: couldn't read the connection's local address: %w", err)
+			}
+			return exit, local, nil
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return nil, netip.Addr{}, ctx.Err()
 		}
 		// Main Mode worked and Quick Mode's proposals were refused: the server
 		// may want PFS (or no PFS). Try the next group.
@@ -286,7 +342,46 @@ func (c *Charon) Up(ctx context.Context, conn Conn) error {
 		}
 		c.Log.Info("ipsec: ESP refused; trying again with another PFS group", "conn", conn.Name, "next", pfsGroups[i+1])
 	}
-	return explain(conn, log, failed)
+	return nil, netip.Addr{}, explain(conn, log, failed)
+}
+
+// localHost is the address IKE uses on this side (list-sas' local-host).
+func localHost(ctx context.Context, socket, name string) (netip.Addr, error) {
+	vs, err := vici.NewSession(vici.WithSocketPath(socket))
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	defer vs.Close()
+	in := vici.NewMessage()
+	_ = in.Set("ike", name)
+	_ = in.Set("noblock", "yes")
+	lctx, cancel := context.WithTimeout(ctx, viciWait)
+	defer cancel()
+	for m, err := range vs.CallStreaming(lctx, "list-sas", "list-sa", in) {
+		if err != nil {
+			return netip.Addr{}, err
+		}
+		for _, k := range m.Keys() {
+			sa, ok := m.Get(k).(*vici.Message)
+			if !ok {
+				continue
+			}
+			if h, ok := sa.Get("local-host").(string); ok {
+				if a, err := netip.ParseAddr(h); err == nil {
+					return a.Unmap(), nil
+				}
+			}
+		}
+	}
+	return netip.Addr{}, errors.New("no IKE SA listed")
+}
+
+// Busy reports whether connections are loaded: this charon mustn't be
+// replaced or stopped under them.
+func (c *Charon) Busy() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.conns) > 0
 }
 
 // phase2Refused: the IKE SA was set up, then the CHILD SA's proposals were
@@ -300,8 +395,14 @@ func phase2Refused(log []string) bool {
 	return established && refused
 }
 
+// viciWait bounds a VICI command: a charon that hangs mustn't hang every
+// tunnel (and the daemon's shutdown) behind it.
+var viciWait = 15 * time.Second
+
 func (c *Charon) call(cmd string, m *vici.Message) error {
-	out, err := c.vs.Call(context.Background(), cmd, m)
+	ctx, cancel := context.WithTimeout(context.Background(), viciWait)
+	defer cancel()
+	out, err := c.vs.Call(ctx, cmd, m)
 	if err != nil {
 		return err
 	}
@@ -310,7 +411,13 @@ func (c *Charon) call(cmd string, m *vici.Message) error {
 
 // initiate starts the CHILD_SA and waits for it; on failure it returns
 // charon's log of the attempt, for why.
-func (c *Charon) initiate(ctx context.Context, conn Conn) ([]string, error) {
+func (c *Charon) initiate(ctx context.Context, socket string, conn Conn) ([]string, error) {
+	// A session of its own: the shared one stays free for other tunnels.
+	vs, err := vici.NewSession(vici.WithSocketPath(socket))
+	if err != nil {
+		return nil, fmt.Errorf("IPsec: strongSwan's charon isn't answering: %w", err)
+	}
+	defer vs.Close()
 	m := vici.NewMessage()
 	_ = m.Set("child", child)
 	_ = m.Set("ike", conn.Name)
@@ -320,7 +427,7 @@ func (c *Charon) initiate(ctx context.Context, conn Conn) ([]string, error) {
 	defer cancel()
 	var log []string
 	var failed error
-	for msg, err := range c.vs.CallStreaming(ictx, "initiate", "control-log", m) {
+	for msg, err := range vs.CallStreaming(ictx, "initiate", "control-log", m) {
 		if err != nil {
 			failed = err
 			break
@@ -357,8 +464,10 @@ func (c *Charon) downLocked(name string) {
 	t := vici.NewMessage()
 	_ = t.Set("ike", name)
 	_ = t.Set("timeout", "3000")
-	for range c.vs.CallStreaming(context.Background(), "terminate", "control-log", t) {
+	tctx, cancel := context.WithTimeout(context.Background(), viciWait)
+	for range c.vs.CallStreaming(tctx, "terminate", "control-log", t) {
 	}
+	cancel()
 	u := vici.NewMessage()
 	_ = u.Set("name", name)
 	_ = c.call("unload-conn", u)

@@ -563,6 +563,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if providerName != "fake" {
+		// The socket is ours: we're the one daemon. A charon a crashed one left
+		// goes now (L2TP/IPsec).
+		tunnel.StopLeftoverCharon(logger)
+	}
 	// When serving a different uid than our own (root daemon ↔ desktop-user GUI),
 	// hand socket ownership to that user so it can connect; writes stay gated by
 	// peer-cred authz (allowUID). Same-uid (dev) keeps the default 0600.

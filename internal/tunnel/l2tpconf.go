@@ -76,14 +76,16 @@ func IsL2TP(text string) bool {
 //
 //	[L2TP]
 //	Server = vpn.example.com
-//	PreSharedKey = …                 # IPsec with a pre-shared key, or
-//	Certificate = <base64 PKCS#12>   # with a certificate (+ CertificatePassword),
-//	CA = <base64 DER or PEM>         # the server's CA (repeatable)
-//	IPsec = none                     # or none at all: nothing is encrypted
-//	LocalIdentifier = …              # optional
-//	RemoteIdentifier = …             # optional
-//	IKEVersion = 1                   # 1 (default) or 2
-//	Username = …                     # optional: the login, else asked for
+//	# IPsec with a pre-shared key:
+//	PreSharedKey = …
+//	# or with a certificate: a base64 PKCS#12, its password, the server's CA
+//	# (base64 DER or PEM, repeatable):
+//	#   Certificate = …  CertificatePassword = …  CA = …
+//	# or none at all (nothing is encrypted): IPsec = none
+//	# optional: LocalIdentifier, RemoteIdentifier (a certificate login's
+//	# default is Server), IKEVersion (1, the default, or 2), Username
+//
+// A comment is a line of its own: "#" after a value is part of it.
 //
 // The secrets stay in the file (or the profile), never on a command line.
 func ParseL2TP(text string) (*L2TPConfig, error) {
@@ -209,7 +211,9 @@ func (c *L2TPConfig) setP12(der []byte, password string) error {
 
 func (c *L2TPConfig) check() error {
 	if c.IPsec == L2TPCertificate && len(c.CAs) == 0 {
-		c.Ignored = append(c.Ignored, "no CA (the server's certificate must chain to a public one)")
+		// charon here loads no system roots: without the CA nothing could
+		// ever verify the server.
+		return &ProfileError{Msg: "a certificate login needs the server's certificate authority (CA = …, or a root certificate in the profile)"}
 	}
 	for _, s := range []string{c.LocalID, c.RemoteID, c.Username} {
 		if strings.ContainsAny(s, "\x00\n\r") {
@@ -234,7 +238,7 @@ func decodeCerts(v string) ([]*x509.Certificate, error) {
 // parseL2TPMobileconfig reads the L2TP VPN in a configuration profile:
 // PPP's server and login, IPSec's shared secret or certificate.
 func parseL2TPMobileconfig(raw string) (*L2TPConfig, error) {
-	payloads, vpn, err := profileVPN(raw, "L2TP")
+	payloads, vpn, others, err := profileVPN(raw, "L2TP")
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +307,9 @@ func parseL2TPMobileconfig(raw string) (*L2TPConfig, error) {
 		return nil, &ProfileError{Msg: fmt.Sprintf("the profile's IPsec login (%s) isn't one RiftRoute runs", method)}
 	}
 	c.Ignored = append(c.Ignored, "the full tunnel (only the networks you list go through it)")
+	for _, o := range others {
+		c.Ignored = append(c.Ignored, "the profile's other VPN ("+o+"); import it as a tunnel of its own")
+	}
 	if boolish(vpn, "OnDemandEnabled") {
 		c.Ignored = append(c.Ignored, "connect on demand")
 	}
@@ -319,38 +326,42 @@ func parseL2TPMobileconfig(raw string) (*L2TPConfig, error) {
 
 // profileVPN reads a configuration profile's payloads and its first VPN of
 // this type, or says what the profile holds instead.
-func profileVPN(raw, vpnType string) ([]map[string]any, map[string]any, error) {
+func profileVPN(raw, vpnType string) (payloads []map[string]any, vpn map[string]any, others []string, err error) {
 	data := []byte(raw)
 	if inner, ok := unwrapSigned(data); ok {
 		data = inner
 	}
 	v, err := parsePlist(data)
 	if err != nil {
-		return nil, nil, &ProfileError{Msg: "this isn't a configuration profile (.mobileconfig): " + err.Error()}
+		return nil, nil, nil, &ProfileError{Msg: "this isn't a configuration profile (.mobileconfig): " + err.Error()}
 	}
 	top, _ := v.(map[string]any)
 	if str(top, "PayloadType") != "Configuration" {
-		return nil, nil, &ProfileError{Msg: "this isn't a configuration profile (.mobileconfig)"}
+		return nil, nil, nil, &ProfileError{Msg: "this isn't a configuration profile (.mobileconfig)"}
 	}
-	payloads := dicts(top, "PayloadContent")
-	var others []string
+	payloads = dicts(top, "PayloadContent")
 	for _, p := range payloads {
 		if str(p, "PayloadType") != payloadVPN {
 			continue
 		}
-		if str(p, "VPNType") == vpnType {
-			return payloads, p, nil
+		if str(p, "VPNType") == vpnType && vpn == nil {
+			vpn = p
+			continue
 		}
 		others = append(others, vpnTypeName(p))
 	}
-	if len(others) > 0 {
-		return nil, nil, &ProfileError{Msg: fmt.Sprintf("this profile's VPN is %s, not %s", strings.Join(others, ", "), vpnTypeName(map[string]any{"VPNType": vpnType}))}
+	if vpn != nil {
+		return payloads, vpn, others, nil
 	}
-	return nil, nil, &ProfileError{Msg: "this profile has no VPN in it"}
+	if len(others) > 0 {
+		return nil, nil, nil, &ProfileError{Msg: fmt.Sprintf("this profile's VPN is %s, not %s", strings.Join(others, ", "), vpnTypeName(map[string]any{"VPNType": vpnType}))}
+	}
+	return nil, nil, nil, &ProfileError{Msg: "this profile has no VPN in it"}
 }
 
-// MobileconfigVPNType is the type of a profile's first VPN ("IKEv2",
-// "L2TP", …; "" for none): which kind of tunnel it makes.
+// MobileconfigVPNType is the type of the VPN a profile makes a tunnel of:
+// IKEv2 when it has one (as before L2TP was read), else L2TP, else the
+// first VPN's type ("" for none). The other VPNs are listed as ignored.
 func MobileconfigVPNType(raw string) string {
 	data := []byte(raw)
 	if inner, ok := unwrapSigned(data); ok {
@@ -361,10 +372,19 @@ func MobileconfigVPNType(raw string) string {
 		return ""
 	}
 	top, _ := v.(map[string]any)
+	var types []string
 	for _, p := range dicts(top, "PayloadContent") {
 		if str(p, "PayloadType") == payloadVPN {
-			return str(p, "VPNType")
+			types = append(types, str(p, "VPNType"))
 		}
+	}
+	for _, t := range []string{"IKEv2", "L2TP"} {
+		if slices.Contains(types, t) {
+			return t
+		}
+	}
+	if len(types) > 0 {
+		return types[0]
 	}
 	return ""
 }

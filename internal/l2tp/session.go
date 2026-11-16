@@ -167,6 +167,16 @@ func (s *Session) WritePacket(pkt []byte) error {
 	return err
 }
 
+// Abort ends the session without a word to the server: its socket is
+// closed first, so nothing more goes out (what protected it, IPsec, is
+// gone).
+func (s *Session) Abort() error {
+	_ = s.conn.Close()
+	s.once.Do(func() { close(s.stop) })
+	<-s.done
+	return nil
+}
+
 // Close ends the session, telling the server (CDN, StopCCN).
 func (s *Session) Close() error {
 	s.once.Do(func() { close(s.stop) })
@@ -226,6 +236,24 @@ type loop struct {
 	protoRejID uint8
 	// papRefused: the server asked for PAP, refused for want of IPsec.
 	papRefused bool
+	// loginSent: the password (or its proof) went out, unanswered while
+	// !authDone.
+	loginSent bool
+	// lcpAcked is the server's LCP request we acknowledged last.
+	lcpAcked cp
+}
+
+// afterLogin: a session that ends once the login was sent and before it's
+// answered — the server hanging up, going quiet, restarting the link — is
+// most likely a rejection that didn't say so (some servers, or their
+// RADIUS, just drop it). It counts as one: tried again and again, a
+// rejected login locks accounts (#37).
+func (l *loop) afterLogin(err error) error {
+	if !l.loginSent || l.authDone {
+		return err
+	}
+	return &lastingError{msg: "the server hung up right after the login was sent (" + err.Error() +
+		"): most likely it rejected the username or password", rejected: true}
 }
 
 func newLoop(s *Session, cfg Config) *loop {
@@ -271,21 +299,21 @@ func (l *loop) run(up chan struct{}) {
 	}()
 	t := time.NewTicker(tick)
 	defer t.Stop()
-	err := l.start()
+	err := guard(l.start)
 	for err == nil {
 		select {
 		case b := <-pkts:
-			err = l.input(b, time.Now())
+			err = guard(func() error { return l.input(b, time.Now()) })
 		case e := <-readErr:
 			err = l.readFailed(e)
 		case now := <-t.C:
-			err = l.timers(now)
+			err = guard(func() error { return l.timers(now) })
 		case <-s.stop:
 			l.hangUp()
 			err = errClosed
 		}
 		if err == nil {
-			err = l.flushAck()
+			err = guard(l.flushAck)
 		}
 		if err == nil && l.ph == phUp && up != nil {
 			close(up)
@@ -304,6 +332,18 @@ func (l *loop) run(up chan struct{}) {
 }
 
 var errClosed = errors.New("closed")
+
+// guard runs one step of the loop, turning a panic (a bug, reached by what
+// the server sent) into the session's end: it must never take the daemon,
+// and every other tunnel, with it.
+func guard(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("l2tp: internal error, the session was ended: %v", r)
+		}
+	}()
+	return f()
+}
 
 // errPAPInClear: the server takes only PAP, which sends the password as it
 // is, and nothing encrypts the connection.
@@ -420,7 +460,7 @@ func (l *loop) timers(now time.Time) error {
 	}
 	if l.ph == phAuth {
 		if now.Sub(l.authAt) > authWait {
-			return errors.New("the server never finished the login (PPP authentication)")
+			return l.afterLogin(errors.New("the server never finished the login (PPP authentication)"))
 		}
 		if l.auth == protoPAP && now.After(l.papNext) {
 			if err := l.sendPAP(now); err != nil {
@@ -522,9 +562,9 @@ func (l *loop) control(m *message) error {
 		l.ph = phLCP
 		return l.sendPPP(protoLCP, l.lcp.request(time.Now()))
 	case msgStopCCN:
-		return fmt.Errorf("the server closed the L2TP tunnel%s", resultText(m))
+		return l.afterLogin(fmt.Errorf("the server closed the L2TP tunnel%s", resultText(m)))
 	case msgCDN:
-		return fmt.Errorf("the server ended the L2TP session%s", resultText(m))
+		return l.afterLogin(fmt.Errorf("the server ended the L2TP session%s", resultText(m)))
 	case msgHello, msgSCCCN, msgWEN, msgSLI:
 		return nil
 	case msgSCCRQ, msgICRQ:
@@ -565,7 +605,9 @@ func (l *loop) ppp(frame []byte, now time.Time) error {
 	}
 	switch proto {
 	case protoIPv4:
-		if l.ph != phUp {
+		// Only an IPv4 packet goes on (a TUN may index its header): nothing
+		// shorter than a header, nothing of another version.
+		if l.ph != phUp || len(info) < 20 || info[0]>>4 != 4 {
 			return nil
 		}
 		p := make([]byte, len(info))
@@ -591,9 +633,24 @@ func (l *loop) ppp(frame []byte, now time.Time) error {
 				return lasting("the server refuses IPv4 (IPCP) on this link")
 			}
 			return nil
+		case codeConfReq:
+			if l.ph >= phAuth {
+				// The request we acknowledged, sent again (pppd retransmits it,
+				// same id, until it hears our Ack): acknowledged again.
+				if c.id == l.lcpAcked.id && bytes.Equal(c.data, l.lcpAcked.data) {
+					return l.sendPPP(protoLCP, cp{code: codeConfAck, id: c.id, data: c.data})
+				}
+				// A new one: the link renegotiated once the login has begun, and
+				// the login it agreed to may change under it. Ended, never
+				// followed.
+				return l.afterLogin(errors.New("the server restarted the link (LCP) during the session"))
+			}
 		}
 		out, err := l.lcp.input(c, now)
 		for _, o := range out {
+			if o.code == codeConfAck {
+				l.lcpAcked = cp{id: o.id, data: append([]byte{}, o.data...)}
+			}
 			if e := l.sendPPP(protoLCP, o); e != nil {
 				return e
 			}
@@ -602,7 +659,7 @@ func (l *loop) ppp(frame []byte, now time.Time) error {
 			return errPAPInClear
 		}
 		if err != nil {
-			return err
+			return l.afterLogin(err)
 		}
 		if l.ph == phLCP && l.lcp.open() {
 			return l.startAuth(now)
@@ -677,6 +734,7 @@ func (l *loop) lcpPeer(opts []option) (nak, rej []option) {
 	}
 	if len(nak) == 0 && len(rej) == 0 { // acknowledged: these are the link's
 		l.auth, l.peerMRU = 0, 0
+		l.chap.id, l.chap.challenge, l.chap.peer, l.chap.resp = 0, nil, nil, nil
 		for _, o := range opts {
 			switch o.typ {
 			case lcpMRU:
@@ -817,8 +875,12 @@ func (l *loop) afterAuth(now time.Time) error {
 
 func (l *loop) sendPAP(now time.Time) error {
 	if l.papTries >= cpMaxTries {
-		return errors.New("the server never answered the login (PAP)")
+		return l.afterLogin(errors.New("the server never answered the login (PAP)"))
 	}
+	if len(l.cfg.Username) > 255 || len(l.cfg.Password) > 255 {
+		return lasting("the username or password is longer than PAP carries (255 bytes)")
+	}
+	l.loginSent = true
 	l.papTries++
 	l.papID++
 	l.papNext = now.Add(cpRestart)
@@ -868,22 +930,29 @@ func (l *loop) chapInput(info []byte, now time.Time) error {
 				l.chap.resp = mschapv2Response(value, l.chap.peer, l.cfg.Username, l.cfg.Password)
 			}
 		}
+		if l.chap.resp == nil {
+			return nil // an algorithm we didn't agree to
+		}
 		d := []byte{byte(len(l.chap.resp))}
 		d = append(d, l.chap.resp...)
 		d = append(d, l.cfg.Username...)
+		l.loginSent = true
 		return l.sendPPP(protoCHAP, cp{code: 2, id: c.id, data: d})
 	case 3: // Success
 		if c.id != l.chap.id || l.chap.resp == nil {
 			return nil
 		}
 		if l.chapAlg == chapMSCHAPv2 {
+			if len(l.chap.resp) != 49 || len(l.chap.peer) != 16 {
+				return nil // not the response we sent for MS-CHAPv2
+			}
 			if err := checkMSCHAPv2Success(c.data, l.cfg.Password, l.chap.resp, l.chap.peer, l.chap.challenge, l.cfg.Username); err != nil {
 				return err
 			}
 		}
 		return l.afterAuth(now)
 	case 4: // Failure
-		if c.id != l.chap.id {
+		if c.id != l.chap.id || l.chap.resp == nil {
 			return nil
 		}
 		if l.chapAlg == chapMSCHAPv2 {

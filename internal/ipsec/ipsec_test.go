@@ -165,11 +165,15 @@ func TestCharonThatDoesntStart(t *testing.T) {
 	t.Cleanup(func() { startWait = w })
 	c := &Charon{Bin: bin, Dir: filepath.Join(dir, "run"), GOOS: "linux", Log: slog.New(slog.DiscardHandler)}
 	done := make(chan error, 1)
-	go func() { done <- c.Up(context.Background(), Conn{Name: "x", Server: server, PSK: "k"}) }()
+	go func() {
+		_, _, err := c.Up(context.Background(), Conn{Name: "x", Server: server, PSK: "k"})
+		done <- err
+	}()
 	select {
 	case err := <-done:
-		// What it printed last (how far it got is the scheduler's) follows.
-		if err == nil || !strings.Contains(err.Error(), "didn't start (no VICI socket): ") {
+		// What it printed last follows, when the reader has had it yet (the
+		// scheduler's to say): only that it ends, and why, is the point.
+		if err == nil || !strings.Contains(err.Error(), "didn't start (no VICI socket)") {
 			t.Fatalf("%v", err)
 		}
 	case <-time.After(15 * time.Second):

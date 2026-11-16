@@ -25,6 +25,17 @@ type FakeServer struct {
 	BadAuthenticator bool // MS-CHAPv2 success that doesn't prove the password
 	NoAddress        bool // rejects the client's address option
 	Insist           bool // ends the session when its login is refused
+	// Renegotiate: after the client's CHAP response, LCP asks for MS-CHAPv2
+	// and CHAP says Success to the old challenge (a server attacking the
+	// client's state).
+	Renegotiate bool
+	// HangUpAfterLogin: the client's login is answered by a Terminate-Request,
+	// as a server that drops a rejected login does.
+	HangUpAfterLogin bool
+	// RepeatLCP: its LCP request is sent again (same id) during the login,
+	// as pppd retransmits it.
+	RepeatLCP bool
+	lcpReq    []byte
 	// AnyPassword (-provider fake): PAP takes any password but "wrong"; a
 	// client that won't send it in the clear (no IPsec) is let in unasked.
 	AnyPassword bool
@@ -34,6 +45,7 @@ type FakeServer struct {
 	client   *net.UDPAddr
 	received chan []byte
 	logins   int
+	hangups  int // CDN and StopCCN received
 	st       fakeState
 }
 
@@ -89,6 +101,13 @@ func (f *FakeServer) Logins() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.logins
+}
+
+// HangUps counts the CDNs and StopCCNs the client sent.
+func (f *FakeServer) HangUps() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hangups
 }
 
 // Send sends an IPv4 packet to the client.
@@ -190,8 +209,12 @@ func (f *FakeServer) input(b []byte, from *net.UDPAddr) {
 		case "pap":
 			opts = append(opts, option{typ: lcpAuth, data: []byte{0xc0, 0x23}})
 		}
-		_ = f.ppp(protoLCP, cp{code: codeConfReq, id: 1, data: encodeOptions(opts)}.bytes())
-	default: // SCCCN, HELLO, CDN, StopCCN: acknowledged
+		f.lcpReq = encodeOptions(opts)
+		_ = f.ppp(protoLCP, cp{code: codeConfReq, id: 1, data: f.lcpReq}.bytes())
+	case msgCDN, msgStopCCN:
+		f.hangups++
+		_ = f.write(controlPacket(f.st.peerTunnel, 0, f.st.ns, f.st.nr, nil))
+	default: // SCCCN, HELLO: acknowledged
 		_ = f.write(controlPacket(f.st.peerTunnel, 0, f.st.ns, f.st.nr, nil))
 	}
 }
@@ -253,6 +276,19 @@ func (f *FakeServer) pppInput(frame []byte) {
 		}
 		value, name := c.data[1:1+n], string(c.data[1+n:])
 		f.logins++
+		if f.RepeatLCP {
+			_ = f.ppp(protoLCP, cp{code: codeConfReq, id: 1, data: f.lcpReq}.bytes())
+		}
+		if f.HangUpAfterLogin {
+			_ = f.ppp(protoLCP, cp{code: codeTermReq, id: 7}.bytes())
+			return
+		}
+		if f.Renegotiate {
+			_ = f.ppp(protoLCP, cp{code: codeConfReq, id: 2, data: encodeOptions([]option{
+				{typ: lcpAuth, data: []byte{0xc2, 0x23, chapMSCHAPv2}}})}.bytes())
+			_ = f.ppp(protoCHAP, cp{code: 3, id: c.id, data: []byte("S=0000000000000000000000000000000000000000")}.bytes())
+			return
+		}
 		pass, known := f.Users[name]
 		switch f.Auth {
 		case "chap":

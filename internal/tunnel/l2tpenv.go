@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,12 +27,18 @@ import (
 // strongSwan). One charon carries every tunnel's IPsec.
 func SystemL2TP(log *slog.Logger) *L2TPEnv {
 	r := &charonRunner{log: log}
-	// A charon a crashed daemon left (macOS: nothing ended it) goes now, with
-	// its SAs and policies, not when the next tunnel connects.
+	return &L2TPEnv{IPsec: r, IPsecEngine: r.Engine}
+}
+
+// StopLeftoverCharon ends a charon a crashed daemon left (macOS: nothing
+// ends a dead daemon's children), with its SAs and policies, instead of
+// when the next L2TP tunnel connects. Only an orphan is stopped (its parent
+// is init), so a live daemon's never is. The daemon calls it once it holds
+// its socket, never under -provider fake.
+func StopLeftoverCharon(log *slog.Logger) {
 	if os.Geteuid() == 0 {
 		ipsec.StopLeftover(charonDir(runtime.GOOS), log)
 	}
-	return &L2TPEnv{IPsec: r, IPsecEngine: r.Engine}
 }
 
 // charonCandidates are the only places the daemon runs charon from.
@@ -64,7 +71,6 @@ type charonRunner struct {
 
 	mu sync.Mutex
 	ch *ipsec.Charon
-	n  int // connections up
 }
 
 // Engine reports whether charon can run L2TP/IPsec here.
@@ -175,16 +181,18 @@ func charonHelp(h hostInfo, missing bool) *domain.TunnelInstall {
 
 // Up starts charon if it isn't running (from the binary just checked) and
 // brings the connection up.
-func (r *charonRunner) Up(ctx context.Context, c ipsec.Conn) error {
+func (r *charonRunner) Up(ctx context.Context, c ipsec.Conn) (<-chan struct{}, netip.Addr, error) {
 	e, fi := r.engine()
 	if !e.Available {
-		return &EngineError{Engine: e}
+		return nil, netip.Addr{}, &EngineError{Engine: e}
 	}
 	if err := sameFileAsChecked(e.Path, fi); err != nil {
-		return err
+		return nil, netip.Addr{}, err
 	}
 	r.mu.Lock()
-	if r.ch == nil || r.ch.Bin != e.Path {
+	// A charon carrying connections is never replaced under them (its SAs
+	// and policies would go): a new binary takes over once it's idle.
+	if r.ch == nil || (r.ch.Bin != e.Path && !r.ch.Busy()) {
 		if r.ch != nil {
 			r.ch.Stop()
 		}
