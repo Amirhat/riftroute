@@ -234,7 +234,7 @@ type loop struct {
 	// authenticator answers a repeated Response again).
 	chapNext  time.Time
 	chapTries int
-	chap     struct {
+	chap      struct {
 		id                    uint8
 		challenge, peer, resp []byte
 	}

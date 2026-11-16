@@ -168,7 +168,7 @@ func TestCharonThatDoesntStart(t *testing.T) {
 	c := &Charon{Bin: bin, Dir: filepath.Join(dir, "run"), GOOS: "linux", Log: slog.New(slog.DiscardHandler)}
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := c.Up(context.Background(), Conn{Name: "x", Server: server, PSK: "k"})
+		_, err := c.Up(context.Background(), Conn{Name: "x", Server: server, PSK: "k"})
 		done <- err
 	}()
 	select {

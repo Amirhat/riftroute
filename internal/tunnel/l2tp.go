@@ -34,19 +34,20 @@ type L2TPEnv struct {
 	// System makes the TUN and puts PPP's address on it (nil: this OS's
 	// own, as WireGuard's).
 	System WGSystem
-	// Dial opens the UDP socket to the server's L2TP port, from local when
-	// it's valid (nil: from port 1701, which servers expect, shared with
+	// Dial opens the UDP socket to the server's L2TP port; under IPsec (sa
+	// not nil) from sa.Local, with ESP required by the socket's own policy
+	// (nil: dialL2TP, from port 1701, which servers expect, shared with
 	// other tunnels' sockets).
-	Dial func(ctx context.Context, server netip.AddrPort, local netip.Addr) (net.Conn, error)
+	Dial func(ctx context.Context, server netip.AddrPort, sa *ipsec.SA) (net.Conn, error)
 }
 
-// IPsecRunner is ipsec.Charon's part a session uses. Up's lost is closed
-// when the IPsec under the connection is gone (charon exited, taking its SAs
-// and trap policies): from then on nothing protects the L2TP socket. local
-// is IKE's own address, which the L2TP socket must leave from (the policy
-// covers that one only); invalid when it doesn't matter.
+// IPsecRunner is ipsec.Charon's part a session uses. Up's SA says when
+// the IPsec under the connection is gone (Lost: charon exited, taking its
+// SAs and trap policies), the address the L2TP socket must leave from
+// (Local: the trap policy covers that one only; invalid when it doesn't
+// matter), and its CHILD_SA's reqid (the socket's own policy names it).
 type IPsecRunner interface {
-	Up(ctx context.Context, c ipsec.Conn) (lost <-chan struct{}, local netip.Addr, err error)
+	Up(ctx context.Context, c ipsec.Conn) (ipsec.SA, error)
 	Down(name string)
 }
 
@@ -306,7 +307,7 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 	encrypted := k.c.IPsec != L2TPNoIPsec
 	k.lost.Store(false)
 	var lost <-chan struct{}
-	var local netip.Addr
+	var sa *ipsec.SA
 	if encrypted {
 		conn, err := k.ipsecConn(server)
 		if err != nil {
@@ -316,8 +317,9 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 		k.m.changed()
 		k.log.printf("IPsec to %s (IKEv%d, %s)", server, k.c.IKEVersion, k.c.IPsec)
 		ictx, cancel := context.WithTimeout(ctx, l2tpDialWait)
-		lost, local, err = k.env.IPsec.Up(ictx, conn)
+		up, err := k.env.IPsec.Up(ictx, conn)
 		cancel()
+		sa, lost = &up, up.Lost
 		// Down whatever happened: the policies, the SA, the secrets go.
 		defer k.env.IPsec.Down(conn.Name)
 		if err != nil {
@@ -332,7 +334,7 @@ func (k *l2tpSession) attempt(ctx context.Context, host string) (wasUp bool, err
 	if dial == nil {
 		dial = dialL2TP
 	}
-	sock, err := dial(ctx, netip.AddrPortFrom(server, 1701), local)
+	sock, err := dial(ctx, netip.AddrPortFrom(server, 1701), sa)
 	if err != nil {
 		if errors.Is(err, syscall.EADDRINUSE) {
 			return false, fmt.Errorf("can't use UDP port 1701, which L2TP servers expect: another program holds it (%v)", err)
@@ -593,16 +595,26 @@ func (k *l2tpSession) loginWorked() bool { return k.m.loggedIn(k.name) == k.logi
 // which servers expect (Apple's and Windows' clients use it). Other L2TP
 // tunnels' sockets share the port: each is connected to its own server, so
 // the kernel gives each its own packets.
-func dialL2TP(ctx context.Context, server netip.AddrPort, local netip.Addr) (net.Conn, error) {
+func dialL2TP(ctx context.Context, server netip.AddrPort, sa *ipsec.SA) (net.Conn, error) {
 	la := &net.UDPAddr{Port: 1701}
-	if local.IsValid() {
-		la.IP = local.AsSlice() // IKE's address: the one the policy covers
+	if sa != nil && sa.Local.IsValid() {
+		la.IP = sa.Local.AsSlice() // IKE's address: the one the trap policy covers
 	}
 	d := net.Dialer{
 		LocalAddr: la,
 		Control: func(network, address string, c syscall.RawConn) error {
 			var serr error
-			err := c.Control(func(fd uintptr) { serr = reusePort(fd) })
+			err := c.Control(func(fd uintptr) {
+				if serr = reusePort(fd); serr != nil || sa == nil {
+					return
+				}
+				// ESP required by the socket's own policy, before its first
+				// packet: whatever becomes of charon and its trap policies, the
+				// kernel never sends this socket's packets in the clear.
+				if perr := requireESP(fd, sa.ReqID); perr != nil {
+					serr = fmt.Errorf("couldn't require IPsec on the L2TP socket: %w", perr)
+				}
+			})
 			if err != nil {
 				return err
 			}

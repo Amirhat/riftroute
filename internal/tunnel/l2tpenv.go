@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -181,13 +180,13 @@ func charonHelp(h hostInfo, missing bool) *domain.TunnelInstall {
 
 // Up starts charon if it isn't running (from the binary just checked) and
 // brings the connection up.
-func (r *charonRunner) Up(ctx context.Context, c ipsec.Conn) (<-chan struct{}, netip.Addr, error) {
+func (r *charonRunner) Up(ctx context.Context, c ipsec.Conn) (ipsec.SA, error) {
 	e, fi := r.engine()
 	if !e.Available {
-		return nil, netip.Addr{}, &EngineError{Engine: e}
+		return ipsec.SA{}, &EngineError{Engine: e}
 	}
 	if err := sameFileAsChecked(e.Path, fi); err != nil {
-		return nil, netip.Addr{}, err
+		return ipsec.SA{}, err
 	}
 	r.mu.Lock()
 	// A charon carrying connections is never replaced under them (its SAs
