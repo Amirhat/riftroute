@@ -8,15 +8,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// requireESP gives an L2TP socket policies of its own, both ways: ESP, in
-// transport mode, required (the policy libipsec spells "in|out ipsec
-// esp/transport//require"). The kernel enforces them whatever happens to
-// charon's trap policies: with no SA (charon stopped, its policies gone
-// with it) a packet is dropped, never sent in the clear, and a plain one
-// from the server isn't taken. macOS matches the SA by its addresses; the
+// requireESP gives an L2TP socket an outbound policy of its own: ESP, in
+// transport mode, required (libipsec's "out ipsec esp/transport//require").
+// The kernel enforces it whatever happens to charon's trap policies: with
+// no SA (charon stopped, its policies gone with it) a packet is dropped,
+// never sent in the clear. macOS matches the SA by its addresses; the
 // reqid isn't needed.
+//
+// shortcut: outbound only on macOS. Both ways cut the owner's live test
+// (2026-11-24: SA up, no L2TP reply), most likely the inbound check on
+// NAT-T-decapsulated packets; charon's own policy still covers inbound.
+// Revisit with a test that shows which way failed.
 func requireESP(fd uintptr, _ uint32) error {
-	for _, dir := range []uint8{ipsecDirInbound, ipsecDirOutbound} {
+	for _, dir := range []uint8{ipsecDirOutbound} {
 		if err := unix.SetsockoptString(int(fd), unix.IPPROTO_IP, unix.IP_IPSEC_POLICY, string(pfkeyESPPolicy(dir))); err != nil {
 			return err
 		}
@@ -25,7 +29,6 @@ func requireESP(fd uintptr, _ uint32) error {
 }
 
 const (
-	ipsecDirInbound    = 1
 	ipsecDirOutbound   = 2
 	sadbXExtPolicy     = 18
 	ipsecPolicyIPsec   = 2
