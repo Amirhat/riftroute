@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-24
+
+L2TP/IPsec tunnels, next to your main VPN or carrying all traffic.
+
 ### Added
 - **L2TP/IPsec tunnels.** Import a configuration profile with an L2TP VPN,
   or RiftRoute's own `[L2TP]` file (the server and the IPsec key or
@@ -22,6 +26,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   CHAP, and PAP only under IPsec. A login the server rejects isn't tried
   again and again, and a wrong pre-shared key says so. L2TP without IPsec
   runs only when the file says `IPsec = none`, with a warning.
+
+### Changed
+- **The record that a tunnel's login has worked** (kept so a rejected
+  login isn't retried and retried) is a password hash now (scrypt). One
+  kept by an older version no longer matches: until an IKEv2 tunnel's
+  login connects once more, a rejection of it is treated as a new login's.
 
 ## [0.9.0] — 2026-11-12
 
