@@ -226,6 +226,21 @@ status or logs).
   - A charon carrying connections is never replaced.
   - A leftover is stopped only when it's an orphan (its parent is init),
     once the daemon holds its socket, and never under `-provider fake`.
+- **The L2TP socket requires ESP itself.** A per-socket policy, both
+  ways, says "ESP, transport mode, required": `IP_XFRM_POLICY` on Linux,
+  naming the CHILD_SA's reqid. The kernel
+  enforces it whatever becomes of charon's trap policies. With no SA (charon
+  stopped, or its policies and SAs wiped by an `ip xfrm flush` or a system
+  strongSwan) the socket's packets are dropped, never sent in the clear,
+  and plain packets from the server aren't taken.
+  - The Docker test wipes the client's policies and SAs while charon lives:
+    without the socket policy, 8 plain packets left; with it, none, and the
+    tunnel came back by itself.
+  - **Not on macOS.** `IP_IPSEC_POLICY`, both ways and then outbound
+    alone, cut the owner's live session (2026-11-24): the SA was up and no
+    L2TP reply came. A macOS session relies on charon's trap policies and
+    on Lost, so charon stopped from outside leaves a window of
+    milliseconds, and policies wiped from outside go unnoticed.
 - **A hang-up, CDN, StopCCN or silence after the login was sent** counts as
   a rejection (#37's rule).
 - **A certificate login** names the server it must be (`RemoteIdentifier`,
@@ -256,15 +271,6 @@ status or logs).
   prove it knows the password. CHAP-MD5, or no login at all, proves nothing:
   with a group pre-shared key (or `IPsec = none`), whoever holds the key can
   answer as the server. A certificate login names the server.
-- **charon stopped from outside leaves a window of milliseconds.** charon
-  removes its trap policies as it shuts down, a few milliseconds before it
-  exits, and the session's socket closes when the exit is seen. A packet
-  sent in that window goes out unencrypted (the review proved 0 to 8 of
-  them, with a packet every 2 ms). It needs something outside the daemon
-  to stop charon (`pkill`, a package upgrade). The fix is a per-socket
-  policy the kernel enforces whatever charon does ("ESP, transport,
-  required": `IP_XFRM_POLICY` on Linux, `IP_IPSEC_POLICY` on macOS). That's
-  a follow-up.
 - **After IPsec is lost, the server keeps the old session** for a while:
   nothing was sent to end it, since nothing goes out unprotected. Until its
   keepalives give up (pppd's: about 20 s), a server that gives the new

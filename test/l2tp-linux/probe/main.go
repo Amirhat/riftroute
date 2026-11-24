@@ -72,8 +72,8 @@ func main() {
 		ch := &ipsec.Charon{Bin: *charonBin, Dir: "/run/rr-charon", GOOS: "linux",
 			Log: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-		var err error
-		_, local, err = ch.Up(ctx, conn)
+		sa, err := ch.Up(ctx, conn)
+		local = sa.Local
 		cancel()
 		if err != nil {
 			fail(err)

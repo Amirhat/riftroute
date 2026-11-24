@@ -247,9 +247,9 @@ func (c *Charon) Stop() {
 //
 // The lock isn't held while the SA is negotiated (up to 35 s): another
 // tunnel's Up or Down goes ahead meanwhile.
-func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local netip.Addr, err error) {
+func (c *Charon) Up(ctx context.Context, conn Conn) (SA, error) {
 	if err := conn.check(); err != nil {
-		return nil, netip.Addr{}, err
+		return SA{}, err
 	}
 	c.mu.Lock()
 	locked := true
@@ -259,7 +259,7 @@ func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local
 		}
 	}()
 	if err := c.ensure(ctx); err != nil {
-		return nil, netip.Addr{}, err
+		return SA{}, err
 	}
 	if _, ok := c.conns[conn.Name]; ok {
 		c.downLocked(conn.Name)
@@ -270,19 +270,19 @@ func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local
 	l.psk = conn.PSK != "" // unloaded by Down even if loading it failed half-way
 	if conn.PSK != "" {
 		if err := c.call("load-shared", pskMessage(conn)); err != nil {
-			return nil, netip.Addr{}, fmt.Errorf("ipsec: loading the shared secret: %w", err)
+			return SA{}, fmt.Errorf("ipsec: loading the shared secret: %w", err)
 		}
 	} else {
 		km, err := keyMessage(conn)
 		if err != nil {
-			return nil, netip.Addr{}, err
+			return SA{}, err
 		}
 		out, err := c.vs.Call(context.Background(), "load-key", km)
 		if err == nil {
 			err = out.Err()
 		}
 		if err != nil {
-			return nil, netip.Addr{}, fmt.Errorf("couldn't read the profile's private key: %w", err)
+			return SA{}, fmt.Errorf("couldn't read the profile's private key: %w", err)
 		}
 		l.keyID, _ = out.Get("id").(string)
 		for _, cert := range conn.Chain {
@@ -291,7 +291,7 @@ func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local
 			_ = m.Set("flag", "NONE")
 			_ = m.Set("data", string(cert))
 			if err := c.call("load-cert", m); err != nil {
-				return nil, netip.Addr{}, fmt.Errorf("ipsec: loading an intermediate certificate: %w", err)
+				return SA{}, fmt.Errorf("ipsec: loading an intermediate certificate: %w", err)
 			}
 		}
 	}
@@ -301,24 +301,24 @@ func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local
 	for i, pfs := range pfsGroups {
 		cm, err := connMessage(conn, pfs)
 		if err != nil {
-			return nil, netip.Addr{}, err
+			return SA{}, err
 		}
 		if !locked {
 			c.mu.Lock()
 			locked = true
 		}
 		if c.exit != exit || c.vs == nil || c.conns[conn.Name] != l {
-			return nil, netip.Addr{}, errors.New("IPsec: strongSwan's charon stopped while connecting")
+			return SA{}, errors.New("IPsec: strongSwan's charon stopped while connecting")
 		}
 		if err := c.call("load-conn", cm); err != nil {
-			return nil, netip.Addr{}, fmt.Errorf("ipsec: loading the connection: %w", err)
+			return SA{}, fmt.Errorf("ipsec: loading the connection: %w", err)
 		}
 		c.mu.Unlock()
 		locked = false
 		if log, failed = c.initiate(ctx, socket, conn); failed == nil {
 			select {
 			case <-exit:
-				return nil, netip.Addr{}, errors.New("IPsec: strongSwan's charon stopped while connecting")
+				return SA{}, errors.New("IPsec: strongSwan's charon stopped while connecting")
 			default:
 			}
 			if pfs != "" {
@@ -326,14 +326,14 @@ func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local
 			}
 			// The L2TP socket must leave from IKE's own address: the policy
 			// (dynamic[17/1701]) covers that one only.
-			local, err := localHost(ctx, socket, conn.Name)
+			local, reqid, err := saInfo(ctx, socket, conn.Name)
 			if err != nil {
-				return nil, netip.Addr{}, fmt.Errorf("IPsec: couldn't read the connection's local address: %w", err)
+				return SA{}, fmt.Errorf("IPsec: couldn't read the connection's local address: %w", err)
 			}
-			return exit, local, nil
+			return SA{Lost: exit, Local: local, ReqID: reqid}, nil
 		}
 		if ctx.Err() != nil {
-			return nil, netip.Addr{}, ctx.Err()
+			return SA{}, ctx.Err()
 		}
 		// Main Mode worked and Quick Mode's proposals were refused: the server
 		// may want PFS (or no PFS). Try the next group.
@@ -342,14 +342,29 @@ func (c *Charon) Up(ctx context.Context, conn Conn) (lost <-chan struct{}, local
 		}
 		c.Log.Info("ipsec: ESP refused; trying again with another PFS group", "conn", conn.Name, "next", pfsGroups[i+1])
 	}
-	return nil, netip.Addr{}, explain(conn, log, failed)
+	return SA{}, explain(conn, log, failed)
 }
 
-// localHost is the address IKE uses on this side (list-sas' local-host).
-func localHost(ctx context.Context, socket, name string) (netip.Addr, error) {
+// SA is a connection Up brought up.
+type SA struct {
+	// Lost is closed when this charon exits. Its SAs and trap policies go
+	// with it, and only the socket's own policy (if any) still covers the
+	// L2TP socket: the session must stop.
+	Lost <-chan struct{}
+	// Local is the address IKE uses on this side: the L2TP socket must
+	// leave from it (the trap policy covers that address only).
+	Local netip.Addr
+	// ReqID is the installed CHILD_SA's: a per-socket policy names it (Linux
+	// matches a policy's template to an SA by reqid).
+	ReqID uint32
+}
+
+// saInfo reads the connection's local address and its CHILD_SA's reqid
+// (list-sas), from an IKE SA that's up with its CHILD_SA installed.
+func saInfo(ctx context.Context, socket, name string) (netip.Addr, uint32, error) {
 	vs, err := vici.NewSession(vici.WithSocketPath(socket))
 	if err != nil {
-		return netip.Addr{}, err
+		return netip.Addr{}, 0, err
 	}
 	defer vs.Close()
 	in := vici.NewMessage()
@@ -361,13 +376,18 @@ func localHost(ctx context.Context, socket, name string) (netip.Addr, error) {
 	// attempt (IKEv2's, still DELETING) carries the name too, maybe with an
 	// address the policy no longer covers.
 	var found netip.Addr
+	var reqid uint32
 	for m, err := range vs.CallStreaming(lctx, "list-sas", "list-sa", in) {
 		if err != nil {
-			return netip.Addr{}, err
+			return netip.Addr{}, 0, err
 		}
 		for _, k := range m.Keys() {
 			sa, ok := m.Get(k).(*vici.Message)
-			if !ok || !upWithChild(sa) {
+			if !ok {
+				continue
+			}
+			r := installedReqID(sa)
+			if r == 0 {
 				continue
 			}
 			h, _ := sa.Get("local-host").(string)
@@ -375,35 +395,42 @@ func localHost(ctx context.Context, socket, name string) (netip.Addr, error) {
 			if err != nil {
 				continue
 			}
-			if found.IsValid() && found != a.Unmap() {
-				return netip.Addr{}, fmt.Errorf("two IKE SAs up, from %s and %s", found, a.Unmap())
+			if found.IsValid() && (found != a.Unmap() || reqid != r) {
+				return netip.Addr{}, 0, fmt.Errorf("two IKE SAs up (%s, %s)", found, a.Unmap())
 			}
-			found = a.Unmap()
+			found, reqid = a.Unmap(), r
 		}
 	}
 	if !found.IsValid() {
-		return netip.Addr{}, errors.New("no IKE SA up with its CHILD_SA installed")
+		return netip.Addr{}, 0, errors.New("no IKE SA up with its CHILD_SA installed")
 	}
-	return found, nil
+	return found, reqid, nil
 }
 
-// upWithChild: an IKE SA established, with an installed CHILD_SA.
-func upWithChild(sa *vici.Message) bool {
+// installedReqID is the reqid of an established IKE SA's installed
+// CHILD_SA (0: none).
+func installedReqID(sa *vici.Message) uint32 {
 	if s, _ := sa.Get("state").(string); s != "ESTABLISHED" {
-		return false
+		return 0
 	}
 	children, ok := sa.Get("child-sas").(*vici.Message)
 	if !ok {
-		return false
+		return 0
 	}
 	for _, k := range children.Keys() {
-		if c, ok := children.Get(k).(*vici.Message); ok {
-			if s, _ := c.Get("state").(string); s == "INSTALLED" {
-				return true
-			}
+		c, ok := children.Get(k).(*vici.Message)
+		if !ok {
+			continue
+		}
+		if s, _ := c.Get("state").(string); s != "INSTALLED" {
+			continue
+		}
+		r, _ := c.Get("reqid").(string)
+		if n, err := strconv.ParseUint(r, 10, 32); err == nil && n > 0 {
+			return uint32(n)
 		}
 	}
-	return false
+	return 0
 }
 
 // Busy reports whether connections are loaded: this charon mustn't be
