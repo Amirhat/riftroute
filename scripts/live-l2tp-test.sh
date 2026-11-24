@@ -16,8 +16,6 @@
 #      transport mode, and L2TP and PPP come up on a utun;
 #   2. the address goes into the tunnel, and answers;
 #   3. no L2TP leaves this Mac unencrypted: none on UDP 1701, ESP in UDP 4500;
-#      even with the tunnel's own SAs and policies deleted from outside (the
-#      socket's own policy, ESP required), and it comes back;
 #   4. a disconnect leaves no IPsec policy or SA for the server, and stops
 #      charon;
 #   5. the daemon killed while it's connected: the next one stops the charon
@@ -202,22 +200,6 @@ n=$(seen "udp port 1701 and host $SERVER" 4)
 ckeq "no L2TP on the wire unencrypted (UDP 1701 to $SERVER)" "$n" "0"
 n=$(seen "udp port 4500 and host $SERVER" 4)
 [[ "$n" -gt 0 ]] && pass "ESP in UDP 4500 to the server ($n packets)" || fail "no ESP in UDP 4500 seen"
-
-echo "-- 3b. its SAs and policies wiped from outside: the socket's own policy keeps it encrypted"
-# Only this tunnel's: the SAs between this Mac's address and the server, and
-# the policies for UDP 1701 between them. Nothing else of the kernel's IPsec.
-LOCAL=$(ipconfig getifaddr "$(route -n get "$SERVER" 2>/dev/null | awk '/interface:/{print $2}')" 2>/dev/null)
-if [[ -n "$LOCAL" ]]; then
-  printf 'deleteall %s %s esp;\ndeleteall %s %s esp;\nspddelete %s[1701] %s[1701] udp -P out;\nspddelete %s[1701] %s[1701] udp -P in;\n' \
-    "$LOCAL" "$SERVER" "$SERVER" "$LOCAL" "$LOCAL" "$SERVER" "$SERVER" "$LOCAL" | setkey -c >/dev/null 2>&1
-  note "deleted the SAs and policies between $LOCAL and $SERVER (now: $(policies "$SERVER") policy lines, $(sas "$SERVER") SA lines)"
-  n=$(seen "udp port 1701 and src host $LOCAL and host $SERVER" 4)
-  ckeq "nothing left this Mac unencrypted (UDP 1701 to the server)" "$n" "0"
-  if until_ok 90 ping -c 1 -t 2 "$TARGET" >/dev/null 2>&1; then pass "and it came back by itself"; else
-    st=$(tj .state); [[ "$st" == connected ]] && note "$TARGET doesn't answer ping; the tunnel is $st" || fail "not back after the wipe: $st"; fi
-else
-  note "couldn't read this Mac's address toward $SERVER: skipped"
-fi
 
 echo "-- 4. disconnect: IPsec goes with it"
 rr tunnel down "$NAME" 2>&1 | sed 's/^/    /'

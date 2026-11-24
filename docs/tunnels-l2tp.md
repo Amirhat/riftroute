@@ -228,7 +228,7 @@ status or logs).
     once the daemon holds its socket, and never under `-provider fake`.
 - **The L2TP socket requires ESP itself.** A per-socket policy, both
   ways, says "ESP, transport mode, required": `IP_XFRM_POLICY` on Linux,
-  naming the CHILD_SA's reqid; `IP_IPSEC_POLICY` on macOS. The kernel
+  naming the CHILD_SA's reqid. The kernel
   enforces it whatever becomes of charon's trap policies. With no SA (charon
   stopped, or its policies and SAs wiped by an `ip xfrm flush` or a system
   strongSwan) the socket's packets are dropped, never sent in the clear,
@@ -236,8 +236,11 @@ status or logs).
   - The Docker test wipes the client's policies and SAs while charon lives:
     without the socket policy, 8 plain packets left; with it, none, and the
     tunnel came back by itself.
-  - The live macOS test does the same for the tunnel's own SAs and
-    policies only.
+  - **Not on macOS.** `IP_IPSEC_POLICY`, both ways and then outbound
+    alone, cut the owner's live session (2026-11-24): the SA was up and no
+    L2TP reply came. A macOS session relies on charon's trap policies and
+    on Lost, so charon stopped from outside leaves a window of
+    milliseconds, and policies wiped from outside go unnoticed.
 - **A hang-up, CDN, StopCCN or silence after the login was sent** counts as
   a rejection (#37's rule).
 - **A certificate login** names the server it must be (`RemoteIdentifier`,

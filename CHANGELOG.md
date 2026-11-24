@@ -14,9 +14,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   PPP run inside the daemon; IPsec, in transport mode, is strongSwan's
   `charon` (shipped with RiftRoute on macOS; your distribution's
   `charon-systemd` on Linux), one for every tunnel. Its packets never leave
-  unencrypted: the L2TP socket requires ESP itself (a per-socket policy the
-  kernel enforces), even while an SA is renegotiated, charon is stopped or
-  its policies are wiped from outside. The server's login
+  unencrypted while an SA is renegotiated, and the session stops the moment
+  charon does; on Linux the L2TP socket also requires ESP itself (a
+  per-socket policy the kernel enforces), even if charon's policies are
+  wiped from outside. The server's login
   methods: MS-CHAPv2 (whose server must prove it knows the password),
   CHAP, and PAP only under IPsec. A login the server rejects isn't tried
   again and again, and a wrong pre-shared key says so. L2TP without IPsec
