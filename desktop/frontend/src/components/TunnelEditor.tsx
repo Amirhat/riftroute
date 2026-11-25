@@ -4,7 +4,7 @@ import { Badge, Label, Toggle, fieldCls } from './ui'
 import { api } from '../lib/api'
 import { friendly } from '../lib/format'
 import { validateRouteTarget } from '../lib/validate'
-import { KINDS, certExpiry, kindOf } from '../lib/tunnels'
+import { KINDS, certExpiry, kindOf, l2tpProfile, type L2TPFields } from '../lib/tunnels'
 import type { ConfigIssue, TunnelProfileFile, TunnelStatus, TunnelVia, TunnelWhenDown } from '../types'
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/
@@ -26,6 +26,15 @@ function parseRoutes(text: string): { routes: string[]; errors: RouteError[] } {
 }
 
 type RouteError = { line: number; value: string; msg: string }
+
+// slug makes a tunnel name from a file or host name.
+function slug(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^[-_]+/, '')
+    .slice(0, 32)
+}
 
 // TunnelEditor adds or edits a RiftRoute-run tunnel — OpenVPN, WireGuard,
 // IKEv2 or L2TP/IPsec, by the file chosen: the profile or configuration, the login (OpenVPN), the
@@ -53,6 +62,8 @@ export function TunnelEditor({
   const editing = !!existing
   const [name, setName] = useState(existing?.name ?? '')
   const [profile, setProfile] = useState<TunnelProfileFile | null>(null)
+  // An L2TP connection typed in instead of a file (null: a file, or none yet).
+  const [typed, setTyped] = useState<L2TPFields | null>(null)
   const [username, setUsername] = useState(existing?.username ?? '')
   const [password, setPassword] = useState('')
   const [routesText, setRoutesText] = useState((existing?.routes ?? []).join('\n'))
@@ -104,6 +115,7 @@ export function TunnelEditor({
     try {
       const f = await api.openTunnelProfile()
       if (!f.path) return // cancelled
+      setTyped(null)
       setProfile(f)
       if (f.username) setUsername(f.username)
       if (f.password) setPassword(f.password)
@@ -116,6 +128,16 @@ export function TunnelEditor({
       }
     } catch (e) {
       setError(friendly(e))
+    }
+  }
+
+  // typeIn changes the typed-in L2TP fields; the profile is their [L2TP] file.
+  function typeIn(change: Partial<L2TPFields>) {
+    const next = { ...(typed ?? { server: '', psk: '', noIPsec: false }), ...change }
+    setTyped(next)
+    setProfile(l2tpProfile(next).profile)
+    if (!editing && change.server !== undefined && (name === '' || name === slug(typed?.server ?? ''))) {
+      setName(slug(next.server))
     }
   }
 
@@ -167,7 +189,8 @@ export function TunnelEditor({
     !nameError &&
     !wrongType &&
     parsed.errors.length === 0 &&
-    (editing || (profile && !profile.error))
+    (editing || (profile && !profile.error)) &&
+    (!typed || l2tpProfile(typed).ready)
   const fileWord = info.word
   const pickLabel = editing
     ? `Replace ${info.ext}…`
@@ -206,10 +229,60 @@ export function TunnelEditor({
             >
               {pickLabel}
             </button>
+            {(!editing || kind === 'l2tp') && !typed && (
+              <button
+                onClick={() => typeIn({})}
+                disabled={busy}
+                className="rounded-lg border border-line px-3 py-1.5 text-sm text-default hover:bg-elevated disabled:opacity-50"
+              >
+                Type in an L2TP connection…
+              </button>
+            )}
             <span className="truncate text-sm text-muted">
-              {profile ? profile.name : editing ? `keeping the saved ${fileWord}` : 'no file chosen'}
+              {typed
+                ? 'L2TP/IPsec, typed in'
+                : profile
+                  ? profile.name
+                  : editing
+                    ? `keeping the saved ${fileWord}`
+                    : 'no file chosen'}
             </span>
           </div>
+          {typed && (
+            <div className="space-y-3 rounded-lg border border-line p-3">
+              <div className="space-y-1.5">
+                <Label>Server</Label>
+                <input
+                  value={typed.server}
+                  onChange={(e) => typeIn({ server: e.target.value })}
+                  placeholder="vpn.example.com"
+                  autoComplete="off"
+                  aria-label="Server"
+                  className={fieldCls(null)}
+                />
+              </div>
+              {!typed.noIPsec && (
+                <div className="space-y-1.5">
+                  <Label>IPsec pre-shared key</Label>
+                  <input
+                    type="password"
+                    value={typed.psk}
+                    onChange={(e) => typeIn({ psk: e.target.value })}
+                    autoComplete="off"
+                    aria-label="IPsec pre-shared key"
+                    className={fieldCls(null)}
+                  />
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm text-default">No IPsec (nothing is encrypted)</div>
+                <Toggle on={typed.noIPsec} onClick={() => typeIn({ noIPsec: !typed.noIPsec })} ariaLabel="No IPsec" />
+              </div>
+              <p className="text-xs text-muted">
+                A certificate login needs its PKCS#12: put it in an [L2TP] file, or use a .mobileconfig.
+              </p>
+            </div>
+          )}
           {wrongType && (
             <p className="text-sm text-danger">
               This is {info.a} tunnel; choose {wireguard ? 'a' : 'an'} {info.ext} file. To switch types, delete it and add
