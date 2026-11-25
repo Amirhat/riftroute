@@ -81,3 +81,61 @@ export function l2tpProfile(f: L2TPFields): { profile: TunnelProfileFile; ready:
     ready: server !== '' && (f.noIPsec || f.psk.trim() !== ''),
   }
 }
+
+/** IKEv2Fields are an IKEv2 connection typed into the app instead of a profile. */
+export interface IKEv2Fields {
+  server: string
+  remoteId: string // the server's identity ("" = its address or name)
+  auth: 'eap' | 'psk' // a username and password, or a pre-shared key
+  psk: string
+  localId: string // this side's identity, for a pre-shared key ("" = none)
+}
+
+const xmlEscape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/**
+ * ikev2Profile turns typed fields into a configuration profile (.mobileconfig) with
+ * one IKEv2 VPN, as if it had been chosen: the daemon parses and checks it the same
+ * way. EAP's username goes in it (the daemon reads it there); the password stays
+ * the tunnel's. The cryptography is the profile defaults (Apple's).
+ */
+export function ikev2Profile(f: IKEv2Fields, username = ''): { profile: TunnelProfileFile; ready: boolean } {
+  const server = f.server.trim()
+  const s = (k: string, v: string) => `<key>${k}</key><string>${xmlEscape(v)}</string>`
+  const login =
+    f.auth === 'eap'
+      ? s('AuthenticationMethod', 'None') + '<key>ExtendedAuthEnabled</key><true/>' + s('AuthName', username.trim())
+      : s('AuthenticationMethod', 'SharedSecret') +
+        s('SharedSecret', f.psk) +
+        (f.localId.trim() ? s('LocalIdentifier', f.localId.trim()) : '')
+  const config = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0"><dict>',
+    s('PayloadType', 'Configuration') + '<key>PayloadVersion</key><integer>1</integer>',
+    '<key>PayloadContent</key><array><dict>',
+    s('PayloadType', 'com.apple.vpn.managed') + s('UserDefinedName', server) + s('VPNType', 'IKEv2'),
+    '<key>IKEv2</key><dict>' +
+      s('RemoteAddress', server) +
+      s('RemoteIdentifier', f.remoteId.trim() || server) +
+      login +
+      '</dict>',
+    '</dict></array></dict></plist>',
+    '',
+  ].join('\n')
+  return {
+    profile: {
+      path: '',
+      name: 'typed in',
+      type: 'ikev2',
+      config,
+      servers: server ? [`${server} (IKEv2)`] : [],
+      needs_auth: f.auth === 'eap',
+      ignored: [],
+      username: '',
+      password: '',
+      error: /\s/.test(server) ? 'The server is a host name or address, without spaces.' : '',
+    },
+    ready: server !== '' && (f.auth === 'eap' || f.psk !== ''),
+  }
+}

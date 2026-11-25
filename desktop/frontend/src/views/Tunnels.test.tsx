@@ -894,6 +894,25 @@ describe('Tunnels view — WireGuard', () => {
     expect(mockApi.saveTunnel.mock.calls[0][0]).toMatchObject({ type: 'l2tp', username: 'alice', password: 'pw' })
   })
 
+  it('adds an IKEv2 tunnel typed into the form, its username in the profile', async () => {
+    withTunnels([])
+    mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...wgTunnel, name: 'vpn-example-com', type: 'ikev2' } })
+    renderView()
+    fireEvent.click(await screen.findByText('+ Add Tunnel'))
+    fireEvent.click(screen.getByText('Type in an IKEv2 connection…'))
+    fireEvent.change(screen.getByLabelText('Server'), { target: { value: 'vpn.example.com' } })
+    expect(screen.getByRole('heading', { name: 'Add an IKEv2 tunnel' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } })
+    fireEvent.change(screen.getByLabelText('Networks through this tunnel'), { target: { value: '10.30.0.0/16' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockApi.saveTunnel).toHaveBeenCalled())
+    const spec = mockApi.saveTunnel.mock.calls[0][0]
+    expect(spec).toMatchObject({ type: 'ikev2', username: 'alice', password: 'pw', routes: ['10.30.0.0/16'] })
+    expect(spec.config).toContain('<key>AuthName</key><string>alice</string>')
+    expect(spec.config).toContain('<key>RemoteAddress</key><string>vpn.example.com</string>')
+  })
+
   it('adds an L2TP/IPsec tunnel typed into the form, without a file', async () => {
     withTunnels([])
     mockApi.saveTunnel.mockResolvedValue({ tunnel: { ...wgTunnel, name: 'vpn-example-com', type: 'l2tp' } })

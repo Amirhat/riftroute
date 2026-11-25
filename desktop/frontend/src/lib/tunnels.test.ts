@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { l2tpProfile } from './tunnels'
+import { ikev2Profile, l2tpProfile } from './tunnels'
 
 describe('l2tpProfile', () => {
   it('writes the [L2TP] file the daemon reads', () => {
@@ -24,5 +24,31 @@ describe('l2tpProfile', () => {
     expect(l2tpProfile({ server: 'vpn example', psk: 'k', noIPsec: false }).profile.error).not.toBe('')
     expect(l2tpProfile({ server: '', psk: 'k', noIPsec: false }).ready).toBe(false)
     expect(l2tpProfile({ server: 'vpn.example.com', psk: '', noIPsec: false }).ready).toBe(false)
+  })
+})
+
+describe('ikev2Profile', () => {
+  const base = { server: 'vpn.example.com', remoteId: '', auth: 'eap' as const, psk: '', localId: '' }
+
+  it('writes an IKEv2 .mobileconfig with the EAP username, escaped', () => {
+    const { profile, ready } = ikev2Profile(base, 'alice & <bob>')
+    expect(ready).toBe(true)
+    expect(profile.type).toBe('ikev2')
+    expect(profile.needs_auth).toBe(true)
+    expect(profile.config).toContain('<key>VPNType</key><string>IKEv2</string>')
+    expect(profile.config).toContain('<key>RemoteIdentifier</key><string>vpn.example.com</string>')
+    expect(profile.config).toContain('<key>ExtendedAuthEnabled</key><true/>')
+    expect(profile.config).toContain('<key>AuthName</key><string>alice &amp; &lt;bob&gt;</string>')
+  })
+
+  it('writes a pre-shared key, and needs it', () => {
+    const psk = { ...base, auth: 'psk' as const, psk: 'k', localId: 'me@example.com', remoteId: 'vpn' }
+    const { profile, ready } = ikev2Profile(psk)
+    expect(ready).toBe(true)
+    expect(profile.needs_auth).toBe(false)
+    expect(profile.config).toContain('<key>SharedSecret</key><string>k</string>')
+    expect(profile.config).toContain('<key>LocalIdentifier</key><string>me@example.com</string>')
+    expect(profile.config).toContain('<key>RemoteIdentifier</key><string>vpn</string>')
+    expect(ikev2Profile({ ...psk, psk: '' }).ready).toBe(false)
   })
 })
